@@ -15,12 +15,16 @@ env = environ.Env()
 environ.Env.read_env(BASE_DIR / '.env')
 
 # SECURITY WARNING: garder la clé secrète hors du code source en production.
-SECRET_KEY = env('DJANGO_SECRET_KEY', default='django-insecure-dev-only-change-me')
+SECRET_KEY = env('DJANGO_SECRET_KEY', default='') or 'django-insecure-dev-only-change-me'
 
 # SECURITY WARNING: ne jamais laisser DEBUG=True en production.
 DEBUG = env.bool('DJANGO_DEBUG', default=True)
 
 ALLOWED_HOSTS = env.list('DJANGO_ALLOWED_HOSTS', default=['localhost', '127.0.0.1'])
+
+# Railway fournit un domaine *.up.railway.app — Django 4+ exige aussi ce domaine
+# dans CSRF_TRUSTED_ORIGINS pour accepter les requêtes POST (ex. admin) en HTTPS.
+CSRF_TRUSTED_ORIGINS = env.list('DJANGO_CSRF_TRUSTED_ORIGINS', default=[])
 
 
 # Application definition
@@ -39,6 +43,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -69,9 +74,9 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 
 # Database
-# MySQL 8.0 en production (Ionos) — voir /schema.md pour le détail des tables.
+# MySQL 8.0 managé (Railway) en production — voir /schema.md pour le détail des tables.
 # Driver PyMySQL choisi plutôt que mysqlclient : pur Python, pas de dépendance
-# système à compiler, plus simple à installer en local comme sur l'hébergement.
+# système à compiler, plus simple à installer en local comme sur Railway.
 
 DATABASES = {
     'default': {
@@ -104,9 +109,16 @@ USE_TZ = True
 
 
 # Static files
+# Servis directement par WhiteNoise via Gunicorn — pas de Nginx séparé sur Railway.
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+STORAGES = {
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+    },
+}
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
