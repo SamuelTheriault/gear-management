@@ -12,6 +12,7 @@ Aucune information sensible (mot de passe, clé API, secret OAuth, credential de
 
 - Toutes les valeurs sensibles (identifiants Google OAuth, mot de passe / connection string de la base de données, futures clés API) doivent être stockées dans des **variables d'environnement**, généralement via un fichier `.env` sur le serveur.
 - Le fichier `.env` ne doit **jamais** être commité dans Git — ajouter `.env` au `.gitignore` dès la création du dépôt.
+- En production (Railway), ces variables se configurent directement dans le dashboard Railway (onglet Variables du service) — pas de fichier `.env` sur un serveur à gérer. Même principe : jamais en dur dans le code ni dans un commit.
 - Fournir un fichier `.env.example` (sans valeurs réelles) dans le dépôt pour documenter quelles variables sont attendues, ex. :
   ```
   DB_HOST=
@@ -29,13 +30,13 @@ Aucune information sensible (mot de passe, clé API, secret OAuth, credential de
 
 ## 3. Base de données
 
-- Utiliser des identifiants distincts pour l'environnement de développement/local et pour la production sur Ionos.
-- Le compte utilisé par l'application ne devrait avoir que les permissions nécessaires (lecture/écriture sur les tables du projet), pas un accès administrateur complet au serveur MySQL/PostgreSQL.
-- Si Ionos le permet, restreindre l'accès à la base de données par IP (seulement le serveur applicatif, pas un accès public ouvert).
+- Utiliser des identifiants distincts pour l'environnement de développement/local et pour la production sur Railway.
+- Le compte utilisé par l'application ne devrait avoir que les permissions nécessaires (lecture/écriture sur les tables du projet), pas un accès administrateur complet au service MySQL managé.
+- Le MySQL managé Railway n'est accessible que via son réseau interne/URL de connexion fournie — pas d'exposition publique par défaut, à vérifier dans les paramètres du service.
 
 ## 4. Transport
 
-- HTTPS obligatoire en production — Ionos fournit généralement un certificat SSL/TLS (souvent via Let's Encrypt) à activer sur le domaine.
+- HTTPS obligatoire en production — Railway fournit un certificat SSL/TLS automatique sur son domaine par défaut (et sur un domaine custom si tu en ajoutes un).
 - Aucune donnée sensible (identifiants, tokens) ne doit transiter en clair (HTTP simple).
 
 ## 5. Dépôt de code

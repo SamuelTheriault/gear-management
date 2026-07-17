@@ -12,7 +12,7 @@ Application web interne pour la gestion de l'inventaire de matériel de producti
 | Backend / API | Python (Django) + Django REST Framework | Node.js écarté : l'hébergement web standard Ionos ne supporte pas de runtime Node.js en production (build-time seulement, pour du statique). Django est nativement supporté (offre Python Hosting Ionos). Gère la logique métier et la détection de conflits |
 | Frontend | Vue 3 (Vite) | Choisi plutôt que React pour la simplicité de maintenance en solo, hors développement à temps plein |
 | Authentification | Google OAuth 2.0 | Plus simple et plus robuste qu'un login maison ; délègue la sécurité des mots de passe à Google |
-| Hébergement | Ionos | Hébergeur déjà utilisé par Samuel ; MySQL 8.0 confirmé disponible ; hébergement web standard (pas de Cloud Server) |
+| Hébergement | Railway (PaaS) | Ionos écarté : l'hébergement web standard ne fait tourner Python qu'en CGI (confirmé via `info.py`), impraticable pour un vrai process Django/Gunicorn persistant. Railway offre déploiement Git automatique et MySQL managé sans gestion serveur (alternative envisagée : VPS Ionos avec gestion manuelle Nginx/Gunicorn/MySQL, écartée pour éviter la charge d'administration système) |
 
 ## 3. Authentification
 

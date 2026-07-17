@@ -32,7 +32,7 @@ Application web interne pour gérer l'inventaire de matériel de production (son
 - **Backend** : Python/Django + Django REST Framework — Node.js écarté car l'hébergement web standard Ionos ne supporte pas de runtime Node.js en production (seulement build-time pour du statique, ou via un Cloud Server séparé)
 - **Frontend** : Vue 3 (Vite) — choisi pour la simplicité de maintenance en solo plutôt que React
 - **Authentification** : Google OAuth 2.0
-- **Hébergement** : Ionos (hébergement web standard / offre Python Hosting)
+- **Hébergement** : Railway (PaaS — déploiement Git, MySQL managé) — remplace Ionos pour l'app, après avoir confirmé que l'hébergement web standard Ionos ne fait tourner Python qu'en CGI (voir `info.py`), impraticable pour Django en production. Ionos reste possible pour d'autres usages (domaine, email) si besoin.
 
 ## Tables principales
 
@@ -42,12 +42,14 @@ Détails complets des champs → voir `schema.md`.
 
 ## Prochaines étapes suggérées
 
-1. ~~Base de données confirmée : MySQL 8.0 chez Ionos.~~ ✅
+1. ~~Base de données confirmée : MySQL 8.0.~~ ✅
 2. ~~Stack backend/frontend confirmée (Django + Vue).~~ ✅ (2026-07-16)
 3. ~~Structure de repo initiale (backend Django + frontend Vue scaffoldés, Git init).~~ ✅ (2026-07-16)
-4. Mettre en place le projet Google Cloud pour l'OAuth.
-5. Modèles Django + migrations pour les 8 tables de `schema.md`.
-6. Squelette API (endpoints) + logique de détection de conflits.
+4. ~~Hébergement confirmé : Railway (Ionos écarté pour l'app, CGI seulement).~~ ✅ (2026-07-17)
+5. Créer le compte/projet Railway, connecter le repo Git, provisionner MySQL managé.
+6. Mettre en place le projet Google Cloud pour l'OAuth.
+7. Modèles Django + migrations pour les 8 tables de `schema.md`.
+8. Squelette API (endpoints) + logique de détection de conflits.
 
 ## Fichiers produits
 
