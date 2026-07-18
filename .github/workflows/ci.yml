@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend (Django)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Installer les dépendances (+ outils de lint)
+        run: pip install -r requirements-dev.txt
+
+      - name: Créer un .env minimal pour le CI (SQLite, pas de secrets)
+        run: |
+          cat <<'EOF' > .env
+          DJANGO_SECRET_KEY=ci-only-not-used-in-prod
+          DJANGO_DEBUG=False
+          DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1
+          EOF
+
+      - name: Docstrings obligatoires (modules/classes/fonctions publics — voir .flake8)
+        run: flake8 .
+
+      - name: Vérifier qu'aucune migration n'est manquante
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Django system check
+        run: python manage.py check
+
+      - name: Tests
+        run: python manage.py test
+
+  frontend:
+    name: Frontend (Vue)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      - name: Build
+        run: npm run build

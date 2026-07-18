@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# Outils de développement uniquement (lint) — pas installés en production.
+flake8==7.3.0
+flake8-docstrings==1.7.0
