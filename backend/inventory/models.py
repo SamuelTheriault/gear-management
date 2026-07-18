@@ -12,7 +12,15 @@ recapitulatif_projet.md, étape 7 — hors scope de cette tâche). Le lien entre
 les deux (le cas échéant) sera fait lors de l'implémentation de l'OAuth.
 """
 
+from django.core.validators import RegexValidator
 from django.db import models
+
+#: Valide un code couleur hexadécimal complet (#RRGGBB), tel qu'attendu par
+#: un `<input type="color">` HTML — utilisé par `Department.color`.
+hex_color_validator = RegexValidator(
+    regex=r'^#[0-9A-Fa-f]{6}$',
+    message="La couleur doit être un code hexadécimal complet, ex. #3B82F6.",
+)
 
 
 class User(models.Model):
@@ -56,12 +64,28 @@ class Venue(models.Model):
 
 
 class Department(models.Model):
-    """Départements responsables du matériel (son, éclairage, décor, costumes...)."""
+    """Départements responsables du matériel (son, éclairage, décor, costumes...).
+
+    `color` (ajouté le 2026-07-18 à la demande de Samuel) permet d'associer une
+    couleur générale à chaque département depuis les réglages ; cette couleur
+    est ensuite reflétée dans les sous-sections où le département apparaît
+    (ex. `department_color` exposé sur `MaterialSerializer` pour colorer le
+    matériel par département dans les listes/plannings du frontend, une fois
+    celui-ci branché à l'API).
+    """
+
+    DEFAULT_COLOR = '#64748B'  # gris ardoise neutre — utilisé tant qu'aucune couleur n'est choisie
 
     name = models.CharField(max_length=255)
     contact_name = models.CharField(max_length=255, blank=True)
     contact_info = models.CharField(max_length=255, blank=True)
     notes = models.TextField(blank=True)
+    color = models.CharField(
+        max_length=7,
+        default=DEFAULT_COLOR,
+        validators=[hex_color_validator],
+        help_text="Code hexadécimal complet (#RRGGBB) utilisé pour identifier visuellement ce département dans l'app.",
+    )
 
     class Meta:
         db_table = 'departments'

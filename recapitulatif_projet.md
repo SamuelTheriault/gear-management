@@ -7,7 +7,7 @@ Application web interne pour gérer l'inventaire de matériel de production (son
 ## Ce que l'application fait (V1)
 
 - **Inventaire de matériel** : chaque item a un nom, une description, une catégorie (type d'usage), un statut (propriété ou location générale), un lieu d'entreposage, un département responsable (voir ci-dessous), et peut être organisé en hiérarchie parent/enfant (ex. "Kit Audio" → "Micro sans fil", "Ampli", "Haut-parleurs").
-- **Départements (`departments`)** : table avec nom du département et contact responsable, associée à chaque matériel — permet de savoir qui doit apporter quoi sur le lieu du spectacle.
+- **Départements (`departments`)** : table avec nom du département, contact responsable, et une couleur d'identification (`color`, code hex #RRGGBB) — associée à chaque matériel, permet de savoir qui doit apporter quoi sur le lieu du spectacle. La couleur est reflétée dans les sous-sections où le département apparaît (matériel, assignations show/matériel) via `department_color` dans l'API, pour un code couleur cohérent dans tout le planning une fois le frontend branché.
 - **Lieux (`venues`)** : table dédiée pour centraliser adresses et contacts des salles/sites, référencée par les spectacles et le matériel.
 - **Fiches spectacles (`shows`)** : titre, lieu, type (répétition/représentation), horaires. Une fenêtre effective d'utilisation est calculée automatiquement en ajoutant 1h avant et 1h après (buffers configurables) pour couvrir le transport et l'installation.
 - **Assignation de matériel** (`show_materials`) : associer du matériel de l'inventaire à un spectacle, avec possibilité d'indiquer si ce matériel est loué spécifiquement pour ce spectacle (`is_rental` + `rental_vendor`).

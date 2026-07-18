@@ -45,6 +45,9 @@ Départements responsables du matériel (ex. son, éclairage, décor, costumes).
 | contact_name | VARCHAR | Nom du responsable |
 | contact_info | VARCHAR | Téléphone / email du responsable |
 | notes | TEXT | Notes diverses |
+| color | VARCHAR(7) | Code couleur hexadécimal (#RRGGBB, ex. #64748B par défaut) — identifie visuellement le département ; reflétée dans les sous-sections où il apparaît (voir note ci-dessous) |
+
+**Couleur reflétée dans les sous-sections** : `color` n'est stockée que sur `departments`, mais l'API expose un champ dérivé en lecture seule `department_color` sur `MaterialSerializer` et `ShowMaterialSerializer` (source : `department.color`), pour que le frontend puisse colorer le matériel et les assignations show/matériel de façon cohérente sans requête supplémentaire.
 
 ---
 

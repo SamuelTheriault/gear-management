@@ -45,11 +45,11 @@ class VenueSerializer(serializers.ModelSerializer):
 
 
 class DepartmentSerializer(serializers.ModelSerializer):
-    """Sérialise les départements responsables du matériel."""
+    """Sérialise les départements responsables du matériel, couleur d'identification incluse."""
 
     class Meta:
         model = Department
-        fields = ['id', 'name', 'contact_name', 'contact_info', 'notes']
+        fields = ['id', 'name', 'contact_name', 'contact_info', 'notes', 'color']
 
 
 class MaterialSerializer(serializers.ModelSerializer):
@@ -58,6 +58,9 @@ class MaterialSerializer(serializers.ModelSerializer):
     parent_material_name = serializers.CharField(source='parent_material.name', read_only=True, default=None)
     venue_name = serializers.CharField(source='venue.name', read_only=True, default=None)
     department_name = serializers.CharField(source='department.name', read_only=True, default=None)
+    # Couleur du département, dupliquée ici en lecture seule pour que le frontend puisse
+    # colorer le matériel sans requête supplémentaire (voir `Department.color`).
+    department_color = serializers.CharField(source='department.color', read_only=True, default=None)
     component_ids = serializers.PrimaryKeyRelatedField(source='components', many=True, read_only=True)
 
     class Meta:
@@ -66,7 +69,7 @@ class MaterialSerializer(serializers.ModelSerializer):
             'id', 'name', 'description', 'category',
             'parent_material', 'parent_material_name',
             'venue', 'venue_name',
-            'department', 'department_name',
+            'department', 'department_name', 'department_color',
             'ownership_status', 'notes', 'component_ids',
         ]
 
@@ -108,12 +111,16 @@ class ShowMaterialSerializer(serializers.ModelSerializer):
     force = serializers.BooleanField(write_only=True, required=False, default=False)
     show_title = serializers.CharField(source='show.title', read_only=True)
     material_name = serializers.CharField(source='material.name', read_only=True)
+    # Reflète la couleur du département responsable du matériel (voir `Department.color`)
+    # jusque dans les assignations show/matériel, pour un code couleur cohérent dans tout
+    # le planning de production.
+    department_color = serializers.CharField(source='material.department.color', read_only=True, default=None)
 
     class Meta:
         model = ShowMaterial
         fields = [
             'id', 'show', 'material', 'is_rental', 'rental_vendor',
-            'show_title', 'material_name', 'force',
+            'show_title', 'material_name', 'department_color', 'force',
         ]
 
     def validate(self, attrs):

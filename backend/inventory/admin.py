@@ -8,6 +8,7 @@ comme modèles autonomes — voir note en bas de fichier.
 """
 
 from django.contrib import admin
+from django.utils.html import format_html
 
 from .models import (
     Department,
@@ -40,10 +41,19 @@ class VenueAdmin(admin.ModelAdmin):
 
 @admin.register(Department)
 class DepartmentAdmin(admin.ModelAdmin):
-    """Admin pour les départements responsables du matériel."""
+    """Admin pour les départements responsables du matériel, couleur d'identification incluse."""
 
-    list_display = ('name', 'contact_name', 'contact_info')
+    list_display = ('name', 'color_swatch', 'contact_name', 'contact_info')
     search_fields = ('name', 'contact_name')
+
+    @admin.display(description='Couleur')
+    def color_swatch(self, obj):
+        """Aperçu visuel de `Department.color` dans la liste admin."""
+        return format_html(
+            '<span style="display:inline-block;width:14px;height:14px;'
+            'border-radius:3px;border:1px solid #0002;background:{}"></span> {}',
+            obj.color, obj.color,
+        )
 
 
 class MaterialInline(admin.TabularInline):
