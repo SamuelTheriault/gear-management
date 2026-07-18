@@ -229,7 +229,29 @@ class TransportSerializer(serializers.ModelSerializer):
         # garde la valeur déjà présente dans attrs (fournie par le client, ou
         # le défaut Settings.default_transport_duration_minutes appliqué par
         # le champ du modèle).
-        if 'estimated_duration_minutes' not in self.initial_data and origin and destination:
+        #
+        # À la création (self.instance is None) : on estime dès que le client
+        # ne fournit pas de durée explicite.
+        # À la mise à jour (PATCH/PUT) : on ne réestime QUE si l'origine ou la
+        # destination a réellement changé dans cette requête — sinon un PATCH
+        # qui ne touche ni au trajet ni à la durée (ex. changer `notes` ou
+        # `technician`) écraserait silencieusement une durée déjà correcte
+        # (éventuellement corrigée à la main) par un nouvel appel réseau à
+        # chaque édition. Trouvé en revue de code (2026-07-18) avant le merge.
+        no_explicit_duration = 'estimated_duration_minutes' not in self.initial_data
+        if self.instance is None:
+            should_estimate = no_explicit_duration
+        else:
+            origin_changed = (
+                'origin_venue' in self.initial_data and origin and origin.id != self.instance.origin_venue_id
+            )
+            destination_changed = (
+                'destination_venue' in self.initial_data
+                and destination and destination.id != self.instance.destination_venue_id
+            )
+            should_estimate = no_explicit_duration and (origin_changed or destination_changed)
+
+        if should_estimate and origin and destination:
             estimated = estimate_travel_minutes(origin, destination)
             if estimated is not None:
                 attrs['estimated_duration_minutes'] = estimated

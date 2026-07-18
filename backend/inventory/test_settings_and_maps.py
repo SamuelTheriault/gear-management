@@ -192,6 +192,49 @@ class TransportAutoEstimationTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['estimated_duration_minutes'], 60)
 
+    @patch('inventory.serializers.estimate_travel_minutes')
+    def test_unrelated_patch_does_not_recompute_or_overwrite_duration(self, mock_estimate):
+        """Régression (trouvée en revue de code, 2026-07-18) : un PATCH qui ne
+        touche ni au trajet ni à la durée ne doit ni rappeler l'API Google ni
+        écraser une durée déjà en place (ex. corrigée manuellement)."""
+        mock_estimate.return_value = 22
+        create_response = self.client.post('/api/transports/', {
+            'show': self.show.id, 'transport_type': 'delivery',
+            'origin_venue': self.origin.id, 'destination_venue': self.destination.id,
+            'scheduled_datetime': _dt(8).isoformat(), 'estimated_duration_minutes': 45,
+        }, format='json')
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        transport_id = create_response.data['id']
+        mock_estimate.assert_not_called()  # durée fournie explicitement à la création
+
+        mock_estimate.return_value = 999
+        patch_response = self.client.patch(f'/api/transports/{transport_id}/', {
+            'notes': 'mise à jour sans rapport avec le trajet',
+        }, format='json')
+        self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(patch_response.data['estimated_duration_minutes'], 45)
+        mock_estimate.assert_not_called()
+
+    @patch('inventory.serializers.estimate_travel_minutes')
+    def test_patch_changing_destination_venue_recomputes_duration(self, mock_estimate):
+        """Si le trajet change réellement (nouvelle destination) et qu'aucune
+        durée explicite n'est fournie, on doit recalculer."""
+        mock_estimate.return_value = 22
+        create_response = self.client.post('/api/transports/', {
+            'show': self.show.id, 'transport_type': 'delivery',
+            'origin_venue': self.origin.id, 'destination_venue': self.destination.id,
+            'scheduled_datetime': _dt(8).isoformat(),
+        }, format='json')
+        transport_id = create_response.data['id']
+
+        other_destination = Venue.objects.create(name="Autre salle", latitude=45.50, longitude=-73.58)
+        mock_estimate.return_value = 37
+        patch_response = self.client.patch(f'/api/transports/{transport_id}/', {
+            'destination_venue': other_destination.id,
+        }, format='json')
+        self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(patch_response.data['estimated_duration_minutes'], 37)
+
 
 class SettingsAPITests(TestCase):
     """Vérifie l'endpoint singleton `GET`/`PATCH` sur `/api/settings/`."""
