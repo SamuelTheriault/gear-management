@@ -1,0 +1,16 @@
+[flake8]
+# Portée volontairement restreinte : on ne vérifie ici QUE la présence de
+# docstrings sur les modules, classes et fonctions publics (pas de style
+# pycodestyle/pyflakes général — ce n'est pas l'objectif de ce job).
+#
+# D100 : docstring manquante dans un module public
+# D101 : docstring manquante dans une classe publique
+# D103 : docstring manquante dans une fonction publique
+#
+# Volontairement exclus : D102 (méthode publique — trop bruyant sur les
+# méthodes DRF standard comme validate()/create()), D104 (package/__init__.py
+# — jamais documentés dans ce projet), D105/D106/D107 (méthodes magiques,
+# classes imbriquées comme Meta, __init__).
+select = D100,D101,D103
+docstring-convention = pep257
+exclude = migrations,venv,__pycache__,.venv
