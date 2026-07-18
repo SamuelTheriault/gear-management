@@ -20,6 +20,7 @@ Aucune information sensible (mot de passe, clé API, secret OAuth, credential de
   DB_PASSWORD=
   GOOGLE_CLIENT_ID=
   GOOGLE_CLIENT_SECRET=
+  GOOGLE_MAPS_API_KEY=
   ```
 
 ## 2. Authentification (Google OAuth)
@@ -27,6 +28,12 @@ Aucune information sensible (mot de passe, clé API, secret OAuth, credential de
 - Le `Client Secret` généré dans Google Cloud Console est une valeur sensible — même traitement que les autres secrets (variable d'environnement, jamais en dur).
 - Les tokens de session utilisateur doivent être gérés **côté serveur** (session store ou cookie `httpOnly` + `secure`), jamais stockés dans le `localStorage` ou `sessionStorage` du navigateur — ces derniers sont accessibles par n'importe quel script si l'app a une faille XSS.
 - Restreindre les URIs de redirection autorisées dans la config Google Cloud à ton domaine réel une fois en production.
+
+## 2bis. Clé API Google Routes (calcul de trajet, 2026-07-18)
+
+- Clé distincte du `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` de l'OAuth — même principe : variable d'environnement (`GOOGLE_MAPS_API_KEY`), jamais en dur, jamais dans un fichier markdown ou un commit.
+- La restreindre dans Google Cloud Console à "Routes API" uniquement (pas d'accès aux autres API Google Maps), pour limiter les dégâts si la clé fuit malgré tout.
+- Si la variable est absente ou vide, `inventory/maps.py` désactive simplement l'estimation automatique (pas d'erreur, pas de crash) — donc pas de pression à la configurer dans l'urgence.
 
 ## 3. Base de données
 
@@ -50,6 +57,7 @@ Aucune information sensible (mot de passe, clé API, secret OAuth, credential de
 | Élément | Où ça va |
 |---|---|
 | Mot de passe base de données | Variable d'environnement (`.env`, non versionné) |
-| Google Client ID / Secret | Variable d'environnement (`.env`, non versionné) |
+| Google Client ID / Secret (OAuth) | Variable d'environnement (`.env`, non versionné) |
+| Clé API Google Routes (`GOOGLE_MAPS_API_KEY`) | Variable d'environnement (`.env`, non versionné), restreinte à "Routes API" dans Google Cloud |
 | Tokens de session | Cookie `httpOnly` + `secure`, côté serveur |
 | Fichiers markdown de doc (`schema.md`, etc.) | Aucune valeur sensible — structure et logique seulement |

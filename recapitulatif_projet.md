@@ -8,13 +8,15 @@ Application web interne pour gérer l'inventaire de matériel de production (son
 
 - **Inventaire de matériel** : chaque item a un nom, une description, une catégorie (type d'usage), un statut (propriété ou location générale), un lieu d'entreposage, un département responsable (voir ci-dessous), et peut être organisé en hiérarchie parent/enfant (ex. "Kit Audio" → "Micro sans fil", "Ampli", "Haut-parleurs").
 - **Départements (`departments`)** : table avec nom du département et contact responsable, associée à chaque matériel — permet de savoir qui doit apporter quoi sur le lieu du spectacle.
-- **Lieux (`venues`)** : table dédiée pour centraliser adresses et contacts des salles/sites, référencée par les spectacles et le matériel.
+- **Lieux (`venues`)** : table dédiée pour centraliser adresses et contacts des salles/sites, référencée par les spectacles et le matériel. Un lieu peut être marqué `is_storage` (entrepôt) — voir note dédiée plus bas. Coordonnées GPS optionnelles (`latitude`/`longitude`) pour le calcul automatique de temps de trajet — voir note "Google Maps".
 - **Fiches spectacles (`shows`)** : titre, lieu, type (répétition/représentation), horaires. Une fenêtre effective d'utilisation est calculée automatiquement en ajoutant 1h avant et 1h après (buffers configurables) pour couvrir le transport et l'installation.
 - **Assignation de matériel** (`show_materials`) : associer du matériel de l'inventaire à un spectacle, avec possibilité d'indiquer si ce matériel est loué spécifiquement pour ce spectacle (`is_rental` + `rental_vendor`).
 - **Techniciens** (`technicians`) et leur assignation aux spectacles (`show_technicians`).
-- **Détection de conflits** : le système vérifie automatiquement, pour le matériel comme pour les techniciens, qu'il n'y a pas de chevauchement entre les fenêtres effectives de deux spectacles différents.
+- **Déplacements (`transports`)** : livraison/ramassage de matériel entre deux lieux pour un spectacle donné, avec heure prévue, durée estimée et technicien assigné — voir note dédiée plus bas.
+- **Détection de conflits** : le système vérifie automatiquement, pour le matériel comme pour les techniciens, qu'il n'y a pas de chevauchement entre les fenêtres effectives de deux spectacles différents — et, depuis l'ajout de `transports`, qu'un technicien n'est pas sur un spectacle en même temps qu'il fait un déplacement.
 - **Listes par technicien** : possibilité de sortir une liste de matériel et d'horaire propre à chaque technicien, utile sur le terrain.
 - **Authentification** : login via Google OAuth (pas de gestion de mot de passe custom), avec rôles admin / viewer.
+- **Réglages globaux (`settings`)** : buffers par défaut, durée de transport par défaut, format d'affichage des dates/heures — ajustables via l'API sans redéploiement, en prévision d'une page de réglages côté frontend. Voir note dédiée plus bas.
 
 ## Ce qui a été volontairement exclu de la V1
 
@@ -36,7 +38,7 @@ Application web interne pour gérer l'inventaire de matériel de production (son
 
 ## Tables principales
 
-`users` · `venues` · `departments` · `materials` (avec hiérarchie parent/enfant + catégorie + département responsable) · `shows` · `show_materials` · `technicians` · `show_technicians`
+`users` · `venues` · `departments` · `materials` (avec hiérarchie parent/enfant + catégorie + département responsable) · `shows` · `show_materials` · `technicians` · `show_technicians` · `transports` (ajoutée le 2026-07-18) · `settings` (singleton, ajoutée le 2026-07-18)
 
 Détails complets des champs → voir `schema.md`.
 
@@ -47,8 +49,8 @@ Détails complets des champs → voir `schema.md`.
 3. ~~Structure de repo initiale (backend Django + frontend Vue scaffoldés, Git init).~~ ✅ (2026-07-16)
 4. ~~Hébergement confirmé : Railway (Ionos écarté pour l'app, CGI seulement).~~ ✅ (2026-07-17)
 5. ~~Compte/projet Railway créé, repo connecté, MySQL managé provisionné, déploiement fonctionnel (Django + Gunicorn + WhiteNoise, `/admin/login/` accessible en HTTPS).~~ ✅ (2026-07-18) — domaine : `gear-management-production.up.railway.app`
-6. Créer un superutilisateur Django pour valider l'accès admin.
-7. Mettre en place le projet Google Cloud pour l'OAuth.
+6. ~~Créer un superutilisateur Django pour valider l'accès admin.~~ ✅ (2026-07-18) — validé local (venv) et Railway (`railway run`).
+7. ~~Mettre en place le projet Google Cloud pour l'OAuth + intégration Django.~~ ✅ (2026-07-18) — voir note ci-dessous
 8. ~~Modèles Django + migrations pour les 8 tables de `schema.md`.~~ ✅ (2026-07-17) — voir note ci-dessous
 9. ~~Squelette API (endpoints) + logique de détection de conflits.~~ ✅ (2026-07-17) — voir note ci-dessous
 
@@ -58,13 +60,32 @@ Railway ne supporte pas la phase `release:` du `Procfile` (style Heroku) — `co
 et `migrate` doivent tourner dans la commande `web:` elle-même (voir `backend/Procfile`),
 sinon les fichiers statiques et les migrations ne s'appliquent jamais en production.
 
-### Note sur le modèle `User` (étape 8)
+### Note sur le modèle `User` (étape 8, lien complété à l'étape 7)
 
 Le modèle `inventory.User` (table `users`, champs email/name/role/created_at) est un
 modèle applicatif distinct du superutilisateur Django (`django.contrib.auth.models.User`)
-qui sert à `/admin/login/`. Ce dernier reste inchangé. `inventory.User` représente les
-comptes qui se connecteront éventuellement via Google OAuth (étape 7, toujours en
-suspens) — le lien entre les deux (le cas échéant) sera fait à ce moment-là.
+qui sert à `/admin/login/`. Ce dernier reste inchangé. Depuis l'étape 7, `inventory.User`
+porte un champ `django_user` (nullable) qui le relie au compte Django créé par
+django-allauth lors du premier login Google réussi — voir `architecture.md` section 3
+et `schema.md` pour le détail. Le provisioning (création automatique, rôle `viewer` par
+défaut) est géré par un signal (`backend/inventory/signals.py`), couvert par 4 tests
+unitaires.
+
+### Note sur l'étape 7 (Google Cloud OAuth)
+
+- Librairies : `django-allauth` + `dj-rest-auth`, flux "classique" côté serveur
+  (session cookie Django, pas de JWT/token) — détail complet dans `architecture.md`
+  section 3.
+- Projet Google Cloud en mode "Testing" (liste de test users = première barrière
+  d'accès, pas de vérification Google requise pour un usage interne).
+- Revue de code faite (`code-reviewer`) : tests verts (19/19), flake8 propre, aucun
+  secret en dur. Deux corrections apportées suite à la revue : `DEBUG` par défaut
+  passé à `False` (au lieu de `True`) pour ne pas affaiblir silencieusement
+  `SESSION_COOKIE_SECURE`/`CSRF_COOKIE_SECURE` si la variable Railway est oubliée, et
+  documentation du flux OAuth ajoutée dans `architecture.md` (référence qui manquait
+  depuis `schema.md`).
+- **Pas encore testé de bout en bout dans un vrai navigateur** — ça se fera à l'étape
+  10, en même temps que le branchement du bouton de login côté Vue.
 
 ### Note sur la logique de conflits (étape 9)
 
@@ -85,6 +106,93 @@ suspens) — le lien entre les deux (le cas échéant) sera fait à ce moment-l�
   faites avec `force: true`).
 - 15 tests unitaires (`inventory/tests.py`) couvrent la logique de conflit et
   le comportement bloquant/override de l'API — tous passent.
+
+### Note sur l'entreposage (2026-07-18)
+
+- Besoin exprimé par Samuel : un emplacement d'entreposage (entrepôt), où le
+  matériel est "disponible" et ne doit jamais entrer en conflit avec les
+  autres lieux/spectacles.
+- Décision (parmi 3 options proposées) : réutiliser `Show`/`show_materials`
+  tel quel plutôt que créer une nouvelle table. Ajout d'un champ
+  `Venue.is_storage` (booléen) ; convention `event_type = 'storage'` sur
+  `Show` pour l'étiquette (voir `schema.md` section 2 et 5).
+- Effet sur `conflicts.py` : un `Show` dont le `venue.is_storage = true` est
+  totalement ignoré par la détection de conflit **matériel**, dans les deux
+  sens (assigner à l'entrepôt ne bloque jamais ; une assignation existante à
+  l'entrepôt ne bloque jamais un vrai spectacle ailleurs). Les techniciens
+  restent soumis à la détection normale même sur un `Show` d'entrepôt (voir
+  `architecture.md` section 4).
+- 8 nouveaux tests (4 sur l'exemption d'entreposage + non-régression sur les
+  conflits réels) — suite complète à 23 tests, tous passent.
+- **Bug pré-existant découvert et corrigé au passage** : `requirements.txt`
+  ne listait pas `requests`/`PyJWT`/`cryptography`, requis dès le démarrage
+  de Django par le provider Google de `django-allauth`
+  (`SocialAccountConfig.ready()` importe le provider même sans requête réelle).
+  Sans ce correctif, tout déploiement Railway aurait planté immédiatement
+  (`ModuleNotFoundError`) — à vérifier au prochain déploiement.
+
+### Note sur les déplacements (2026-07-18)
+
+- Besoin exprimé par Samuel : savoir quand le matériel est livré/ramassé vers
+  un lieu de spectacle, et quel technicien s'en charge — rien de tout ça
+  n'existait dans les 8 tables initiales.
+- Décision (parmi 3 options proposées) : nouvelle table dédiée `transports`
+  (show, type livraison/ramassage, lieu de départ, lieu d'arrivée, heure
+  prévue, durée estimée, technicien nullable) plutôt que des champs sur `Show`
+  ou que de traiter un déplacement comme un `Show` à part entière — voir
+  `schema.md` section 9.
+- Un technicien assigné à un `transport` est désormais croisé, dans les deux
+  sens, avec ses assignations `show_technicians` : impossible de le mettre sur
+  un spectacle ET un déplacement qui se chevauchent (voir `conflicts.py`,
+  `_technician_commitments`, et `architecture.md` section 4c). Comportement
+  bloquant + `force: true`, identique aux autres assignations.
+- Pas d'exemption d'entreposage ici : contrairement au matériel qui dort en
+  entrepôt, un déplacement est toujours un vrai engagement de temps pour le
+  technicien qui le fait.
+- 8 nouveaux tests (logique + API) — suite complète à 31 tests, tous passent.
+  flake8 propre.
+
+### Note sur les réglages globaux et le calcul de trajet (2026-07-18)
+
+- Samuel a demandé (1) une page de réglages pour ajuster des variables comme
+  les buffers par défaut et le format des dates, et (2) si géolocaliser les
+  lieux pour calculer automatiquement les temps de trajet valait la peine.
+- **Réglages** : nouvelle table singleton `settings` (une seule ligne,
+  forcée par le modèle) — `default_buffer_before_minutes`,
+  `default_buffer_after_minutes`, `default_transport_duration_minutes`,
+  `date_format`, `time_format` (champs choisis par Samuel parmi une liste
+  proposée ; "langue de l'interface" a été proposée mais pas retenue).
+  Exposée sur `GET`/`PATCH /api/settings/`. Les valeurs par défaut de `Show`
+  et `Transport` sont maintenant lues dynamiquement depuis cette table
+  (callables Django) plutôt que codées en dur à 60 minutes — voir
+  `architecture.md` section 4bis. La vraie "page" de réglages viendra avec le
+  frontend Vue (pas encore branché) ; le backend est prêt dès maintenant.
+- **Calcul de trajet** : recommandation donnée avec chiffres à l'appui —
+  l'API Google Routes ("Compute Routes", un trajet simple) offre 10 000
+  requêtes gratuites/mois, largement suffisant à ce volume d'usage ; le vrai
+  coût est la mise en place (compte Google Cloud + facturation + clé API),
+  pas l'argent. Samuel a choisi d'implémenter maintenant plutôt que la
+  version "coordonnées seulement, sans appel API".
+  - `venues.latitude`/`longitude` (saisie manuelle, pas de géocodage
+    automatique d'adresse pour l'instant).
+  - `inventory/maps.py` appelle l'API et retourne `None` silencieusement
+    (avec un log) si la clé API est absente, les coordonnées manquantes, ou
+    l'appel en échec — fallback sur `settings.default_transport_duration_minutes`.
+  - `TransportSerializer` appelle cette estimation automatiquement à la
+    création, seulement si le client ne fournit pas `estimated_duration_minutes`.
+  - **Étapes manuelles restantes côté Samuel, à faire avant que ça
+    fonctionne réellement** : créer/choisir un projet Google Cloud, activer
+    la facturation (carte enregistrée, mais le tier gratuit couvre l'usage
+    prévu), activer "Routes API", créer une clé API restreinte à cette API,
+    puis l'ajouter comme `GOOGLE_MAPS_API_KEY` dans les Variables Railway (et
+    `backend/.env` en local — voir `.env.example`). Tant que ce n'est pas
+    fait, l'app fonctionne normalement, juste sans l'auto-estimation.
+- **Bug de config découvert et corrigé au passage** : `backend/.env.example`
+  existait déjà mais ne documentait pas encore `GOOGLE_MAPS_API_KEY` — ajouté,
+  ainsi que la section correspondante dans `security.md`.
+- 17 nouveaux tests (`inventory/test_settings_and_maps.py` — singleton,
+  defaults dynamiques, service maps mocké, auto-estimation, endpoint
+  settings) — suite complète à 48 tests, tous passent. flake8 propre.
 
 ## Fichiers produits
 
