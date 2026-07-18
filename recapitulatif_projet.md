@@ -46,10 +46,17 @@ Détails complets des champs → voir `schema.md`.
 2. ~~Stack backend/frontend confirmée (Django + Vue).~~ ✅ (2026-07-16)
 3. ~~Structure de repo initiale (backend Django + frontend Vue scaffoldés, Git init).~~ ✅ (2026-07-16)
 4. ~~Hébergement confirmé : Railway (Ionos écarté pour l'app, CGI seulement).~~ ✅ (2026-07-17)
-5. Créer le compte/projet Railway, connecter le repo Git, provisionner MySQL managé.
-6. Mettre en place le projet Google Cloud pour l'OAuth.
-7. Modèles Django + migrations pour les 8 tables de `schema.md`.
-8. Squelette API (endpoints) + logique de détection de conflits.
+5. ~~Compte/projet Railway créé, repo connecté, MySQL managé provisionné, déploiement fonctionnel (Django + Gunicorn + WhiteNoise, `/admin/login/` accessible en HTTPS).~~ ✅ (2026-07-18) — domaine : `gear-management-production.up.railway.app`
+6. Créer un superutilisateur Django pour valider l'accès admin.
+7. Mettre en place le projet Google Cloud pour l'OAuth.
+8. Modèles Django + migrations pour les 8 tables de `schema.md`.
+9. Squelette API (endpoints) + logique de détection de conflits.
+
+### Notes de déploiement (piège à retenir)
+
+Railway ne supporte pas la phase `release:` du `Procfile` (style Heroku) — `collectstatic`
+et `migrate` doivent tourner dans la commande `web:` elle-même (voir `backend/Procfile`),
+sinon les fichiers statiques et les migrations ne s'appliquent jamais en production.
 
 ## Fichiers produits
 
