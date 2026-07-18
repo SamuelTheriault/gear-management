@@ -1,4 +1,4 @@
-# Architecture technique — Application de gestion de matériel
+# Architecture technique — RégiStock
 
 ## 1. Vue d'ensemble
 

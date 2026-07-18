@@ -1,4 +1,6 @@
-# Gestion de matériel
+# RégiStock
+
+*(nom de code technique du repo/dossier : `gear-management`)*
 
 Application web interne pour gérer l'inventaire de matériel de production
 (son, éclairage, rigging, mobilier), l'assigner aux spectacles/répétitions,
@@ -17,11 +19,11 @@ Documentation fonctionnelle et technique complète :
 
 | Couche | Techno |
 |---|---|
-| Base de données | MySQL 8.0 (Ionos) — SQLite en local par défaut |
+| Base de données | MySQL 8.0 managé (Railway) — SQLite en local par défaut |
 | Backend / API | Django 5.2 + Django REST Framework |
 | Frontend | Vue 3 (Vite) |
-| Authentification | Google OAuth 2.0 |
-| Hébergement | Ionos (hébergement web standard — pas de runtime Node.js, d'où le choix Django) |
+| Authentification | Google OAuth 2.0 (à venir — admin Django en mot de passe pour l'instant) |
+| Hébergement | Railway (Ionos écarté : pas de runtime Node/WSGI persistant sur l'hébergement web standard) |
 
 ## Structure du repo
 
@@ -48,7 +50,7 @@ python manage.py runserver
 
 Sans configurer `DB_ENGINE`/`DB_HOST` dans `.env`, le projet retombe
 automatiquement sur SQLite — pratique pour développer sans accès à MySQL.
-Pour se connecter à MySQL (Ionos ou local), remplir les variables `DB_*`
+Pour se connecter à MySQL (Railway ou local), remplir les variables `DB_*`
 dans `.env` (voir `security.md`).
 
 ### Frontend
@@ -62,9 +64,16 @@ npm run dev
 Le serveur de dev Vite tourne par défaut sur `http://localhost:5173` — déjà
 autorisé dans `CORS_ALLOWED_ORIGINS` côté Django.
 
+## Déploiement
+
+Backend déployé sur Railway : `https://gear-management-production.up.railway.app`.
+Piège à retenir : Railway ne supporte pas la phase `release:` du `Procfile`
+(style Heroku) — `collectstatic` et `migrate` tournent dans la commande
+`web:` elle-même (voir `backend/Procfile`).
+
 ## État actuel
 
-Structure de base en place (backend Django + frontend Vue scaffoldés,
-vérifiés). Pas encore de modèles, migrations, ni endpoints — prochaine
-étape à définir avec Samuel (voir `agents_tools.md` pour le cycle de dev
-prévu).
+Backend déployé et fonctionnel sur Railway (MySQL managé connecté, admin
+Django accessible). Frontend Vue scaffoldé mais vide. Pas encore de modèles
+métier (les 8 tables de `schema.md`) ni d'endpoints — prochaine étape (voir
+`recapitulatif_projet.md`).

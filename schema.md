@@ -1,6 +1,6 @@
-# Schéma de base de données — Gestion de matériel
+# Schéma de base de données — RégiStock
 
-> Base de données relationnelle : MySQL 8.0 (ou MariaDB 10, compatible) — confirmé disponible chez Ionos.
+> Base de données relationnelle : MySQL 8.0 managé (Railway).
 > Scope : gestion interne de l'inventaire de matériel, assignation aux spectacles/répétitions, assignation des techniciens, détection de conflits d'horaire. Pas de gestion des communications vendors ni de tâches/notes (gérées dans d'autres outils).
 
 ---

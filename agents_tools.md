@@ -1,4 +1,4 @@
-# Outils et agents — Développement de l'application de gestion de matériel
+# Outils et agents — Développement de RégiStock
 
 Ce document liste les outils/agents nécessaires à chaque phase du projet, du développement jusqu'à la documentation continue. À utiliser comme feuille de route de coordination (développement prévu avec Claude / Claude Code).
 
@@ -10,9 +10,9 @@ Ce document liste les outils/agents nécessaires à chaque phase du projet, du d
 ## 2. Développement
 
 - **Claude Code** : génération du backend (API), du frontend, et des migrations de base de données à partir du schéma défini.
-- **Base de données** : MySQL (ou PostgreSQL) — à confirmer selon l'offre Ionos. Utiliser des migrations versionnées (ex. Prisma, Sequelize, ou Django ORM selon le stack choisi) plutôt que des scripts SQL manuels, pour faciliter les ajustements futurs.
-- **Contrôle de version** : Git (dépôt à héberger sur GitHub ou équivalent), pour permettre le suivi des changements de code et le retour en arrière si besoin.
-- **Environnement local de dev** : à mettre en place avant déploiement sur Ionos, pour tester sans affecter l'environnement de production.
+- **Base de données** : MySQL 8.0 managé (Railway). Migrations Django versionnées (pas de scripts SQL manuels), pour faciliter les ajustements futurs.
+- **Contrôle de version** : Git, dépôt privé sur GitHub (`SamuelTheriault/gear-management`), pour permettre le suivi des changements de code et le retour en arrière si besoin.
+- **Environnement local de dev** : SQLite en fallback automatique si `DB_ENGINE` n'est pas configuré — pratique pour tester sans affecter la production Railway.
 
 ## 3. Débogage / Tests
 
@@ -36,5 +36,5 @@ Ce document liste les outils/agents nécessaires à chaque phase du projet, du d
 2. Implémentation (Claude Code).
 3. Tests ciblés sur la logique de conflits.
 4. Review de code + review fonctionnelle.
-5. Déploiement sur Ionos.
+5. Déploiement sur Railway (automatique depuis `main`).
 6. Mise à jour de la documentation.

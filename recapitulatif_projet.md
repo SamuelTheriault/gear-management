@@ -1,4 +1,4 @@
-# Récapitulatif — Application de gestion de matériel
+# Récapitulatif — RégiStock (application de gestion de matériel)
 
 ## Objectif du projet
 
