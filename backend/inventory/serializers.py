@@ -1,10 +1,16 @@
 """
-Serializers DRF — squelette API pour les 8 tables de schema.md.
+Serializers DRF — squelette API pour les tables de schema.md (8 tables initiales
++ `transports` et `settings`, ajoutées le 2026-07-18).
 
-La validation de conflit (voir conflicts.py) vit dans les serializers des deux
-tables d'association (`ShowMaterialSerializer`, `ShowTechnicianSerializer`) :
-bloquant par défaut, avec possibilité de forcer via le champ `force` (décision
-prise avec Samuel le 2026-07-17 — voir recapitulatif_projet.md).
+La validation de conflit (voir conflicts.py) vit dans les serializers des
+tables d'association/engagement (`ShowMaterialSerializer`,
+`ShowTechnicianSerializer`, `TransportSerializer`) : bloquant par défaut, avec
+possibilité de forcer via le champ `force` (décision prise avec Samuel le
+2026-07-17 — voir recapitulatif_projet.md).
+
+`TransportSerializer` pré-remplit aussi `estimated_duration_minutes` via
+l'API Google Routes (`inventory/maps.py`) quand le client ne le fournit pas
+explicitement et que les deux venues ont des coordonnées GPS.
 """
 
 from rest_framework import serializers
@@ -12,16 +18,20 @@ from rest_framework import serializers
 from .conflicts import (
     get_material_conflicts,
     get_technician_conflicts,
+    get_transport_conflicts,
     serialize_material_conflict,
     serialize_technician_conflict,
 )
+from .maps import estimate_travel_minutes
 from .models import (
     Department,
     Material,
+    Settings,
     Show,
     ShowMaterial,
     ShowTechnician,
     Technician,
+    Transport,
     User,
     Venue,
 )
@@ -37,11 +47,14 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class VenueSerializer(serializers.ModelSerializer):
-    """Sérialise les lieux (salles, théâtres, sites de représentation)."""
+    """Sérialise les lieux (salles, théâtres, sites de représentation, entrepôts)."""
 
     class Meta:
         model = Venue
-        fields = ['id', 'name', 'address', 'contact_name', 'contact_info', 'notes']
+        fields = [
+            'id', 'name', 'address', 'contact_name', 'contact_info', 'notes',
+            'is_storage', 'latitude', 'longitude',
+        ]
 
 
 class DepartmentSerializer(serializers.ModelSerializer):
@@ -175,3 +188,82 @@ class ShowTechnicianSerializer(serializers.ModelSerializer):
                     ),
                 })
         return attrs
+
+
+class TransportSerializer(serializers.ModelSerializer):
+    """Sérialise un déplacement (livraison/ramassage) de matériel, avec
+    validation de conflit bloquante sur le technicien assigné (voir `force`).
+
+    Un technicien assigné à un `Transport` est croisé avec ses engagements
+    `ShowTechnician` ET ses autres `Transport` — voir `conflicts.py`.
+    """
+
+    force = serializers.BooleanField(write_only=True, required=False, default=False)
+    show_title = serializers.CharField(source='show.title', read_only=True)
+    origin_venue_name = serializers.CharField(source='origin_venue.name', read_only=True)
+    destination_venue_name = serializers.CharField(source='destination_venue.name', read_only=True)
+    technician_name = serializers.CharField(source='technician.name', read_only=True, default=None)
+    effective_end = serializers.DateTimeField(read_only=True)
+
+    class Meta:
+        model = Transport
+        fields = [
+            'id', 'show', 'show_title', 'transport_type',
+            'origin_venue', 'origin_venue_name',
+            'destination_venue', 'destination_venue_name',
+            'scheduled_datetime', 'estimated_duration_minutes', 'effective_end',
+            'technician', 'technician_name', 'notes', 'force',
+        ]
+
+    def validate(self, attrs):
+        origin = attrs.get('origin_venue', getattr(self.instance, 'origin_venue', None))
+        destination = attrs.get('destination_venue', getattr(self.instance, 'destination_venue', None))
+        if origin and destination and origin.id == destination.id:
+            raise serializers.ValidationError({
+                'destination_venue': "Doit être différent du lieu de départ.",
+            })
+
+        # Auto-estimation via Google Routes : seulement si le client n'a pas
+        # explicitement fourni de durée, et que les deux venues ont des
+        # coordonnées GPS. Sinon estimate_travel_minutes renvoie None et on
+        # garde la valeur déjà présente dans attrs (fournie par le client, ou
+        # le défaut Settings.default_transport_duration_minutes appliqué par
+        # le champ du modèle).
+        if 'estimated_duration_minutes' not in self.initial_data and origin and destination:
+            estimated = estimate_travel_minutes(origin, destination)
+            if estimated is not None:
+                attrs['estimated_duration_minutes'] = estimated
+
+        force = attrs.pop('force', False)
+        technician = attrs.get('technician', getattr(self.instance, 'technician', None))
+        scheduled_datetime = attrs.get('scheduled_datetime', getattr(self.instance, 'scheduled_datetime', None))
+        duration = attrs.get(
+            'estimated_duration_minutes',
+            getattr(self.instance, 'estimated_duration_minutes', None),
+        )
+
+        if technician and scheduled_datetime and duration and not force:
+            exclude_id = self.instance.id if self.instance else None
+            conflicts = get_transport_conflicts(scheduled_datetime, duration, technician, exclude_id=exclude_id)
+            if conflicts:
+                raise serializers.ValidationError({
+                    'conflicts': [serialize_technician_conflict(c) for c in conflicts],
+                    'detail': (
+                        "Chevauchement d'horaire détecté pour ce technicien (spectacle ou "
+                        "autre déplacement). "
+                        'Ajoute "force": true dans la requête pour forcer l\'assignation '
+                        'malgré le conflit.'
+                    ),
+                })
+        return attrs
+
+
+class SettingsSerializer(serializers.ModelSerializer):
+    """Sérialise le singleton `Settings` (voir `views.SettingsView` — pas de liste ni de création)."""
+
+    class Meta:
+        model = Settings
+        fields = [
+            'default_buffer_before_minutes', 'default_buffer_after_minutes',
+            'default_transport_duration_minutes', 'date_format', 'time_format',
+        ]

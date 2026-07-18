@@ -1,40 +1,49 @@
 """
-Squelette API — ViewSets DRF pour les 8 tables de schema.md.
+Squelette API — ViewSets DRF pour les tables de schema.md (8 tables initiales
++ `transports` et `settings`, ajoutées le 2026-07-18).
 
 CRUD standard sur chaque modèle. La logique de conflits vit dans les
-serializers (ShowMaterialSerializer, ShowTechnicianSerializer) et dans
-conflicts.py ; ShowViewSet expose en plus une action `conflicts` en lecture
-seule pour lister les chevauchements actuellement en place sur un spectacle
-(utile pour repérer les assignations faites avec `force: true`).
+serializers (ShowMaterialSerializer, ShowTechnicianSerializer,
+TransportSerializer) et dans conflicts.py ; ShowViewSet expose en plus une
+action `conflicts` en lecture seule pour lister les chevauchements
+actuellement en place sur un spectacle — matériel, techniciens, ET
+déplacements (utile pour repérer les assignations faites avec `force: true`).
+`SettingsView` est une vue singleton (pas de liste/création) pour la future
+page de réglages du frontend.
 """
 
-from rest_framework import viewsets
+from rest_framework import generics, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from .conflicts import (
     get_material_conflicts,
     get_technician_conflicts,
+    get_transport_conflicts,
     serialize_material_conflict,
     serialize_technician_conflict,
 )
 from .models import (
     Department,
     Material,
+    Settings,
     Show,
     ShowMaterial,
     ShowTechnician,
     Technician,
+    Transport,
     User,
     Venue,
 )
 from .serializers import (
     DepartmentSerializer,
     MaterialSerializer,
+    SettingsSerializer,
     ShowMaterialSerializer,
     ShowSerializer,
     ShowTechnicianSerializer,
     TechnicianSerializer,
+    TransportSerializer,
     UserSerializer,
     VenueSerializer,
 )
@@ -77,8 +86,9 @@ class ShowViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'])
     def conflicts(self, request, pk=None):
         """Liste les chevauchements actuellement en place pour ce spectacle
-        (matériel et techniciens), y compris les assignations créées avec
-        `force: true` malgré un conflit signalé au moment de la création."""
+        (matériel, techniciens et déplacements), y compris les assignations
+        créées avec `force: true` malgré un conflit signalé au moment de la
+        création."""
         show = self.get_object()
 
         material_conflicts = []
@@ -89,6 +99,17 @@ class ShowViewSet(viewsets.ModelViewSet):
         technician_conflicts = []
         for st in show.show_technicians.select_related('technician').all():
             for conflict in get_technician_conflicts(show, st.technician, exclude_id=st.id):
+                technician_conflicts.append(serialize_technician_conflict(conflict))
+
+        for transport in show.transports.select_related('technician').all():
+            if transport.technician_id is None:
+                continue
+            for conflict in get_transport_conflicts(
+                transport.scheduled_datetime,
+                transport.estimated_duration_minutes,
+                transport.technician,
+                exclude_id=transport.id,
+            ):
                 technician_conflicts.append(serialize_technician_conflict(conflict))
 
         return Response({
@@ -116,3 +137,23 @@ class ShowTechnicianViewSet(viewsets.ModelViewSet):
 
     queryset = ShowTechnician.objects.select_related('show', 'technician').all()
     serializer_class = ShowTechnicianSerializer
+
+
+class TransportViewSet(viewsets.ModelViewSet):
+    """CRUD standard sur les déplacements (livraison/ramassage), validation de conflit dans le serializer."""
+
+    queryset = Transport.objects.select_related('show', 'origin_venue', 'destination_venue', 'technician').all()
+    serializer_class = TransportSerializer
+
+
+class SettingsView(generics.RetrieveUpdateAPIView):
+    """Vue singleton pour les réglages globaux (`GET`/`PUT`/`PATCH` sur `/api/settings/`).
+
+    Pas de liste ni de création : il n'existe toujours qu'une seule ligne de
+    réglages, chargée (et créée si absente) via `Settings.load()`.
+    """
+
+    serializer_class = SettingsSerializer
+
+    def get_object(self):
+        return Settings.load()

@@ -2,9 +2,12 @@
 Configuration de l'admin Django — Gestion de matériel.
 
 Sert de back-office minimal (accès `/admin/login/`) pour consulter et
-modifier les 8 tables de `schema.md` sans passer par l'API DRF. `ShowMaterial`
+modifier les tables de `schema.md` sans passer par l'API DRF. `ShowMaterial`
 et `ShowTechnician` sont éditées en inline sur `Show`/`Material` plutôt que
-comme modèles autonomes — voir note en bas de fichier.
+comme modèles autonomes — voir note en bas de fichier. `Transport` a, lui, un
+admin autonome (`TransportAdmin`) : contrairement aux tables d'association,
+une vue globale des déplacements (filtrable par technicien/date) a une valeur
+propre pour la planification logistique.
 """
 
 from django.contrib import admin
@@ -12,10 +15,12 @@ from django.contrib import admin
 from .models import (
     Department,
     Material,
+    Settings,
     Show,
     ShowMaterial,
     ShowTechnician,
     Technician,
+    Transport,
     User,
     Venue,
 )
@@ -32,9 +37,10 @@ class UserAdmin(admin.ModelAdmin):
 
 @admin.register(Venue)
 class VenueAdmin(admin.ModelAdmin):
-    """Admin pour les lieux (salles, théâtres, sites de représentation)."""
+    """Admin pour les lieux (salles, théâtres, sites de représentation, entrepôts)."""
 
-    list_display = ('name', 'address', 'contact_name', 'contact_info')
+    list_display = ('name', 'address', 'contact_name', 'contact_info', 'is_storage', 'latitude', 'longitude')
+    list_filter = ('is_storage',)
     search_fields = ('name', 'address', 'contact_name')
 
 
@@ -83,9 +89,17 @@ class ShowTechnicianInline(admin.TabularInline):
     autocomplete_fields = ('technician',)
 
 
+class TransportInline(admin.TabularInline):
+    """Déplacements (livraison/ramassage) affichés directement sur la fiche du spectacle."""
+
+    model = Transport
+    extra = 0
+    autocomplete_fields = ('origin_venue', 'destination_venue', 'technician')
+
+
 @admin.register(Show)
 class ShowAdmin(admin.ModelAdmin):
-    """Admin pour les fiches spectacles, avec matériel et techniciens assignés en inline."""
+    """Admin pour les fiches spectacles, avec matériel, techniciens et déplacements assignés en inline."""
 
     list_display = (
         'title', 'venue', 'event_type', 'start_datetime', 'end_datetime',
@@ -94,7 +108,7 @@ class ShowAdmin(admin.ModelAdmin):
     list_filter = ('event_type', 'venue')
     search_fields = ('title', 'notes')
     autocomplete_fields = ('venue',)
-    inlines = [ShowMaterialInline, ShowTechnicianInline]
+    inlines = [ShowMaterialInline, ShowTechnicianInline, TransportInline]
 
 
 @admin.register(Technician)
@@ -103,6 +117,40 @@ class TechnicianAdmin(admin.ModelAdmin):
 
     list_display = ('name', 'specialty', 'contact_info')
     search_fields = ('name', 'specialty')
+
+
+@admin.register(Transport)
+class TransportAdmin(admin.ModelAdmin):
+    """Admin pour les déplacements (livraison/ramassage) — vue globale utile pour la logistique."""
+
+    list_display = (
+        'show', 'transport_type', 'origin_venue', 'destination_venue',
+        'scheduled_datetime', 'estimated_duration_minutes', 'technician',
+    )
+    list_filter = ('transport_type', 'technician', 'origin_venue', 'destination_venue')
+    search_fields = ('show__title', 'notes')
+    autocomplete_fields = ('show', 'origin_venue', 'destination_venue', 'technician')
+
+
+@admin.register(Settings)
+class SettingsAdmin(admin.ModelAdmin):
+    """Admin pour les réglages globaux — singleton (une seule ligne, non supprimable).
+
+    `has_add_permission` empêche de créer une deuxième ligne ; `has_delete_permission`
+    empêche de supprimer la seule qui existe (voir aussi `Settings.delete()`,
+    qui est déjà un no-op par sécurité).
+    """
+
+    list_display = (
+        'default_buffer_before_minutes', 'default_buffer_after_minutes',
+        'default_transport_duration_minutes', 'date_format', 'time_format',
+    )
+
+    def has_add_permission(self, request):
+        return not Settings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 # ShowMaterial et ShowTechnician sont gérés via les inlines ci-dessus (sur Show
