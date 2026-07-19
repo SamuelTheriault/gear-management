@@ -17,6 +17,7 @@ Application web interne pour gérer l'inventaire de matériel de production (son
 - **Listes par technicien** : possibilité de sortir une liste de matériel et d'horaire propre à chaque technicien, utile sur le terrain.
 - **Authentification** : login via Google OAuth (pas de gestion de mot de passe custom), avec rôles admin / viewer.
 - **Réglages globaux (`settings`)** : buffers par défaut, durée de transport par défaut, format d'affichage des dates/heures — ajustables via l'API sans redéploiement, en prévision d'une page de réglages côté frontend. Voir note dédiée plus bas.
+- **Productions (`projects`)** : Samuel travaille en parallèle sur plusieurs productions sans rien en commun (compagnies de danse, musées, biennales) — `venues`, `materials`, `technicians` et `shows` sont isolés par production, `departments` et `settings` restent communs à toutes. Bascule d'une production à l'autre entièrement côté frontend (à venir), sans recharger/exporter de fichier. Voir note dédiée plus bas.
 
 ## Ce qui a été volontairement exclu de la V1
 
@@ -38,7 +39,7 @@ Application web interne pour gérer l'inventaire de matériel de production (son
 
 ## Tables principales
 
-`users` · `venues` · `departments` · `materials` (avec hiérarchie parent/enfant + catégorie + département responsable) · `shows` · `show_materials` · `technicians` · `show_technicians` · `transports` (ajoutée le 2026-07-18) · `settings` (singleton, ajoutée le 2026-07-18)
+`users` · `venues` · `departments` · `materials` (avec hiérarchie parent/enfant + catégorie + département responsable) · `shows` · `show_materials` · `technicians` · `show_technicians` · `transports` (ajoutée le 2026-07-18) · `settings` (singleton, ajoutée le 2026-07-18) · `projects` (ajoutée le 2026-07-19 — isole `venues`/`materials`/`technicians`/`shows`)
 
 Détails complets des champs → voir `schema.md`.
 
@@ -56,6 +57,7 @@ Détails complets des champs → voir `schema.md`.
 10. ~~Couleur d'identification par département (`Department.color`).~~ ✅ (2026-07-18) — voir note ci-dessous
 11. ~~Quantité de matériel (`Material.quantity` / `ShowMaterial.quantity`).~~ ✅ (2026-07-19) — voir note ci-dessous
 12. ~~Matériel désactivable (`Material.is_active`).~~ ✅ (2026-07-19) — voir note ci-dessous
+13. ~~Isolation par projet (`Project`) pour travailler sur plusieurs productions en parallèle.~~ ✅ (2026-07-19) — voir note ci-dessous
 
 ### Notes de déploiement (piège à retenir)
 
@@ -264,6 +266,46 @@ unitaires.
   par `is_active`, qui ne fait que masquer de l'affichage, sans toucher à la
   détection de conflits.
 - 4 nouveaux tests — suite complète à 74 tests, tous passent. flake8 propre.
+
+### Note sur l'isolation par projet (étape 13, 2026-07-19)
+
+- Besoin exprimé par Samuel : pouvoir travailler sur différents projets (des
+  productions n'ayant rien en commun entre elles — différentes compagnies de
+  danse, musées, biennales comme CINARS/Parcours Danse/Furies) et basculer de
+  l'un à l'autre sans avoir à charger/sauvegarder un fichier à chaque fois.
+- Clarifié avec Samuel avant de toucher au schéma (changement structurant
+  touchant presque toutes les tables) : un « projet » = une production
+  précise (pas une compagnie/client au sens large) ; seuls les `departments`
+  restent communs à tous les projets (Samuel a explicitement choisi de NE PAS
+  partager le matériel ni les techniciens entre projets, malgré la tentation
+  évidente pour son propre inventoire personnel) ; pas de vue « tous projets
+  confondus » pour l'instant ; aucune vraie donnée n'existait encore en prod,
+  donc migration directe sans backfill.
+- Nouveau modèle `Project` (nom, client, statut actif/archivé, dates, notes) —
+  singleton non requis, autant de projets que nécessaire. `venue`, `material`,
+  `technician` et `show` portent chacun un FK `project` obligatoire
+  (`on_delete=PROTECT`) — voir `schema.md` section 11 et `architecture.md`
+  section 4quater.
+- Validation bloquante ajoutée aux serializers concernés (`_same_project()`)
+  pour empêcher tout mélange entre deux projets : matériel/technicien d'un
+  autre projet assigné à un spectacle, lieu d'un autre projet sur un
+  spectacle ou un déplacement, matériel parent ou lieu d'entreposage d'un
+  autre projet.
+- Filtrage optionnel `?project=<id>` ajouté aux listes concernées
+  (`ProjectFilteredMixin`) — pas obligatoire pour ne pas casser l'accès API
+  brut, mais prévu pour être systématiquement utilisé par le frontend une
+  fois branché.
+- Suppression d'un projet bloquée tant qu'il lui reste des données
+  (`PROTECT`) — la voie normale pour retirer une production terminée est de
+  l'archiver (`status='archived'`), pas de la supprimer.
+- Développée sur une branche dédiée (`feature/production-scoping`), après
+  avoir d'abord fait merger deux petites branches en attente
+  (`feature/department-colors`, `feature/material-quantity`) pour partir
+  d'une base propre — recommandation faite et suivie avant de commencer un
+  changement aussi structurant.
+- 13 nouveaux tests (isolation, filtrage, blocage cross-projet, département
+  resté global, suppression protégée) — suite complète à 87 tests, tous
+  passent. flake8 propre.
 
 ## Fichiers produits
 

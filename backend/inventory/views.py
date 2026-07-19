@@ -26,6 +26,7 @@ from .conflicts import (
 from .models import (
     Department,
     Material,
+    Project,
     Settings,
     Show,
     ShowMaterial,
@@ -38,6 +39,7 @@ from .models import (
 from .serializers import (
     DepartmentSerializer,
     MaterialSerializer,
+    ProjectSerializer,
     SettingsSerializer,
     ShowMaterialSerializer,
     ShowSerializer,
@@ -49,6 +51,24 @@ from .serializers import (
 )
 
 
+class ProjectFilteredMixin:
+    """Filtre optionnel `?project=<id>` sur les listes — voir `Project` (models.py).
+
+    Isolation par projet : chaque production isolée (venues, matériel,
+    techniciens, spectacles) n'apparaît que quand on précise son id. Optionnel
+    plutôt qu'obligatoire pour ne pas casser l'accès admin/API brut ; le
+    frontend (une fois branché) passera toujours ce paramètre pour refléter
+    le projet actif sélectionné par Samuel.
+    """
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        project_id = self.request.query_params.get('project')
+        if project_id:
+            queryset = queryset.filter(project_id=project_id)
+        return queryset
+
+
 class UserViewSet(viewsets.ModelViewSet):
     """CRUD standard sur les comptes applicatifs."""
 
@@ -56,10 +76,17 @@ class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
 
 
-class VenueViewSet(viewsets.ModelViewSet):
-    """CRUD standard sur les lieux."""
+class ProjectViewSet(viewsets.ModelViewSet):
+    """CRUD standard sur les productions — voir `Project` (models.py)."""
 
-    queryset = Venue.objects.all()
+    queryset = Project.objects.all()
+    serializer_class = ProjectSerializer
+
+
+class VenueViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
+    """CRUD standard sur les lieux, filtrable par projet (`?project=<id>`)."""
+
+    queryset = Venue.objects.select_related('project').all()
     serializer_class = VenueSerializer
 
 
@@ -70,8 +97,8 @@ class DepartmentViewSet(viewsets.ModelViewSet):
     serializer_class = DepartmentSerializer
 
 
-class MaterialViewSet(viewsets.ModelViewSet):
-    """CRUD standard sur l'inventaire de matériel.
+class MaterialViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
+    """CRUD standard sur l'inventaire de matériel, filtrable par projet (`?project=<id>`).
 
     Le matériel désactivé (`is_active=False`, ex. un vieux rideau qu'on
     n'utilise plus) est masqué de la liste par défaut (`GET /api/materials/`)
@@ -83,7 +110,7 @@ class MaterialViewSet(viewsets.ModelViewSet):
     référencent un matériel entretemps désactivé. Décision du 2026-07-19.
     """
 
-    queryset = Material.objects.select_related('parent_material', 'venue', 'department').all()
+    queryset = Material.objects.select_related('project', 'parent_material', 'venue', 'department').all()
     serializer_class = MaterialSerializer
 
     def get_queryset(self):
@@ -97,10 +124,11 @@ class MaterialViewSet(viewsets.ModelViewSet):
         return queryset
 
 
-class ShowViewSet(viewsets.ModelViewSet):
-    """CRUD standard sur les fiches spectacles, plus l'action `conflicts` en lecture seule."""
+class ShowViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
+    """CRUD standard sur les fiches spectacles, filtrable par projet (`?project=<id>`),
+    plus l'action `conflicts` en lecture seule."""
 
-    queryset = Show.objects.select_related('venue').all()
+    queryset = Show.objects.select_related('project', 'venue').all()
     serializer_class = ShowSerializer
 
     @action(detail=True, methods=['get'])
@@ -145,10 +173,10 @@ class ShowMaterialViewSet(viewsets.ModelViewSet):
     serializer_class = ShowMaterialSerializer
 
 
-class TechnicianViewSet(viewsets.ModelViewSet):
-    """CRUD standard sur les techniciens."""
+class TechnicianViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
+    """CRUD standard sur les techniciens, filtrable par projet (`?project=<id>`)."""
 
-    queryset = Technician.objects.all()
+    queryset = Technician.objects.select_related('project').all()
     serializer_class = TechnicianSerializer
 
 

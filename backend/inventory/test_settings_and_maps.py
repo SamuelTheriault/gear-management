@@ -14,7 +14,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from .maps import estimate_travel_minutes
-from .models import Settings, Show, Transport, Venue
+from .models import Project, Settings, Show, Transport, Venue
 
 
 def _dt(hour, day=1):
@@ -58,25 +58,26 @@ class SettingsDrivenDefaultsTests(TestCase):
     valeur par défaut, plutôt qu'une constante codée en dur."""
 
     def setUp(self):
+        self.project = Project.objects.create(name="Projet test")
         settings_row = Settings.load()
         settings_row.default_buffer_before_minutes = 45
         settings_row.default_buffer_after_minutes = 20
         settings_row.default_transport_duration_minutes = 90
         settings_row.save()
-        self.venue = Venue.objects.create(name="Salle test")
+        self.venue = Venue.objects.create(project=self.project, name="Salle test")
 
     def test_show_uses_settings_default_buffers(self):
         show = Show.objects.create(
-            title="Show", venue=self.venue, event_type="performance",
+            project=self.project, title="Show", venue=self.venue, event_type="performance",
             start_datetime=_dt(14), end_datetime=_dt(16),
         )
         self.assertEqual(show.buffer_before_minutes, 45)
         self.assertEqual(show.buffer_after_minutes, 20)
 
     def test_transport_uses_settings_default_duration(self):
-        storage_venue = Venue.objects.create(name="Entrepôt", is_storage=True)
+        storage_venue = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
         show = Show.objects.create(
-            title="Show", venue=self.venue, event_type="performance",
+            project=self.project, title="Show", venue=self.venue, event_type="performance",
             start_datetime=_dt(14), end_datetime=_dt(16),
         )
         transport = Transport.objects.create(
@@ -88,7 +89,7 @@ class SettingsDrivenDefaultsTests(TestCase):
 
     def test_explicit_value_overrides_settings_default(self):
         show = Show.objects.create(
-            title="Show", venue=self.venue, event_type="performance",
+            project=self.project, title="Show", venue=self.venue, event_type="performance",
             start_datetime=_dt(14), end_datetime=_dt(16),
             buffer_before_minutes=5,
         )
@@ -99,8 +100,9 @@ class MapsServiceTests(TestCase):
     """Teste `inventory.maps.estimate_travel_minutes` en isolant l'appel HTTP réel."""
 
     def setUp(self):
-        self.origin = Venue.objects.create(name="Entrepôt", latitude=45.55, longitude=-73.6)
-        self.destination = Venue.objects.create(name="Salle", latitude=45.52, longitude=-73.56)
+        self.project = Project.objects.create(name="Projet test")
+        self.origin = Venue.objects.create(project=self.project, name="Entrepôt", latitude=45.55, longitude=-73.6)
+        self.destination = Venue.objects.create(project=self.project, name="Salle", latitude=45.52, longitude=-73.56)
 
     @override_settings(GOOGLE_MAPS_API_KEY='')
     def test_returns_none_without_api_key(self):
@@ -108,7 +110,7 @@ class MapsServiceTests(TestCase):
 
     @override_settings(GOOGLE_MAPS_API_KEY='fake-key')
     def test_returns_none_without_coordinates(self):
-        venue_no_coords = Venue.objects.create(name="Sans coordonnées")
+        venue_no_coords = Venue.objects.create(project=self.project, name="Sans coordonnées")
         self.assertIsNone(estimate_travel_minutes(self.origin, venue_no_coords))
 
     @override_settings(GOOGLE_MAPS_API_KEY='fake-key')
@@ -144,16 +146,17 @@ class TransportAutoEstimationTests(TestCase):
     pré-remplir `estimated_duration_minutes` quand le client ne le fournit pas."""
 
     def setUp(self):
+        self.project = Project.objects.create(name="Projet test")
         self.user = DjangoUser.objects.create_superuser('admin', 'admin@test.com', 'testpass123')
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 
         self.origin = Venue.objects.create(
-            name="Entrepôt", is_storage=True, latitude=45.55, longitude=-73.6,
+            project=self.project, name="Entrepôt", is_storage=True, latitude=45.55, longitude=-73.6,
         )
-        self.destination = Venue.objects.create(name="Salle", latitude=45.52, longitude=-73.56)
+        self.destination = Venue.objects.create(project=self.project, name="Salle", latitude=45.52, longitude=-73.56)
         self.show = Show.objects.create(
-            title="Show", venue=self.destination, event_type="performance",
+            project=self.project, title="Show", venue=self.destination, event_type="performance",
             start_datetime=_dt(14), end_datetime=_dt(16),
         )
 
@@ -227,7 +230,7 @@ class TransportAutoEstimationTests(TestCase):
         }, format='json')
         transport_id = create_response.data['id']
 
-        other_destination = Venue.objects.create(name="Autre salle", latitude=45.50, longitude=-73.58)
+        other_destination = Venue.objects.create(project=self.project, name="Autre salle", latitude=45.50, longitude=-73.58)
         mock_estimate.return_value = 37
         patch_response = self.client.patch(f'/api/transports/{transport_id}/', {
             'destination_venue': other_destination.id,
@@ -240,6 +243,7 @@ class SettingsAPITests(TestCase):
     """Vérifie l'endpoint singleton `GET`/`PATCH` sur `/api/settings/`."""
 
     def setUp(self):
+        self.project = Project.objects.create(name="Projet test")
         self.user = DjangoUser.objects.create_superuser('admin', 'admin@test.com', 'testpass123')
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
