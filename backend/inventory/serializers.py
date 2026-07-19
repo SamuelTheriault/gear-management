@@ -83,7 +83,7 @@ class MaterialSerializer(serializers.ModelSerializer):
             'parent_material', 'parent_material_name',
             'venue', 'venue_name',
             'department', 'department_name', 'department_color',
-            'ownership_status', 'quantity', 'notes', 'component_ids',
+            'ownership_status', 'quantity', 'is_active', 'notes', 'component_ids',
         ]
 
     def validate_parent_material(self, value):

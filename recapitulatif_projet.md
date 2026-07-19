@@ -55,6 +55,7 @@ Détails complets des champs → voir `schema.md`.
 9. ~~Squelette API (endpoints) + logique de détection de conflits.~~ ✅ (2026-07-17) — voir note ci-dessous
 10. ~~Couleur d'identification par département (`Department.color`).~~ ✅ (2026-07-18) — voir note ci-dessous
 11. ~~Quantité de matériel (`Material.quantity` / `ShowMaterial.quantity`).~~ ✅ (2026-07-19) — voir note ci-dessous
+12. ~~Matériel désactivable (`Material.is_active`).~~ ✅ (2026-07-19) — voir note ci-dessous
 
 ### Notes de déploiement (piège à retenir)
 
@@ -241,6 +242,28 @@ unitaires.
 - 13 nouveaux tests (capacité, hiérarchie, API, non-régression du
   comportement binaire pour `quantity = 1`) — suite complète à 70 tests, tous
   passent. flake8 propre.
+
+### Note sur le matériel désactivable (étape 12, 2026-07-19)
+
+- Besoin exprimé par Samuel, après avoir exploré puis abandonné une piste
+  plus complexe (un lieu "Magasin" immuable + suivi automatique du lieu
+  actuel du matériel — jugée trop compliquée pour la valeur ajoutée) : juste
+  pouvoir désactiver un matériel qu'il n'utilise plus (ex. un vieux rideau)
+  sans le supprimer, pour ne plus l'avoir dans son inventaire courant.
+- `Material.is_active` (booléen, défaut `true`). `GET /api/materials/` ne
+  retourne que le matériel actif par défaut ; `?include_inactive=true` pour
+  tout revoir. La consultation par id (`GET /api/materials/{id}/`) reste
+  toujours accessible peu importe le statut, pour ne pas casser l'affichage
+  des assignations existantes qui référencent un matériel entretemps
+  désactivé.
+- Admin Django : colonne + filtre `is_active`, actions groupées "Activer"/
+  "Désactiver" sur plusieurs items à la fois.
+- Confirmé au passage avec Samuel : la protection contre le double-usage
+  reste entièrement basée sur le calendrier (fenêtres effectives des
+  `shows`, voir `architecture.md` section 4) — ce point n'est pas affecté
+  par `is_active`, qui ne fait que masquer de l'affichage, sans toucher à la
+  détection de conflits.
+- 4 nouveaux tests — suite complète à 74 tests, tous passent. flake8 propre.
 
 ## Fichiers produits
 

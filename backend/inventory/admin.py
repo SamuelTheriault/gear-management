@@ -76,11 +76,22 @@ class MaterialInline(admin.TabularInline):
 class MaterialAdmin(admin.ModelAdmin):
     """Admin pour l'inventaire de matériel, avec hiérarchie parent/enfant en inline."""
 
-    list_display = ('name', 'category', 'quantity', 'parent_material', 'venue', 'department', 'ownership_status')
-    list_filter = ('category', 'ownership_status', 'venue', 'department')
+    list_display = (
+        'name', 'category', 'quantity', 'is_active', 'parent_material', 'venue', 'department', 'ownership_status',
+    )
+    list_filter = ('is_active', 'category', 'ownership_status', 'venue', 'department')
     search_fields = ('name', 'description')
     autocomplete_fields = ('parent_material', 'venue', 'department')
     inlines = [MaterialInline]
+    actions = ['mark_active', 'mark_inactive']
+
+    @admin.action(description="Activer le matériel sélectionné")
+    def mark_active(self, request, queryset):
+        queryset.update(is_active=True)
+
+    @admin.action(description="Désactiver le matériel sélectionné")
+    def mark_inactive(self, request, queryset):
+        queryset.update(is_active=False)
 
 
 class ShowMaterialInline(admin.TabularInline):

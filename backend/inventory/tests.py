@@ -264,6 +264,49 @@ class MaterialQuantityHierarchyValidationTests(TestCase):
         self.assertEqual(response.data['quantity'], 20)
 
 
+class MaterialActiveFlagTests(TestCase):
+    """Vérifie `Material.is_active` (ajouté le 2026-07-19) : masqué de la
+    liste par défaut, visible avec `?include_inactive=true`, toujours
+    consultable individuellement par id peu importe son statut."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+
+    def test_material_defaults_to_active(self):
+        material = Material.objects.create(name="Console son", category="audio")
+        self.assertTrue(material.is_active)
+
+    def test_inactive_material_excluded_from_list_by_default(self):
+        Material.objects.create(name="Rideau", category="decor", is_active=False)
+        active = Material.objects.create(name="Console son", category="audio")
+
+        response = self.client.get('/api/materials/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = [m['name'] for m in response.data]
+        self.assertIn(active.name, names)
+        self.assertNotIn("Rideau", names)
+
+    def test_include_inactive_returns_everything(self):
+        Material.objects.create(name="Rideau", category="decor", is_active=False)
+        Material.objects.create(name="Console son", category="audio")
+
+        response = self.client.get('/api/materials/?include_inactive=true')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = [m['name'] for m in response.data]
+        self.assertIn("Rideau", names)
+        self.assertIn("Console son", names)
+
+    def test_retrieve_inactive_material_by_id_still_works(self):
+        material = Material.objects.create(name="Rideau", category="decor", is_active=False)
+
+        response = self.client.get(f'/api/materials/{material.id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['name'], "Rideau")
+        self.assertFalse(response.data['is_active'])
+
+
 class StorageExemptionTests(TestCase):
     """Vérifie l'exemption d'entreposage (Venue.is_storage) — décision du 2026-07-18 :
     le matériel assigné à un Show dont le venue est un entrepôt ne déclenche et ne

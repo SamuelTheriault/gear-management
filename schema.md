@@ -70,11 +70,14 @@ Inventaire de matériel. Supporte une hiérarchie parent/enfant (kits contenant 
 | department_id | INT, FK → departments.id (nullable) | Département responsable d'apporter ce matériel sur le lieu du spectacle |
 | ownership_status | ENUM('owned','rental') | Propriété ou location générale |
 | quantity | INT (default 1) | Quantité totale possédée de ce matériel identique (ex. 20 rallonges électriques) — voir note quantité ci-dessous |
+| is_active | BOOLEAN (default true) | Permet de désactiver un matériel qu'on n'utilise plus (ex. un vieux rideau) sans le supprimer — voir note ci-dessous |
 | notes | TEXT | Notes diverses |
 
 **Logique hiérarchique** : un matériel "kit" (parent) peut être assigné en bloc à un spectacle, ou ses composants (enfants) peuvent être assignés individuellement pour un suivi plus granulaire.
 
 **Quantité et hiérarchie kit** (décision du 2026-07-19) : `quantity` permet de posséder plusieurs exemplaires identiques d'un même matériel (ex. 20 rallonges électriques) sans créer un item par unité physique — voir `show_materials` pour l'allocation partielle. Un matériel qui participe à une hiérarchie kit (a un `parent_material_id`, ou est lui-même parent d'au moins un composant) doit obligatoirement rester à `quantity = 1` : un kit reste une unité conceptuelle unique, la notion de capacité partagée ne s'applique qu'au matériel autonome. Contrainte appliquée par `MaterialSerializer.validate()`, pas en base.
+
+**Matériel désactivé** (décision du 2026-07-19) : `is_active = false` retire un matériel qu'on n'utilise plus (ex. un vieux rideau) des listes d'inventaire courantes sans le supprimer — l'historique des assignations existantes (`show_materials`) reste intact. `GET /api/materials/` ne retourne que `is_active = true` par défaut ; ajouter `?include_inactive=true` pour tout revoir. La consultation par id reste toujours accessible peu importe le statut.
 
 ---
 

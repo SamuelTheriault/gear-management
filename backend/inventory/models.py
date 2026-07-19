@@ -274,6 +274,16 @@ class Material(models.Model):
         help_text="Département responsable d'apporter ce matériel sur le lieu du spectacle",
     )
     ownership_status = models.CharField(max_length=10, choices=OWNERSHIP_CHOICES, default=OWNERSHIP_OWNED)
+    is_active = models.BooleanField(
+        default=True,
+        help_text=(
+            "Permet de désactiver un matériel qu'on n'utilise plus (ex. un "
+            "vieux rideau) sans le supprimer — masqué des listes d'inventaire "
+            "par défaut (voir MaterialViewSet), mais reste consultable "
+            "individuellement et dans l'historique des assignations "
+            "existantes. Ajouté le 2026-07-19."
+        ),
+    )
     quantity = models.PositiveIntegerField(
         default=1,
         validators=[MinValueValidator(1)],
