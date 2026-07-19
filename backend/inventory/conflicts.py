@@ -4,9 +4,15 @@ et schema.md, sections 6, 8 et 9.
 
 Deux types de conflits, même logique sous-jacente :
 
-- Matériel (`show_materials`) : un même matériel — ou un matériel parent/enfant
-  qui lui est lié dans la hiérarchie — ne peut pas être assigné à deux
-  spectacles dont les fenêtres effectives se chevauchent.
+- Matériel (`show_materials`) : un matériel parent/enfant lié dans la
+  hiérarchie kit ne peut pas être assigné à deux spectacles dont les fenêtres
+  effectives se chevauchent (binaire — ces matériels sont toujours à
+  quantity=1, imposé par MaterialSerializer). Le matériel exact demandé, lui,
+  a une capacité partagée : `Material.quantity` unités au total, réparties
+  entre les `ShowMaterial` dont les fenêtres se chevauchent (voir
+  `get_material_conflicts`, ajouté le 2026-07-19 à la demande de Samuel pour
+  gérer du matériel identique en plusieurs exemplaires — ex. 20 rallonges
+  électriques dont 5 assignées à un spectacle sans créer 20 items).
 - Techniciens (`show_technicians` + `transports`) : un technicien ne peut pas
   être engagé sur deux choses dont les fenêtres se chevauchent — que ce soit
   deux spectacles, un spectacle et un déplacement, ou deux déplacements.
@@ -74,9 +80,26 @@ def windows_overlap(start_a, end_a, start_b, end_b):
     return start_a < end_b and start_b < end_a
 
 
-def get_material_conflicts(show, material, exclude_id=None):
+def get_material_conflicts(show, material, exclude_id=None, quantity=1):
     """Retourne la liste des `ShowMaterial` existants qui entreraient en
-    conflit si `material` était assigné à `show`.
+    conflit si on assignait `quantity` unités de `material` à `show`.
+
+    Deux mécanismes distincts, tous deux vérifiés :
+
+    - Hiérarchie (parent/enfant) : tout chevauchement avec un autre membre de
+      la famille est un conflit binaire — ces matériels sont toujours à
+      quantity=1 (imposé par MaterialSerializer.validate()), donc pas de
+      notion de capacité partagée à calculer pour eux.
+    - Matériel exact (même material_id) : les fenêtres qui chevauchent
+      celle de `show` partagent la capacité totale `material.quantity`. On
+      additionne les quantités déjà assignées sur ces fenêtres ; si `quantity`
+      ferait dépasser `material.quantity`, les assignations existantes qui y
+      contribuent sont retournées comme conflits.
+
+    Une demande dont `quantity` dépasse à elle seule `material.quantity`
+    (aucune assignation existante nécessaire pour que ce soit déjà trop) est
+    rejetée en amont par `ShowMaterialSerializer.validate()`, pas ici — ce
+    cas ne dépend d'aucune fenêtre à comparer.
 
     `exclude_id` : à fournir lors d'une mise à jour, pour exclure
     l'assignation elle-même de la comparaison.
@@ -90,21 +113,42 @@ def get_material_conflicts(show, material, exclude_id=None):
         return []
 
     family_ids = _collect_material_family(material)
+    other_family_ids = family_ids - {material.id}
+    new_start, new_end = show.effective_start, show.effective_end
+    conflicts = []
 
-    candidates = (
-        ShowMaterial.objects.filter(material_id__in=family_ids)
+    if other_family_ids:
+        family_candidates = (
+            ShowMaterial.objects.filter(material_id__in=other_family_ids)
+            .exclude(show_id=show.id)
+            .exclude(show__venue__is_storage=True)
+            .select_related('show', 'material', 'show__venue')
+        )
+        if exclude_id is not None:
+            family_candidates = family_candidates.exclude(id=exclude_id)
+        conflicts += [
+            sm for sm in family_candidates
+            if windows_overlap(new_start, new_end, sm.show.effective_start, sm.show.effective_end)
+        ]
+
+    same_material_candidates = (
+        ShowMaterial.objects.filter(material_id=material.id)
         .exclude(show_id=show.id)
         .exclude(show__venue__is_storage=True)
         .select_related('show', 'material', 'show__venue')
     )
     if exclude_id is not None:
-        candidates = candidates.exclude(id=exclude_id)
+        same_material_candidates = same_material_candidates.exclude(id=exclude_id)
 
-    new_start, new_end = show.effective_start, show.effective_end
-    return [
-        sm for sm in candidates
+    overlapping_same_material = [
+        sm for sm in same_material_candidates
         if windows_overlap(new_start, new_end, sm.show.effective_start, sm.show.effective_end)
     ]
+    already_allocated = sum(sm.quantity for sm in overlapping_same_material)
+    if already_allocated + quantity > material.quantity:
+        conflicts += overlapping_same_material
+
+    return conflicts
 
 
 def _technician_commitments(technician_id, exclude_show_technician_id=None, exclude_transport_id=None):

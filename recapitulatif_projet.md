@@ -6,11 +6,11 @@ Application web interne pour gérer l'inventaire de matériel de production (son
 
 ## Ce que l'application fait (V1)
 
-- **Inventaire de matériel** : chaque item a un nom, une description, une catégorie (type d'usage), un statut (propriété ou location générale), un lieu d'entreposage, un département responsable (voir ci-dessous), et peut être organisé en hiérarchie parent/enfant (ex. "Kit Audio" → "Micro sans fil", "Ampli", "Haut-parleurs").
+- **Inventaire de matériel** : chaque item a un nom, une description, une catégorie (type d'usage), un statut (propriété ou location générale), un lieu d'entreposage, un département responsable (voir ci-dessous), une quantité totale possédée (`quantity`, défaut 1 — permet du matériel identique en plusieurs exemplaires, ex. 20 rallonges électriques, sans créer un item par unité), et peut être organisé en hiérarchie parent/enfant (ex. "Kit Audio" → "Micro sans fil", "Ampli", "Haut-parleurs") — un matériel en hiérarchie doit rester à `quantity = 1`.
 - **Départements (`departments`)** : table avec nom du département, contact responsable, et une couleur d'identification (`color`, code hex #RRGGBB) — associée à chaque matériel, permet de savoir qui doit apporter quoi sur le lieu du spectacle. La couleur est reflétée dans les sous-sections où le département apparaît (matériel, assignations show/matériel) via `department_color` dans l'API, pour un code couleur cohérent dans tout le planning une fois le frontend branché.
 - **Lieux (`venues`)** : table dédiée pour centraliser adresses et contacts des salles/sites, référencée par les spectacles et le matériel. Un lieu peut être marqué `is_storage` (entrepôt) — voir note dédiée plus bas. Coordonnées GPS optionnelles (`latitude`/`longitude`) pour le calcul automatique de temps de trajet — voir note "Google Maps".
 - **Fiches spectacles (`shows`)** : titre, lieu, type (répétition/représentation), horaires. Une fenêtre effective d'utilisation est calculée automatiquement en ajoutant 1h avant et 1h après (buffers configurables) pour couvrir le transport et l'installation.
-- **Assignation de matériel** (`show_materials`) : associer du matériel de l'inventaire à un spectacle, avec possibilité d'indiquer si ce matériel est loué spécifiquement pour ce spectacle (`is_rental` + `rental_vendor`).
+- **Assignation de matériel** (`show_materials`) : associer du matériel de l'inventaire à un spectacle, avec une quantité (`quantity`, défaut 1 — ex. assigner 5 des 20 rallonges en inventaire) et possibilité d'indiquer si ce matériel est loué spécifiquement pour ce spectacle (`is_rental` + `rental_vendor`).
 - **Techniciens** (`technicians`) et leur assignation aux spectacles (`show_technicians`).
 - **Déplacements (`transports`)** : livraison/ramassage de matériel entre deux lieux pour un spectacle donné, avec heure prévue, durée estimée et technicien assigné — voir note dédiée plus bas.
 - **Détection de conflits** : le système vérifie automatiquement, pour le matériel comme pour les techniciens, qu'il n'y a pas de chevauchement entre les fenêtres effectives de deux spectacles différents — et, depuis l'ajout de `transports`, qu'un technicien n'est pas sur un spectacle en même temps qu'il fait un déplacement.
@@ -54,6 +54,8 @@ Détails complets des champs → voir `schema.md`.
 8. ~~Modèles Django + migrations pour les 8 tables de `schema.md`.~~ ✅ (2026-07-17) — voir note ci-dessous
 9. ~~Squelette API (endpoints) + logique de détection de conflits.~~ ✅ (2026-07-17) — voir note ci-dessous
 10. ~~Couleur d'identification par département (`Department.color`).~~ ✅ (2026-07-18) — voir note ci-dessous
+11. ~~Quantité de matériel (`Material.quantity` / `ShowMaterial.quantity`).~~ ✅ (2026-07-19) — voir note ci-dessous
+12. ~~Matériel désactivable (`Material.is_active`).~~ ✅ (2026-07-19) — voir note ci-dessous
 
 ### Notes de déploiement (piège à retenir)
 
@@ -214,6 +216,54 @@ unitaires.
   entreposage/transports/réglages — fusionnée avec `main` après coup,
   conflits limités à des imports/emplacements de code (aucune divergence
   fonctionnelle réelle).
+
+### Note sur la quantité de matériel (étape 11, 2026-07-19)
+
+- Besoin exprimé par Samuel : du matériel identique possédé en plusieurs
+  exemplaires (ex. 20 rallonges électriques) sans avoir à créer un item par
+  unité physique pour pouvoir en assigner une partie (ex. 5) à un spectacle.
+- Décision (options proposées et validées avec Samuel) : `Material.quantity`
+  (quantité totale possédée, défaut 1) et `ShowMaterial.quantity` (quantité
+  assignée à ce spectacle, défaut 1) — plutôt que de dupliquer des items.
+  Un matériel qui participe à une hiérarchie kit (parent/enfant) doit rester
+  à `quantity = 1` : un kit reste une unité conceptuelle unique, la capacité
+  partagée n'a de sens que pour du matériel autonome. Un dépassement de
+  capacité dû à un chevauchement d'horaire reste bloquant avec possibilité de
+  forcer via `force: true`, cohérent avec les autres conflits.
+- Effet sur `conflicts.py` (`get_material_conflicts`) : la vérification pour
+  le matériel exact demandé est passée d'un chevauchement binaire à une
+  capacité partagée (somme des quantités déjà assignées sur des fenêtres qui
+  chevauchent, comparée à `Material.quantity`) — voir `architecture.md`
+  section 4a. La propagation binaire parent/enfant reste inchangée.
+- Demander plus que `Material.quantity` au total (même sans aucun
+  chevauchement) est rejeté d'emblée par `ShowMaterialSerializer.validate()`
+  et n'est **pas** overridable par `force` — erreur de données, pas un
+  arbitrage de planning.
+- 13 nouveaux tests (capacité, hiérarchie, API, non-régression du
+  comportement binaire pour `quantity = 1`) — suite complète à 70 tests, tous
+  passent. flake8 propre.
+
+### Note sur le matériel désactivable (étape 12, 2026-07-19)
+
+- Besoin exprimé par Samuel, après avoir exploré puis abandonné une piste
+  plus complexe (un lieu "Magasin" immuable + suivi automatique du lieu
+  actuel du matériel — jugée trop compliquée pour la valeur ajoutée) : juste
+  pouvoir désactiver un matériel qu'il n'utilise plus (ex. un vieux rideau)
+  sans le supprimer, pour ne plus l'avoir dans son inventaire courant.
+- `Material.is_active` (booléen, défaut `true`). `GET /api/materials/` ne
+  retourne que le matériel actif par défaut ; `?include_inactive=true` pour
+  tout revoir. La consultation par id (`GET /api/materials/{id}/`) reste
+  toujours accessible peu importe le statut, pour ne pas casser l'affichage
+  des assignations existantes qui référencent un matériel entretemps
+  désactivé.
+- Admin Django : colonne + filtre `is_active`, actions groupées "Activer"/
+  "Désactiver" sur plusieurs items à la fois.
+- Confirmé au passage avec Samuel : la protection contre le double-usage
+  reste entièrement basée sur le calendrier (fenêtres effectives des
+  `shows`, voir `architecture.md` section 4) — ce point n'est pas affecté
+  par `is_active`, qui ne fait que masquer de l'affichage, sans toucher à la
+  détection de conflits.
+- 4 nouveaux tests — suite complète à 74 tests, tous passent. flake8 propre.
 
 ## Fichiers produits
 

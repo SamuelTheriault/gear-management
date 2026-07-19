@@ -154,6 +154,159 @@ class ConflictLogicTests(TestCase):
         self.assertEqual(conflicts_without_exclude[0].id, sm.id)
 
 
+class MaterialQuantityConflictTests(TestCase):
+    """Vérifie la logique de capacité pour du matériel possédé en plusieurs
+    exemplaires (`Material.quantity` / `ShowMaterial.quantity`, ajoutés le
+    2026-07-19) : allocation partielle, dépassement, et non-régression du
+    comportement binaire pour quantity=1 et pour la hiérarchie kit."""
+
+    def setUp(self):
+        self.venue = Venue.objects.create(name="Salle test")
+        # 20 rallonges électriques identiques en inventaire.
+        self.material = Material.objects.create(name="Rallonge électrique", category="autre", quantity=20)
+        # 14h-16h, buffers par défaut (60 min) -> fenêtre effective 13h-17h
+        self.show_a = Show.objects.create(
+            title="Show A", venue=self.venue, event_type="rehearsal",
+            start_datetime=_dt(14), end_datetime=_dt(16),
+        )
+
+    def test_partial_allocation_within_capacity_is_not_a_conflict(self):
+        # 12 assignées à Show A, on en demande 5 de plus sur une fenêtre qui
+        # chevauche (12 + 5 = 17 <= 20) -> pas de conflit.
+        ShowMaterial.objects.create(show=self.show_a, material=self.material, quantity=12)
+        show_b = Show.objects.create(
+            title="Show B", venue=self.venue, event_type="rehearsal",
+            start_datetime=_dt(16, day=1) + timedelta(minutes=30), end_datetime=_dt(18),
+        )
+        conflicts = get_material_conflicts(show_b, self.material, quantity=5)
+        self.assertEqual(conflicts, [])
+
+    def test_allocation_exceeding_capacity_is_a_conflict(self):
+        # 12 assignées à Show A, on en demande 10 de plus sur une fenêtre qui
+        # chevauche (12 + 10 = 22 > 20) -> conflit, avec l'assignation de
+        # Show A listée comme contributrice.
+        sm = ShowMaterial.objects.create(show=self.show_a, material=self.material, quantity=12)
+        show_b = Show.objects.create(
+            title="Show B", venue=self.venue, event_type="rehearsal",
+            start_datetime=_dt(16, day=1) + timedelta(minutes=30), end_datetime=_dt(18),
+        )
+        conflicts = get_material_conflicts(show_b, self.material, quantity=10)
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(conflicts[0].id, sm.id)
+
+    def test_no_overlap_means_full_capacity_available_regardless_of_other_allocations(self):
+        # 12 assignées à Show A ; Show C ne chevauche pas du tout -> les 20
+        # unités sont disponibles pour Show C, peu importe Show A.
+        ShowMaterial.objects.create(show=self.show_a, material=self.material, quantity=12)
+        show_c = Show.objects.create(
+            title="Show C", venue=self.venue, event_type="rehearsal",
+            start_datetime=_dt(20), end_datetime=_dt(22),
+        )
+        conflicts = get_material_conflicts(show_c, self.material, quantity=20)
+        self.assertEqual(conflicts, [])
+
+    def test_default_quantity_of_one_preserves_binary_behaviour(self):
+        # Non-régression : un matériel simple (quantity=1 par défaut) doit se
+        # comporter exactement comme avant — tout chevauchement est un conflit.
+        simple_material = Material.objects.create(name="Console son", category="audio")
+        ShowMaterial.objects.create(show=self.show_a, material=simple_material)
+        show_b = Show.objects.create(
+            title="Show B", venue=self.venue, event_type="rehearsal",
+            start_datetime=_dt(16, day=1) + timedelta(minutes=30), end_datetime=_dt(18),
+        )
+        conflicts = get_material_conflicts(show_b, simple_material)
+        self.assertEqual(len(conflicts), 1)
+
+    def test_exclude_id_ignores_own_allocation_when_updating_quantity(self):
+        # Mettre à jour la quantité d'une assignation existante ne doit pas se
+        # "conflicter" avec elle-même.
+        sm = ShowMaterial.objects.create(show=self.show_a, material=self.material, quantity=12)
+        conflicts = get_material_conflicts(self.show_a, self.material, exclude_id=sm.id, quantity=18)
+        self.assertEqual(conflicts, [])
+
+
+class MaterialQuantityHierarchyValidationTests(TestCase):
+    """Vérifie que quantity > 1 est rejeté pour tout matériel qui participe à
+    une hiérarchie kit (parent/enfant) — décision prise avec Samuel le
+    2026-07-19 : un kit reste une unité conceptuelle unique."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+
+    def test_cannot_create_material_with_quantity_and_parent(self):
+        kit = Material.objects.create(name="Kit Audio", category="audio")
+        response = self.client.post('/api/materials/', {
+            'name': "Micro sans fil", 'category': "audio", 'parent_material': kit.id, 'quantity': 3,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_cannot_set_quantity_above_one_on_material_with_components(self):
+        kit = Material.objects.create(name="Kit Audio", category="audio")
+        Material.objects.create(name="Micro sans fil", category="audio", parent_material=kit)
+
+        response = self.client.patch(f'/api/materials/{kit.id}/', {'quantity': 2}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_cannot_set_parent_to_material_with_quantity_above_one(self):
+        multi = Material.objects.create(name="Rallonge électrique", category="autre", quantity=20)
+        response = self.client.post('/api/materials/', {
+            'name': "Composant", 'category': "autre", 'parent_material': multi.id,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_standalone_material_can_have_quantity_above_one(self):
+        response = self.client.post('/api/materials/', {
+            'name': "Rallonge électrique", 'category': "autre", 'quantity': 20,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['quantity'], 20)
+
+
+class MaterialActiveFlagTests(TestCase):
+    """Vérifie `Material.is_active` (ajouté le 2026-07-19) : masqué de la
+    liste par défaut, visible avec `?include_inactive=true`, toujours
+    consultable individuellement par id peu importe son statut."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+
+    def test_material_defaults_to_active(self):
+        material = Material.objects.create(name="Console son", category="audio")
+        self.assertTrue(material.is_active)
+
+    def test_inactive_material_excluded_from_list_by_default(self):
+        Material.objects.create(name="Rideau", category="decor", is_active=False)
+        active = Material.objects.create(name="Console son", category="audio")
+
+        response = self.client.get('/api/materials/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = [m['name'] for m in response.data]
+        self.assertIn(active.name, names)
+        self.assertNotIn("Rideau", names)
+
+    def test_include_inactive_returns_everything(self):
+        Material.objects.create(name="Rideau", category="decor", is_active=False)
+        Material.objects.create(name="Console son", category="audio")
+
+        response = self.client.get('/api/materials/?include_inactive=true')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = [m['name'] for m in response.data]
+        self.assertIn("Rideau", names)
+        self.assertIn("Console son", names)
+
+    def test_retrieve_inactive_material_by_id_still_works(self):
+        material = Material.objects.create(name="Rideau", category="decor", is_active=False)
+
+        response = self.client.get(f'/api/materials/{material.id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['name'], "Rideau")
+        self.assertFalse(response.data['is_active'])
+
+
 class StorageExemptionTests(TestCase):
     """Vérifie l'exemption d'entreposage (Venue.is_storage) — décision du 2026-07-18 :
     le matériel assigné à un Show dont le venue est un entrepôt ne déclenche et ne
@@ -367,6 +520,49 @@ class ConflictAPITests(TestCase):
             'technician': self.technician.id, 'force': True,
         }, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_material_quantity_partial_allocation_succeeds(self):
+        # 20 rallonges en inventaire, déjà 12 assignées à show_a (14h-16h).
+        # En demander 5 de plus sur show_b (chevauche) reste sous la capacité.
+        multi = Material.objects.create(name="Rallonge électrique", category="autre", quantity=20)
+        ShowMaterial.objects.create(show=self.show_a, material=multi, quantity=12)
+        response = self.client.post('/api/show-materials/', {
+            'show': self.show_b.id, 'material': multi.id, 'quantity': 5,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_material_quantity_exceeding_capacity_blocked(self):
+        multi = Material.objects.create(name="Rallonge électrique", category="autre", quantity=20)
+        ShowMaterial.objects.create(show=self.show_a, material=multi, quantity=12)
+        response = self.client.post('/api/show-materials/', {
+            'show': self.show_b.id, 'material': multi.id, 'quantity': 10,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('conflicts', response.data)
+
+    def test_material_quantity_exceeding_capacity_succeeds_with_force(self):
+        multi = Material.objects.create(name="Rallonge électrique", category="autre", quantity=20)
+        ShowMaterial.objects.create(show=self.show_a, material=multi, quantity=12)
+        response = self.client.post('/api/show-materials/', {
+            'show': self.show_b.id, 'material': multi.id, 'quantity': 10, 'force': True,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_material_quantity_above_total_owned_rejected_even_without_overlap(self):
+        # Aucune autre assignation ne chevauche show_c : le rejet vient
+        # uniquement du fait que 25 > quantité totale possédée (20), pas d'un
+        # chevauchement — ce cas n'est pas overridable par force (voir
+        # ShowMaterialSerializer.validate()).
+        multi = Material.objects.create(name="Rallonge électrique", category="autre", quantity=20)
+        show_c = Show.objects.create(
+            title="Show C", venue=self.venue, event_type="rehearsal",
+            start_datetime=_dt(20), end_datetime=_dt(22),
+        )
+        response = self.client.post('/api/show-materials/', {
+            'show': show_c.id, 'material': multi.id, 'quantity': 25, 'force': True,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('quantity', response.data)
 
     def test_transport_rejects_identical_origin_and_destination(self):
         response = self.client.post('/api/transports/', {

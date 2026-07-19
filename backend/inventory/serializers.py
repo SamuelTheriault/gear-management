@@ -83,13 +83,44 @@ class MaterialSerializer(serializers.ModelSerializer):
             'parent_material', 'parent_material_name',
             'venue', 'venue_name',
             'department', 'department_name', 'department_color',
-            'ownership_status', 'notes', 'component_ids',
+            'ownership_status', 'quantity', 'is_active', 'notes', 'component_ids',
         ]
 
     def validate_parent_material(self, value):
         if value is not None and self.instance is not None and value.id == self.instance.id:
             raise serializers.ValidationError("Un matériel ne peut pas être son propre parent.")
+        if value is not None and value.quantity > 1:
+            raise serializers.ValidationError(
+                "Le matériel parent doit avoir une quantité de 1 — un kit ne peut "
+                "pas lui-même être en plusieurs exemplaires."
+            )
         return value
+
+    def validate(self, attrs):
+        # Un matériel de quantity > 1 (ex. 20 rallonges électriques) ne peut
+        # pas faire partie d'une hiérarchie kit — voir Material.quantity et
+        # conflicts.py, où la capacité partagée n'a de sens que pour un
+        # matériel autonome, pas pour les membres d'un kit (toujours à
+        # quantity=1). Décision prise avec Samuel le 2026-07-19.
+        quantity = attrs.get('quantity', getattr(self.instance, 'quantity', 1))
+        parent_material = attrs.get('parent_material', getattr(self.instance, 'parent_material', None))
+
+        if quantity > 1:
+            if parent_material is not None:
+                raise serializers.ValidationError({
+                    'quantity': (
+                        "Un matériel qui fait partie d'une hiérarchie kit "
+                        "(parent_material renseigné) doit avoir une quantité de 1."
+                    ),
+                })
+            if self.instance is not None and self.instance.components.exists():
+                raise serializers.ValidationError({
+                    'quantity': (
+                        "Un matériel utilisé comme kit (qui a des composants) doit "
+                        "avoir une quantité de 1."
+                    ),
+                })
+        return attrs
 
 
 class ShowSerializer(serializers.ModelSerializer):
@@ -132,7 +163,7 @@ class ShowMaterialSerializer(serializers.ModelSerializer):
     class Meta:
         model = ShowMaterial
         fields = [
-            'id', 'show', 'material', 'is_rental', 'rental_vendor',
+            'id', 'show', 'material', 'quantity', 'is_rental', 'rental_vendor',
             'show_title', 'material_name', 'department_color', 'force',
         ]
 
@@ -140,16 +171,29 @@ class ShowMaterialSerializer(serializers.ModelSerializer):
         force = attrs.pop('force', False)
         show = attrs.get('show', getattr(self.instance, 'show', None))
         material = attrs.get('material', getattr(self.instance, 'material', None))
+        quantity = attrs.get('quantity', getattr(self.instance, 'quantity', 1))
+
+        # Vérification indépendante de `force` : demander plus d'unités qu'on
+        # en possède au total n'est pas un conflit d'horaire à arbitrer, c'est
+        # une erreur de données — pas overridable.
+        if material and quantity > material.quantity:
+            raise serializers.ValidationError({
+                'quantity': (
+                    f"Quantité demandée ({quantity}) supérieure à la quantité "
+                    f"totale possédée de ce matériel ({material.quantity})."
+                ),
+            })
 
         if show and material and not force:
             exclude_id = self.instance.id if self.instance else None
-            conflicts = get_material_conflicts(show, material, exclude_id=exclude_id)
+            conflicts = get_material_conflicts(show, material, exclude_id=exclude_id, quantity=quantity)
             if conflicts:
                 raise serializers.ValidationError({
                     'conflicts': [serialize_material_conflict(c) for c in conflicts],
                     'detail': (
-                        "Chevauchement d'horaire détecté avec une ou plusieurs autres "
-                        "assignations de ce matériel (ou d'un matériel parent/enfant lié). "
+                        "Chevauchement d'horaire détecté : capacité insuffisante compte "
+                        "tenu de la quantité déjà assignée sur cette période (ou conflit "
+                        "avec un matériel parent/enfant lié). "
                         'Ajoute "force": true dans la requête pour forcer l\'assignation '
                         'malgré le conflit.'
                     ),

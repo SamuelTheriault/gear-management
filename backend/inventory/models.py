@@ -17,7 +17,7 @@ provisioning automatique).
 """
 
 from django.conf import settings
-from django.core.validators import RegexValidator
+from django.core.validators import MinValueValidator, RegexValidator
 from django.db import models
 
 #: Valide un code couleur hexadécimal complet (#RRGGBB), tel qu'attendu par
@@ -274,6 +274,29 @@ class Material(models.Model):
         help_text="Département responsable d'apporter ce matériel sur le lieu du spectacle",
     )
     ownership_status = models.CharField(max_length=10, choices=OWNERSHIP_CHOICES, default=OWNERSHIP_OWNED)
+    is_active = models.BooleanField(
+        default=True,
+        help_text=(
+            "Permet de désactiver un matériel qu'on n'utilise plus (ex. un "
+            "vieux rideau) sans le supprimer — masqué des listes d'inventaire "
+            "par défaut (voir MaterialViewSet), mais reste consultable "
+            "individuellement et dans l'historique des assignations "
+            "existantes. Ajouté le 2026-07-19."
+        ),
+    )
+    quantity = models.PositiveIntegerField(
+        default=1,
+        validators=[MinValueValidator(1)],
+        help_text=(
+            "Quantité totale possédée de ce matériel identique (ex. 20 rallonges "
+            "électriques). Permet d'assigner une partie seulement de l'inventaire "
+            "à un spectacle (voir ShowMaterial.quantity) sans créer un item par "
+            "unité physique. Doit rester à 1 pour un matériel qui fait partie "
+            "d'une hiérarchie kit — parent_material renseigné, ou qui a lui-même "
+            "des composants (imposé par MaterialSerializer.validate(), pas ici : "
+            "un kit reste une unité conceptuelle unique, ajouté le 2026-07-19)."
+        ),
+    )
     notes = models.TextField(blank=True)
 
     class Meta:
@@ -333,6 +356,15 @@ class ShowMaterial(models.Model):
 
     show = models.ForeignKey(Show, on_delete=models.CASCADE, related_name='show_materials')
     material = models.ForeignKey(Material, on_delete=models.CASCADE, related_name='show_materials')
+    quantity = models.PositiveIntegerField(
+        default=1,
+        validators=[MinValueValidator(1)],
+        help_text=(
+            "Quantité de ce matériel assignée à ce spectacle (ex. 5 des 20 "
+            "rallonges en inventaire). Voir Material.quantity et conflicts.py "
+            "pour le calcul de capacité (ajouté le 2026-07-19)."
+        ),
+    )
     is_rental = models.BooleanField(default=False)
     rental_vendor = models.CharField(max_length=255, blank=True, null=True)
 

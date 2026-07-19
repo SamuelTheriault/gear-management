@@ -69,9 +69,15 @@ Inventaire de matériel. Supporte une hiérarchie parent/enfant (kits contenant 
 | venue_id | INT, FK → venues.id (nullable) | Lieu physique où le matériel est entreposé |
 | department_id | INT, FK → departments.id (nullable) | Département responsable d'apporter ce matériel sur le lieu du spectacle |
 | ownership_status | ENUM('owned','rental') | Propriété ou location générale |
+| quantity | INT (default 1) | Quantité totale possédée de ce matériel identique (ex. 20 rallonges électriques) — voir note quantité ci-dessous |
+| is_active | BOOLEAN (default true) | Permet de désactiver un matériel qu'on n'utilise plus (ex. un vieux rideau) sans le supprimer — voir note ci-dessous |
 | notes | TEXT | Notes diverses |
 
 **Logique hiérarchique** : un matériel "kit" (parent) peut être assigné en bloc à un spectacle, ou ses composants (enfants) peuvent être assignés individuellement pour un suivi plus granulaire.
+
+**Quantité et hiérarchie kit** (décision du 2026-07-19) : `quantity` permet de posséder plusieurs exemplaires identiques d'un même matériel (ex. 20 rallonges électriques) sans créer un item par unité physique — voir `show_materials` pour l'allocation partielle. Un matériel qui participe à une hiérarchie kit (a un `parent_material_id`, ou est lui-même parent d'au moins un composant) doit obligatoirement rester à `quantity = 1` : un kit reste une unité conceptuelle unique, la notion de capacité partagée ne s'applique qu'au matériel autonome. Contrainte appliquée par `MaterialSerializer.validate()`, pas en base.
+
+**Matériel désactivé** (décision du 2026-07-19) : `is_active = false` retire un matériel qu'on n'utilise plus (ex. un vieux rideau) des listes d'inventaire courantes sans le supprimer — l'historique des assignations existantes (`show_materials`) reste intact. `GET /api/materials/` ne retourne que `is_active = true` par défaut ; ajouter `?include_inactive=true` pour tout revoir. La consultation par id reste toujours accessible peu importe le statut.
 
 ---
 
@@ -106,10 +112,13 @@ Table d'association — assigne du matériel à un spectacle/répétition. Conti
 | id | INT, PK | Identifiant unique |
 | show_id | INT, FK → shows.id | Spectacle concerné |
 | material_id | INT, FK → materials.id | Matériel assigné |
+| quantity | INT (default 1) | Quantité de ce matériel assignée à ce spectacle (ex. 5 des 20 rallonges en inventaire) |
 | is_rental | BOOLEAN | Ce matériel est-il loué spécifiquement pour ce spectacle? |
 | rental_vendor | VARCHAR (nullable) | Nom du fournisseur externe (si is_rental = true) |
 
-**Règle de conflit** : pour un même `material_id` (ou pour un matériel parent et ses enfants), le système refuse (bloquant, avec possibilité de forcer via `force: true`) l'assignation si la fenêtre effective (voir `shows`) chevauche celle d'un autre `show_materials` existant pour ce matériel.
+**Règle de conflit — matériel parent/enfant** : pour un matériel parent et ses enfants (hiérarchie kit, toujours à `quantity = 1`), le système refuse (bloquant, avec possibilité de forcer via `force: true`) l'assignation si la fenêtre effective (voir `shows`) chevauche celle d'un autre `show_materials` existant pour un membre de la même famille.
+
+**Règle de conflit — capacité (décision du 2026-07-19)** : pour le matériel exact (même `material_id`), la contrainte n'est plus binaire mais une capacité partagée : la somme des `quantity` déjà assignées sur des fenêtres qui chevauchent celle du nouveau `show_materials` ne peut pas dépasser `materials.quantity`. Ex. 20 rallonges en inventaire, 12 déjà assignées à un spectacle qui chevauche : on peut en assigner jusqu'à 8 de plus avant blocage. Demander plus que `materials.quantity` au total (même sans aucun chevauchement) est rejeté d'emblée et n'est **pas** overridable par `force` (erreur de données, pas un conflit d'horaire) ; un dépassement de capacité dû à un chevauchement, lui, reste bloquant avec possibilité de forcer via `force: true`, comme les autres conflits.
 
 **Exemption d'entreposage** (décision du 2026-07-18) : cette règle de conflit est entièrement ignorée dès qu'un des deux `show_materials` comparés est rattaché à un `show` dont le `venue.is_storage = true`. Le matériel qui est simplement rangé en entrepôt est considéré disponible — il n'entre jamais en conflit avec un autre lieu, et assigner du matériel à un entrepôt ne bloque jamais, même s'il est par ailleurs utilisé sur un vrai spectacle au même moment. Cette exemption ne s'applique qu'au matériel, pas aux techniciens (`show_technicians`) : un technicien assigné à un `show` d'entrepôt (ex. pour de l'inventaire) reste soumis à la détection de conflit normale.
 

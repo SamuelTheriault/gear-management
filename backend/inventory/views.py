@@ -71,10 +71,30 @@ class DepartmentViewSet(viewsets.ModelViewSet):
 
 
 class MaterialViewSet(viewsets.ModelViewSet):
-    """CRUD standard sur l'inventaire de matériel."""
+    """CRUD standard sur l'inventaire de matériel.
+
+    Le matériel désactivé (`is_active=False`, ex. un vieux rideau qu'on
+    n'utilise plus) est masqué de la liste par défaut (`GET /api/materials/`)
+    pour ne pas encombrer l'inventaire courant, sans jamais être supprimé —
+    ajouter `?include_inactive=true` à la requête pour tout revoir (utile
+    pour réactiver un item). La consultation par id (`GET /api/materials/{id}/`)
+    reste toujours accessible peu importe le statut, pour ne pas casser
+    l'affichage des assignations existantes (`show_materials`) qui
+    référencent un matériel entretemps désactivé. Décision du 2026-07-19.
+    """
 
     queryset = Material.objects.select_related('parent_material', 'venue', 'department').all()
     serializer_class = MaterialSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if self.action == 'list':
+            include_inactive = self.request.query_params.get('include_inactive', '').lower() in (
+                '1', 'true', 'yes',
+            )
+            if not include_inactive:
+                queryset = queryset.filter(is_active=True)
+        return queryset
 
 
 class ShowViewSet(viewsets.ModelViewSet):
@@ -93,7 +113,7 @@ class ShowViewSet(viewsets.ModelViewSet):
 
         material_conflicts = []
         for sm in show.show_materials.select_related('material').all():
-            for conflict in get_material_conflicts(show, sm.material, exclude_id=sm.id):
+            for conflict in get_material_conflicts(show, sm.material, exclude_id=sm.id, quantity=sm.quantity):
                 material_conflicts.append(serialize_material_conflict(conflict))
 
         technician_conflicts = []
