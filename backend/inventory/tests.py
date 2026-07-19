@@ -17,13 +17,14 @@ Niveaux :
 from datetime import timedelta
 
 from django.contrib.auth.models import User as DjangoUser
+from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
 from .conflicts import get_material_conflicts, get_technician_conflicts, get_transport_conflicts
-from .models import Material, Show, ShowMaterial, ShowTechnician, Technician, Transport, Venue
+from .models import Department, Material, Show, ShowMaterial, ShowTechnician, Technician, Transport, Venue
 
 
 def _dt(hour, day=1):
@@ -375,3 +376,63 @@ class ConflictAPITests(TestCase):
         }, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('destination_venue', response.data)
+
+
+class DepartmentColorTests(TestCase):
+    """Vérifie `Department.color` : validation du format hex + propagation aux sous-sections
+    (matériel, assignations show/matériel) via les serializers (voir serializers.py)."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.venue = Venue.objects.create(name="Salle test")
+
+    def test_department_gets_default_color_when_not_specified(self):
+        dept = Department.objects.create(name="Son")
+        self.assertEqual(dept.color, Department.DEFAULT_COLOR)
+
+    def test_valid_hex_color_accepted(self):
+        dept = Department(name="Éclairage", color="#3B82F6")
+        dept.full_clean()  # ne doit pas lever
+
+    def test_invalid_hex_color_rejected(self):
+        dept = Department(name="Décor", color="bleu")
+        with self.assertRaises(ValidationError):
+            dept.full_clean()
+
+    def test_short_hex_color_rejected(self):
+        # #RGB (3 caractères) n'est pas accepté — on exige la forme longue #RRGGBB,
+        # cohérente avec un <input type="color"> HTML.
+        dept = Department(name="Vidéo", color="#FFF")
+        with self.assertRaises(ValidationError):
+            dept.full_clean()
+
+    def test_material_serializer_exposes_department_color(self):
+        dept = Department.objects.create(name="Audio", color="#F97316")
+        material = Material.objects.create(name="Console", category="audio", department=dept)
+
+        response = self.client.get(f'/api/materials/{material.id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['department_color'], "#F97316")
+
+    def test_material_serializer_department_color_none_when_no_department(self):
+        material = Material.objects.create(name="Console sans département", category="audio")
+
+        response = self.client.get(f'/api/materials/{material.id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data['department_color'])
+
+    def test_show_material_serializer_exposes_department_color(self):
+        dept = Department.objects.create(name="Vidéo", color="#22C55E")
+        material = Material.objects.create(name="Projecteur", category="video", department=dept)
+        show = Show.objects.create(
+            title="Show couleur", venue=self.venue, event_type="rehearsal",
+            start_datetime=_dt(14), end_datetime=_dt(16),
+        )
+
+        response = self.client.post('/api/show-materials/', {
+            'show': show.id, 'material': material.id,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['department_color'], "#22C55E")

@@ -1,4 +1,4 @@
-# Sécurité — Bonnes pratiques pour l'application de gestion de matériel
+# Sécurité — Bonnes pratiques pour RégiStock
 
 ## Principe de base
 

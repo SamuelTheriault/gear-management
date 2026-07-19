@@ -1,4 +1,4 @@
-# Récapitulatif — Application de gestion de matériel
+# Récapitulatif — RégiStock (application de gestion de matériel)
 
 ## Objectif du projet
 
@@ -7,7 +7,7 @@ Application web interne pour gérer l'inventaire de matériel de production (son
 ## Ce que l'application fait (V1)
 
 - **Inventaire de matériel** : chaque item a un nom, une description, une catégorie (type d'usage), un statut (propriété ou location générale), un lieu d'entreposage, un département responsable (voir ci-dessous), et peut être organisé en hiérarchie parent/enfant (ex. "Kit Audio" → "Micro sans fil", "Ampli", "Haut-parleurs").
-- **Départements (`departments`)** : table avec nom du département et contact responsable, associée à chaque matériel — permet de savoir qui doit apporter quoi sur le lieu du spectacle.
+- **Départements (`departments`)** : table avec nom du département, contact responsable, et une couleur d'identification (`color`, code hex #RRGGBB) — associée à chaque matériel, permet de savoir qui doit apporter quoi sur le lieu du spectacle. La couleur est reflétée dans les sous-sections où le département apparaît (matériel, assignations show/matériel) via `department_color` dans l'API, pour un code couleur cohérent dans tout le planning une fois le frontend branché.
 - **Lieux (`venues`)** : table dédiée pour centraliser adresses et contacts des salles/sites, référencée par les spectacles et le matériel. Un lieu peut être marqué `is_storage` (entrepôt) — voir note dédiée plus bas. Coordonnées GPS optionnelles (`latitude`/`longitude`) pour le calcul automatique de temps de trajet — voir note "Google Maps".
 - **Fiches spectacles (`shows`)** : titre, lieu, type (répétition/représentation), horaires. Une fenêtre effective d'utilisation est calculée automatiquement en ajoutant 1h avant et 1h après (buffers configurables) pour couvrir le transport et l'installation.
 - **Assignation de matériel** (`show_materials`) : associer du matériel de l'inventaire à un spectacle, avec possibilité d'indiquer si ce matériel est loué spécifiquement pour ce spectacle (`is_rental` + `rental_vendor`).
@@ -53,6 +53,7 @@ Détails complets des champs → voir `schema.md`.
 7. ~~Mettre en place le projet Google Cloud pour l'OAuth + intégration Django.~~ ✅ (2026-07-18) — voir note ci-dessous
 8. ~~Modèles Django + migrations pour les 8 tables de `schema.md`.~~ ✅ (2026-07-17) — voir note ci-dessous
 9. ~~Squelette API (endpoints) + logique de détection de conflits.~~ ✅ (2026-07-17) — voir note ci-dessous
+10. ~~Couleur d'identification par département (`Department.color`).~~ ✅ (2026-07-18) — voir note ci-dessous
 
 ### Notes de déploiement (piège à retenir)
 
@@ -193,6 +194,26 @@ unitaires.
 - 17 nouveaux tests (`inventory/test_settings_and_maps.py` — singleton,
   defaults dynamiques, service maps mocké, auto-estimation, endpoint
   settings) — suite complète à 48 tests, tous passent. flake8 propre.
+
+### Note sur la couleur d'identification par département (étape 10)
+
+- Besoin exprimé par Samuel : associer une couleur à chaque département
+  depuis les réglages, pour repérer visuellement le matériel/les
+  assignations par département dans l'app une fois le frontend branché.
+- `Department.color` (hex `#RRGGBB`, validé par regex, défaut `#64748B`) —
+  reflétée en lecture seule via `department_color` sur `MaterialSerializer`
+  et `ShowMaterialSerializer`, sans requête supplémentaire côté frontend.
+  Aperçu visuel ajouté dans l'admin Django (pastille de couleur).
+- Revue de code faite : lint propre, validation confirmée à la fois côté
+  modèle (`full_clean`) et côté API (DRF propage automatiquement le
+  validator du modèle) — testé en conditions réelles (POST invalide → 400
+  avec message français). Suggestion non bloquante notée : ajouter un test
+  automatisé pour ce rejet côté API (actuellement vérifié manuellement,
+  seul le rejet côté modèle est couvert par la suite de tests).
+- Développée en parallèle de l'étape 7bis (OAuth) et de l'ajout
+  entreposage/transports/réglages — fusionnée avec `main` après coup,
+  conflits limités à des imports/emplacements de code (aucune divergence
+  fonctionnelle réelle).
 
 ## Fichiers produits
 

@@ -1,4 +1,4 @@
-# Architecture technique — Application de gestion de matériel
+# Architecture technique — RégiStock
 
 ## 1. Vue d'ensemble
 
@@ -99,6 +99,7 @@ Samuel a demandé si géolocaliser les lieux pour calculer automatiquement les t
 1. Depuis une fiche spectacle (ou globalement), générer une liste filtrée par technicien assigné.
 2. Chaque technicien reçoit/consulte uniquement son propre matériel et son horaire pour le spectacle concerné.
 3. Le matériel étant aussi rattaché à un département responsable (`department_id`), on peut aussi générer une liste par département — utile pour savoir qui doit apporter quoi sur le lieu du spectacle, indépendamment de l'assignation technicien.
+4. Chaque département a une couleur d'identification (`departments.color`) réglable, exposée dans l'API via `department_color` sur le matériel et les assignations show/matériel (voir `schema.md`, section 3) — le frontend (une fois branché) l'utilisera pour coder visuellement les listes et plannings par département.
 
 ### Workflow 3 — Suivi des besoins de location
 1. Lors de l'assignation de matériel à un spectacle, si le matériel n'existe pas encore dans l'inventaire ou doit être loué, l'ajouter comme entrée dans `materials` avec `ownership_status = rental` (ou simplement cocher `is_rental` dans `show_materials` si le matériel de base existe déjà mais que cette instance-là est louée).
