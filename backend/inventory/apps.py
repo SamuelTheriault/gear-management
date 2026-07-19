@@ -8,3 +8,7 @@ class InventoryConfig(AppConfig):
 
     default_auto_field = 'django.db.models.BigAutoField'
     name = 'inventory'
+
+    def ready(self):
+        """Branche les signaux de provisioning OAuth (voir inventory/signals.py)."""
+        from . import signals  # noqa: F401

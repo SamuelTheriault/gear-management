@@ -5,3 +5,13 @@ django-cors-headers==4.9.0
 PyMySQL==1.2.0
 gunicorn==26.0.0
 whitenoise==6.12.0
+django-allauth==65.18.0
+dj-rest-auth==7.2.0
+# Dépendances runtime du provider Google de django-allauth — non déclarées par
+# allauth/dj-rest-auth eux-mêmes, mais requises dès le démarrage de Django
+# (SocialAccountConfig.ready() importe le provider Google au chargement de
+# l'app, même sans requête). Sans elles, `python manage.py check` (et donc
+# tout déploiement Railway) plante immédiatement avec un ModuleNotFoundError.
+requests==2.34.2
+PyJWT==2.13.0
+cryptography==49.0.0

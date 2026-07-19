@@ -22,6 +22,14 @@ urlpatterns = [
     path('api/', include('inventory.urls')),
     # Login/logout pour l'API navigable DRF (pratique pour tester sans OAuth,
     # via le superutilisateur Django existant) — n'a aucun lien avec
-    # l'authentification finale des utilisateurs de l'app (Google OAuth, à venir).
+    # l'authentification finale des utilisateurs de l'app (Google OAuth).
     path('api-auth/', include('rest_framework.urls')),
+    # django-allauth : URLs de login social (ex. /accounts/google/login/) et
+    # de callback OAuth (/accounts/google/login/callback/) — chemins fixes,
+    # déjà enregistrés tels quels comme URIs de redirection dans Google Cloud.
+    path('accounts/', include('allauth.urls')),
+    # dj-rest-auth : endpoints DRF consommés par le frontend Vue une fois la
+    # session Django établie (utilisateur courant, logout) — voir
+    # config/settings.py pour le détail du flux.
+    path('api/auth/', include('dj_rest_auth.urls')),
 ]
