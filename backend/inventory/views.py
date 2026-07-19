@@ -93,7 +93,7 @@ class ShowViewSet(viewsets.ModelViewSet):
 
         material_conflicts = []
         for sm in show.show_materials.select_related('material').all():
-            for conflict in get_material_conflicts(show, sm.material, exclude_id=sm.id):
+            for conflict in get_material_conflicts(show, sm.material, exclude_id=sm.id, quantity=sm.quantity):
                 material_conflicts.append(serialize_material_conflict(conflict))
 
         technician_conflicts = []

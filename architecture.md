@@ -52,6 +52,12 @@ fenêtre = [start_datetime - buffer_before, end_datetime + buffer_after]
 ```
 Le système vérifie que cette fenêtre ne chevauche aucune autre fenêtre existante pour le **même matériel** (ou un parent/enfant lié, recherché récursivement dans la hiérarchie) sur un autre spectacle.
 
+**Quantité et capacité partagée (décision du 2026-07-19)** : pour du matériel possédé en plusieurs exemplaires identiques (`materials.quantity`, ex. 20 rallonges électriques), la règle ci-dessus n'est plus binaire pour le matériel exact demandé — c'est une capacité partagée. `get_material_conflicts` additionne les `quantity` déjà assignées sur des fenêtres qui chevauchent celle du nouveau spectacle, et ne bloque que si le total dépasserait `materials.quantity`. Deux mécanismes coexistent :
+- Matériel parent/enfant (hiérarchie kit) : reste vérifié en mode binaire — ces matériels doivent obligatoirement rester à `quantity = 1` (voir `MaterialSerializer.validate()`), la notion de capacité partagée n'a de sens que pour un matériel autonome.
+- Matériel exact (même `material_id`) : capacité partagée comme décrit ci-dessus. Un matériel « normal » à `quantity = 1` retombe naturellement sur le comportement binaire d'origine (toute assignation existante qui chevauche épuise déjà la seule unité disponible).
+
+Demander plus de `quantity` que ce qui est possédé au total (`materials.quantity`) est rejeté d'emblée par `ShowMaterialSerializer.validate()`, **avant même** de regarder les chevauchements — et ce cas précis n'est pas overridable par `force` (erreur de données, pas un arbitrage de planning). Un dépassement dû à un chevauchement réel, lui, reste bloquant avec possibilité de forcer via `force: true`, comme les autres conflits.
+
 ### b) Conflits de techniciens
 Même logique : un technicien ne peut pas être assigné (`show_technicians`) à deux spectacles dont les fenêtres effectives se chevauchent.
 

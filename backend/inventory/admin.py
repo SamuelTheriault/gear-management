@@ -76,7 +76,7 @@ class MaterialInline(admin.TabularInline):
 class MaterialAdmin(admin.ModelAdmin):
     """Admin pour l'inventaire de matériel, avec hiérarchie parent/enfant en inline."""
 
-    list_display = ('name', 'category', 'parent_material', 'venue', 'department', 'ownership_status')
+    list_display = ('name', 'category', 'quantity', 'parent_material', 'venue', 'department', 'ownership_status')
     list_filter = ('category', 'ownership_status', 'venue', 'department')
     search_fields = ('name', 'description')
     autocomplete_fields = ('parent_material', 'venue', 'department')
