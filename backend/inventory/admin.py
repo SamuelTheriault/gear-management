@@ -8,6 +8,11 @@ comme modèles autonomes — voir note en bas de fichier. `Transport` a, lui, un
 admin autonome (`TransportAdmin`) : contrairement aux tables d'association,
 une vue globale des déplacements (filtrable par technicien/date) a une valeur
 propre pour la planification logistique.
+
+Isolation par projet (voir `Project` dans models.py, ajouté le 2026-07-19) :
+`VenueAdmin`, `MaterialAdmin`, `TechnicianAdmin` et `ShowAdmin` exposent tous
+une colonne/filtre `project` — utile pour naviguer l'admin production par
+production tant que le frontend n'a pas de sélecteur de projet dédié.
 """
 
 from django.contrib import admin
@@ -16,6 +21,7 @@ from django.utils.html import format_html
 from .models import (
     Department,
     Material,
+    Project,
     Settings,
     Show,
     ShowMaterial,
@@ -36,13 +42,23 @@ class UserAdmin(admin.ModelAdmin):
     search_fields = ('name', 'email')
 
 
+@admin.register(Project)
+class ProjectAdmin(admin.ModelAdmin):
+    """Admin pour les productions — voir `Project` (models.py) pour la logique d'isolation."""
+
+    list_display = ('name', 'client_name', 'status', 'start_date', 'end_date', 'created_at')
+    list_filter = ('status',)
+    search_fields = ('name', 'client_name')
+
+
 @admin.register(Venue)
 class VenueAdmin(admin.ModelAdmin):
-    """Admin pour les lieux (salles, théâtres, sites de représentation, entrepôts)."""
+    """Admin pour les lieux (salles, théâtres, sites de représentation, entrepôts), isolés par projet."""
 
-    list_display = ('name', 'address', 'contact_name', 'contact_info', 'is_storage', 'latitude', 'longitude')
-    list_filter = ('is_storage',)
+    list_display = ('name', 'project', 'address', 'contact_name', 'contact_info', 'is_storage', 'latitude', 'longitude')
+    list_filter = ('project', 'is_storage')
     search_fields = ('name', 'address', 'contact_name')
+    autocomplete_fields = ('project',)
 
 
 @admin.register(Department)
@@ -74,14 +90,15 @@ class MaterialInline(admin.TabularInline):
 
 @admin.register(Material)
 class MaterialAdmin(admin.ModelAdmin):
-    """Admin pour l'inventaire de matériel, avec hiérarchie parent/enfant en inline."""
+    """Admin pour l'inventaire de matériel, isolé par projet, avec hiérarchie parent/enfant en inline."""
 
     list_display = (
-        'name', 'category', 'quantity', 'is_active', 'parent_material', 'venue', 'department', 'ownership_status',
+        'name', 'project', 'category', 'quantity', 'is_active', 'parent_material', 'venue', 'department',
+        'ownership_status',
     )
-    list_filter = ('is_active', 'category', 'ownership_status', 'venue', 'department')
+    list_filter = ('project', 'is_active', 'category', 'ownership_status', 'venue', 'department')
     search_fields = ('name', 'description')
-    autocomplete_fields = ('parent_material', 'venue', 'department')
+    autocomplete_fields = ('project', 'parent_material', 'venue', 'department')
     inlines = [MaterialInline]
     actions = ['mark_active', 'mark_inactive']
 
@@ -120,24 +137,27 @@ class TransportInline(admin.TabularInline):
 
 @admin.register(Show)
 class ShowAdmin(admin.ModelAdmin):
-    """Admin pour les fiches spectacles, avec matériel, techniciens et déplacements assignés en inline."""
+    """Admin pour les fiches spectacles, isolées par projet, avec matériel, techniciens et
+    déplacements assignés en inline."""
 
     list_display = (
-        'title', 'venue', 'event_type', 'start_datetime', 'end_datetime',
+        'title', 'project', 'venue', 'event_type', 'start_datetime', 'end_datetime',
         'buffer_before_minutes', 'buffer_after_minutes',
     )
-    list_filter = ('event_type', 'venue')
+    list_filter = ('project', 'event_type', 'venue')
     search_fields = ('title', 'notes')
-    autocomplete_fields = ('venue',)
+    autocomplete_fields = ('project', 'venue')
     inlines = [ShowMaterialInline, ShowTechnicianInline, TransportInline]
 
 
 @admin.register(Technician)
 class TechnicianAdmin(admin.ModelAdmin):
-    """Admin pour les techniciens disponibles pour assignation."""
+    """Admin pour les techniciens disponibles pour assignation, isolés par projet."""
 
-    list_display = ('name', 'specialty', 'contact_info')
+    list_display = ('name', 'project', 'specialty', 'contact_info')
+    list_filter = ('project',)
     search_fields = ('name', 'specialty')
+    autocomplete_fields = ('project',)
 
 
 @admin.register(Transport)

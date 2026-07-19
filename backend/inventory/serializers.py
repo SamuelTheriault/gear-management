@@ -1,6 +1,7 @@
 """
 Serializers DRF — squelette API pour les tables de schema.md (8 tables initiales
-+ `transports` et `settings`, ajoutées le 2026-07-18).
++ `transports`, `settings` et `projects`, ajoutées respectivement le
+2026-07-18 et le 2026-07-19).
 
 La validation de conflit (voir conflicts.py) vit dans les serializers des
 tables d'association/engagement (`ShowMaterialSerializer`,
@@ -11,6 +12,13 @@ possibilité de forcer via le champ `force` (décision prise avec Samuel le
 `TransportSerializer` pré-remplit aussi `estimated_duration_minutes` via
 l'API Google Routes (`inventory/maps.py`) quand le client ne le fournit pas
 explicitement et que les deux venues ont des coordonnées GPS.
+
+Isolation par projet (voir `Project` dans models.py) : `Venue`, `Material`,
+`Technician` et `Show` portent chacun un FK `project` obligatoire. Le helper
+`_same_project()` ci-dessous est utilisé dans les `validate()` concernés pour
+bloquer tout mélange entre deux projets (ex. assigner du matériel du Projet A
+à un spectacle du Projet B) — `Department` et `Settings` restent globaux, non
+concernés par cette vérification.
 """
 
 from rest_framework import serializers
@@ -26,6 +34,7 @@ from .maps import estimate_travel_minutes
 from .models import (
     Department,
     Material,
+    Project,
     Settings,
     Show,
     ShowMaterial,
@@ -35,6 +44,38 @@ from .models import (
     User,
     Venue,
 )
+
+
+def _project_id_of(obj):
+    """Id de projet d'un objet — l'objet peut être un `Project` lui-même (→ son
+    propre id) ou tout modèle isolé par projet portant un FK `project` (→ son
+    `project_id`). Voir `_same_project()`."""
+    if obj is None:
+        return None
+    return obj.id if isinstance(obj, Project) else obj.project_id
+
+
+def _same_project(*objects):
+    """True si tous les objets non-None fournis appartiennent au même `Project`.
+
+    Utilisé pour empêcher de mélanger des données de deux productions isolées
+    (voir `Project` dans models.py) — ex. assigner du matériel du Projet A à un
+    spectacle du Projet B. Accepte un mélange d'instances `Project` et
+    d'objets portant un FK `project` (ex. `_same_project(project, venue)`).
+    Ignore les objets None (champ optionnel non fourni).
+    """
+    project_ids = {_project_id_of(obj) for obj in objects if obj is not None}
+    project_ids.discard(None)
+    return len(project_ids) <= 1
+
+
+class ProjectSerializer(serializers.ModelSerializer):
+    """Sérialise les productions — voir `models.Project` pour la logique d'isolation."""
+
+    class Meta:
+        model = Project
+        fields = ['id', 'name', 'client_name', 'status', 'start_date', 'end_date', 'notes', 'created_at']
+        read_only_fields = ['created_at']
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -47,12 +88,14 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class VenueSerializer(serializers.ModelSerializer):
-    """Sérialise les lieux (salles, théâtres, sites de représentation, entrepôts)."""
+    """Sérialise les lieux (salles, théâtres, sites de représentation, entrepôts), isolés par projet."""
+
+    project_name = serializers.CharField(source='project.name', read_only=True)
 
     class Meta:
         model = Venue
         fields = [
-            'id', 'name', 'address', 'contact_name', 'contact_info', 'notes',
+            'id', 'project', 'project_name', 'name', 'address', 'contact_name', 'contact_info', 'notes',
             'is_storage', 'latitude', 'longitude',
         ]
 
@@ -66,8 +109,10 @@ class DepartmentSerializer(serializers.ModelSerializer):
 
 
 class MaterialSerializer(serializers.ModelSerializer):
-    """Sérialise l'inventaire de matériel, avec noms lisibles pour les FK (parent/venue/département)."""
+    """Sérialise l'inventaire de matériel, isolé par projet, avec noms lisibles pour les FK
+    (parent/venue/département)."""
 
+    project_name = serializers.CharField(source='project.name', read_only=True)
     parent_material_name = serializers.CharField(source='parent_material.name', read_only=True, default=None)
     venue_name = serializers.CharField(source='venue.name', read_only=True, default=None)
     department_name = serializers.CharField(source='department.name', read_only=True, default=None)
@@ -79,7 +124,7 @@ class MaterialSerializer(serializers.ModelSerializer):
     class Meta:
         model = Material
         fields = [
-            'id', 'name', 'description', 'category',
+            'id', 'project', 'project_name', 'name', 'description', 'category',
             'parent_material', 'parent_material_name',
             'venue', 'venue_name',
             'department', 'department_name', 'department_color',
@@ -120,12 +165,28 @@ class MaterialSerializer(serializers.ModelSerializer):
                         "avoir une quantité de 1."
                     ),
                 })
+
+        # Isolation par projet (voir Project, models.py) : un matériel ne peut
+        # référencer un parent ou un lieu d'entreposage que dans SON projet —
+        # sinon deux productions isolées se retrouveraient mélangées.
+        project = attrs.get('project', getattr(self.instance, 'project', None))
+        venue = attrs.get('venue', getattr(self.instance, 'venue', None))
+        if project is not None and parent_material is not None and not _same_project(project, parent_material):
+            raise serializers.ValidationError({
+                'parent_material': "Le matériel parent doit appartenir au même projet.",
+            })
+        if project is not None and venue is not None and not _same_project(project, venue):
+            raise serializers.ValidationError({
+                'venue': "Le lieu d'entreposage doit appartenir au même projet.",
+            })
         return attrs
 
 
 class ShowSerializer(serializers.ModelSerializer):
-    """Sérialise les fiches spectacles, en exposant la fenêtre effective calculée (buffers inclus)."""
+    """Sérialise les fiches spectacles, isolées par projet, en exposant la fenêtre
+    effective calculée (buffers inclus)."""
 
+    project_name = serializers.CharField(source='project.name', read_only=True)
     venue_name = serializers.CharField(source='venue.name', read_only=True)
     effective_start = serializers.DateTimeField(read_only=True)
     effective_end = serializers.DateTimeField(read_only=True)
@@ -133,7 +194,7 @@ class ShowSerializer(serializers.ModelSerializer):
     class Meta:
         model = Show
         fields = [
-            'id', 'title', 'venue', 'venue_name', 'event_type',
+            'id', 'project', 'project_name', 'title', 'venue', 'venue_name', 'event_type',
             'start_datetime', 'end_datetime',
             'buffer_before_minutes', 'buffer_after_minutes',
             'notes', 'effective_start', 'effective_end',
@@ -145,6 +206,15 @@ class ShowSerializer(serializers.ModelSerializer):
         if start and end and end <= start:
             raise serializers.ValidationError({
                 'end_datetime': "Doit être après start_datetime.",
+            })
+
+        # Isolation par projet (voir Project, models.py) : le lieu du spectacle
+        # doit appartenir au même projet que le spectacle lui-même.
+        project = attrs.get('project', getattr(self.instance, 'project', None))
+        venue = attrs.get('venue', getattr(self.instance, 'venue', None))
+        if not _same_project(project, venue):
+            raise serializers.ValidationError({
+                'venue': "Le lieu doit appartenir au même projet que le spectacle.",
             })
         return attrs
 
@@ -172,6 +242,13 @@ class ShowMaterialSerializer(serializers.ModelSerializer):
         show = attrs.get('show', getattr(self.instance, 'show', None))
         material = attrs.get('material', getattr(self.instance, 'material', None))
         quantity = attrs.get('quantity', getattr(self.instance, 'quantity', 1))
+
+        # Isolation par projet (voir Project, models.py) : impossible d'assigner
+        # du matériel d'un projet à un spectacle d'un autre projet.
+        if show and material and not _same_project(show, material):
+            raise serializers.ValidationError({
+                'material': "Ce matériel appartient à un autre projet que le spectacle.",
+            })
 
         # Vérification indépendante de `force` : demander plus d'unités qu'on
         # en possède au total n'est pas un conflit d'horaire à arbitrer, c'est
@@ -202,11 +279,13 @@ class ShowMaterialSerializer(serializers.ModelSerializer):
 
 
 class TechnicianSerializer(serializers.ModelSerializer):
-    """Sérialise les techniciens disponibles pour assignation."""
+    """Sérialise les techniciens disponibles pour assignation, isolés par projet."""
+
+    project_name = serializers.CharField(source='project.name', read_only=True)
 
     class Meta:
         model = Technician
-        fields = ['id', 'name', 'contact_info', 'specialty', 'notes']
+        fields = ['id', 'project', 'project_name', 'name', 'contact_info', 'specialty', 'notes']
 
 
 class ShowTechnicianSerializer(serializers.ModelSerializer):
@@ -224,6 +303,13 @@ class ShowTechnicianSerializer(serializers.ModelSerializer):
         force = attrs.pop('force', False)
         show = attrs.get('show', getattr(self.instance, 'show', None))
         technician = attrs.get('technician', getattr(self.instance, 'technician', None))
+
+        # Isolation par projet (voir Project, models.py) : impossible d'assigner
+        # un technicien d'un projet à un spectacle d'un autre projet.
+        if show and technician and not _same_project(show, technician):
+            raise serializers.ValidationError({
+                'technician': "Ce technicien appartient à un autre projet que le spectacle.",
+            })
 
         if show and technician and not force:
             exclude_id = self.instance.id if self.instance else None
@@ -273,6 +359,16 @@ class TransportSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 'destination_venue': "Doit être différent du lieu de départ.",
             })
+
+        # Isolation par projet (voir Project, models.py) : le spectacle, les
+        # deux lieux et le technicien (si fourni) doivent tous appartenir au
+        # même projet.
+        show = attrs.get('show', getattr(self.instance, 'show', None))
+        technician_for_project_check = attrs.get('technician', getattr(self.instance, 'technician', None))
+        if not _same_project(show, origin, destination, technician_for_project_check):
+            raise serializers.ValidationError(
+                "Le spectacle, les lieux et le technicien d'un déplacement doivent tous appartenir au même projet."
+            )
 
         # Auto-estimation via Google Routes : seulement si le client n'a pas
         # explicitement fourni de durée, et que les deux venues ont des

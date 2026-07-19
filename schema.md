@@ -22,11 +22,12 @@ Comptes ayant accès à l'outil (login via Google OAuth).
 
 ## 2. `venues`
 
-Lieux (salles, théâtres, sites de représentation, entrepôts).
+Lieux (salles, théâtres, sites de représentation, entrepôts). Isolés par projet — voir section 11 (`projects`).
 
 | Champ | Type | Description |
 |---|---|---|
 | id | INT, PK | Identifiant unique |
+| project_id | INT, FK → projects.id | Production à laquelle ce lieu appartient |
 | name | VARCHAR | Nom du lieu |
 | address | VARCHAR | Adresse |
 | contact_name | VARCHAR | Contact sur place |
@@ -57,11 +58,12 @@ Départements responsables du matériel (ex. son, éclairage, décor, costumes).
 
 ## 4. `materials`
 
-Inventaire de matériel. Supporte une hiérarchie parent/enfant (kits contenant des composants) et une catégorisation par type d'usage.
+Inventaire de matériel. Supporte une hiérarchie parent/enfant (kits contenant des composants) et une catégorisation par type d'usage. Isolé par projet — voir section 11 (`projects`).
 
 | Champ | Type | Description |
 |---|---|---|
 | id | INT, PK | Identifiant unique |
+| project_id | INT, FK → projects.id | Production à laquelle ce matériel appartient |
 | name | VARCHAR | Nom du matériel |
 | description | TEXT | Description / détails techniques |
 | category | VARCHAR/ENUM | Type d'usage (ex. audio, éclairage, rigging, mobilier) |
@@ -79,15 +81,18 @@ Inventaire de matériel. Supporte une hiérarchie parent/enfant (kits contenant 
 
 **Matériel désactivé** (décision du 2026-07-19) : `is_active = false` retire un matériel qu'on n'utilise plus (ex. un vieux rideau) des listes d'inventaire courantes sans le supprimer — l'historique des assignations existantes (`show_materials`) reste intact. `GET /api/materials/` ne retourne que `is_active = true` par défaut ; ajouter `?include_inactive=true` pour tout revoir. La consultation par id reste toujours accessible peu importe le statut.
 
+**Isolation par projet** (décision du 2026-07-19) : `parent_material` et `venue` (si renseignés) doivent obligatoirement appartenir au même `project` que le matériel lui-même — validé par `MaterialSerializer.validate()`, pas en base. `department`, lui, n'est PAS soumis à cette contrainte : les départements restent communs à tous les projets (voir section 3).
+
 ---
 
 ## 5. `shows`
 
-Fiches spectacles — regroupe répétitions et représentations avec leurs horaires et le lieu.
+Fiches spectacles — regroupe répétitions et représentations avec leurs horaires et le lieu. Isolées par projet — voir section 11 (`projects`).
 
 | Champ | Type | Description |
 |---|---|---|
 | id | INT, PK | Identifiant unique |
+| project_id | INT, FK → projects.id | Production à laquelle ce spectacle appartient — doit correspondre au projet de `venue_id` |
 | title | VARCHAR | Titre du spectacle |
 | venue_id | INT, FK → venues.id | Lieu de l'événement |
 | event_type | ENUM('rehearsal','performance','storage') | Répétition, représentation, ou entreposage (voir note ci-dessous) |
@@ -126,9 +131,12 @@ Table d'association — assigne du matériel à un spectacle/répétition. Conti
 
 ## 7. `technicians`
 
+Isolés par projet — voir section 11 (`projects`).
+
 | Champ | Type | Description |
 |---|---|---|
 | id | INT, PK | Identifiant unique |
+| project_id | INT, FK → projects.id | Production à laquelle ce technicien appartient |
 | name | VARCHAR | Nom du technicien |
 | contact_info | VARCHAR | Téléphone / email |
 | specialty | VARCHAR | Spécialité (son, éclairage, régie, etc.) |
@@ -189,6 +197,27 @@ Table ajoutée le 2026-07-18 (hors des 8 tables initiales) — **singleton** : u
 
 ---
 
+## 11. `projects`
+
+Table ajoutée le 2026-07-19 (hors des 8 tables initiales) à la demande de Samuel : il travaille en parallèle sur plusieurs productions qui n'ont rien en commun (compagnies de danse, musées, biennales comme CINARS/Parcours Danse/Furies). Une `project` regroupe tout le travail propre à une production précise.
+
+| Champ | Type | Description |
+|---|---|---|
+| id | INT, PK | Identifiant unique |
+| name | VARCHAR | Nom de la production |
+| client_name | VARCHAR (nullable) | Compagnie ou organisation cliente, si pertinent |
+| status | ENUM('active','archived') (default 'active') | Une production terminée s'archive plutôt que de se supprimer — voir note ci-dessous |
+| start_date | DATE, nullable | Date de début |
+| end_date | DATE, nullable | Date de fin |
+| notes | TEXT | Notes diverses |
+| created_at | DATETIME | Date de création |
+
+**Isolation par projet** : `venues`, `materials`, `technicians` et `shows` portent chacun un `project_id` obligatoire (FK `on_delete=PROTECT` — impossible de supprimer une `project` tant qu'il lui reste des données rattachées ; archiver via `status` est la voie normale pour retirer une production terminée sans rien perdre). `departments` et `settings` restent **communs à tous les projets** (décision explicite de Samuel) — voir sections 3 et 10.
+
+**Pas de vue « tous projets confondus »** (décision validée) : chaque liste de l'API se filtre par `?project=<id>` (optionnel — voir `inventory/views.py`, `ProjectFilteredMixin`), et bascule d'un projet à l'autre se fait entièrement côté frontend, sans recharger/exporter de fichier. Conséquence assumée : aucune détection de conflit entre deux projets différents (un même technicien réel entré dans deux projets isolés n'est jamais reconnu comme la même personne — voir `architecture.md`).
+
+---
+
 ## Calcul du temps de trajet (Google Routes API)
 
 Décision du 2026-07-18 : `venues.latitude`/`longitude` (section 2) permettent de calculer automatiquement `transports.estimated_duration_minutes` via l'API Google Routes ("Compute Routes", un trajet simple = un lieu de départ, un lieu d'arrivée), plutôt que de saisir cette durée à la main à chaque fois. Voir `inventory/maps.py` et `security.md` pour la gestion de la clé API (`GOOGLE_MAPS_API_KEY`). Si la clé n'est pas configurée, ou si l'appel échoue, le calcul se rabat silencieusement sur `settings.default_transport_duration_minutes` — aucune dépendance dure à ce service externe.
@@ -196,17 +225,21 @@ Décision du 2026-07-18 : `venues.latitude`/`longitude` (section 2) permettent d
 ## Relations — vue d'ensemble
 
 ```
+projects 1───N venues
+projects 1───N materials
+projects 1───N technicians
+projects 1───N shows
 venues 1───N shows
 materials N───1 materials (self, parent/enfant)
 materials N───1 venues (entreposage)
-materials N───1 departments (responsable)
+materials N───1 departments (responsable, COMMUN à tous les projets)
 shows 1───N show_materials N───1 materials
 shows 1───N show_technicians N───1 technicians
 shows 1───N transports
 transports N───1 venues (origin_venue_id)
 transports N───1 venues (destination_venue_id)
 transports N───1 technicians (nullable)
-settings (singleton, pas de relation — lu par shows/transports comme source de leurs valeurs par défaut)
+settings (singleton, COMMUN à tous les projets — lu par shows/transports comme source de leurs valeurs par défaut)
 ```
 
 ## Ce qui est explicitement HORS scope (par décision)

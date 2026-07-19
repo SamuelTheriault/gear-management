@@ -9,10 +9,12 @@ action `conflicts` en lecture seule pour lister les chevauchements
 actuellement en place sur un spectacle — matériel, techniciens, ET
 déplacements (utile pour repérer les assignations faites avec `force: true`).
 `SettingsView` est une vue singleton (pas de liste/création) pour la future
-page de réglages du frontend.
+page de réglages du frontend. `ProjectViewSet` expose en plus une action
+`duplicate` pour copier un projet (lieux/matériel/techniciens, sans
+assignations) vers un nouveau projet — voir `duplication.py`.
 """
 
-from rest_framework import generics, viewsets
+from rest_framework import generics, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -23,9 +25,11 @@ from .conflicts import (
     serialize_material_conflict,
     serialize_technician_conflict,
 )
+from .duplication import duplicate_project
 from .models import (
     Department,
     Material,
+    Project,
     Settings,
     Show,
     ShowMaterial,
@@ -38,6 +42,7 @@ from .models import (
 from .serializers import (
     DepartmentSerializer,
     MaterialSerializer,
+    ProjectSerializer,
     SettingsSerializer,
     ShowMaterialSerializer,
     ShowSerializer,
@@ -49,6 +54,24 @@ from .serializers import (
 )
 
 
+class ProjectFilteredMixin:
+    """Filtre optionnel `?project=<id>` sur les listes — voir `Project` (models.py).
+
+    Isolation par projet : chaque production isolée (venues, matériel,
+    techniciens, spectacles) n'apparaît que quand on précise son id. Optionnel
+    plutôt qu'obligatoire pour ne pas casser l'accès admin/API brut ; le
+    frontend (une fois branché) passera toujours ce paramètre pour refléter
+    le projet actif sélectionné par Samuel.
+    """
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        project_id = self.request.query_params.get('project')
+        if project_id:
+            queryset = queryset.filter(project_id=project_id)
+        return queryset
+
+
 class UserViewSet(viewsets.ModelViewSet):
     """CRUD standard sur les comptes applicatifs."""
 
@@ -56,10 +79,46 @@ class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
 
 
-class VenueViewSet(viewsets.ModelViewSet):
-    """CRUD standard sur les lieux."""
+class ProjectViewSet(viewsets.ModelViewSet):
+    """CRUD standard sur les productions — voir `Project` (models.py), plus
+    l'action `duplicate` pour démarrer une nouvelle édition d'un mandat."""
 
-    queryset = Venue.objects.all()
+    queryset = Project.objects.all()
+    serializer_class = ProjectSerializer
+
+    @action(detail=True, methods=['post'])
+    def duplicate(self, request, pk=None):
+        """Duplique ce projet vers un nouveau projet : lieux, matériel (hiérarchie
+        préservée) et techniciens copiés, AUCUNE assignation/horaire (spectacles,
+        déplacements) — voir `duplication.duplicate_project()`.
+
+        Corps de requête : `name` (obligatoire) — nom du nouveau projet ;
+        `client_name` (optionnel) — sinon repris du projet source (décision
+        Samuel du 2026-07-19 : une nouvelle édition, c'est généralement le même
+        client).
+        """
+        source_project = self.get_object()
+        name = (request.data.get('name') or '').strip()
+        if not name:
+            return Response(
+                {'name': "Le nom du nouveau projet est requis."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        client_name = request.data.get('client_name')
+        if client_name is None:
+            client_name = source_project.client_name
+
+        new_project, counts = duplicate_project(source_project, name=name, client_name=client_name)
+        return Response(
+            {'project': ProjectSerializer(new_project).data, 'copied': counts},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class VenueViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
+    """CRUD standard sur les lieux, filtrable par projet (`?project=<id>`)."""
+
+    queryset = Venue.objects.select_related('project').all()
     serializer_class = VenueSerializer
 
 
@@ -70,8 +129,8 @@ class DepartmentViewSet(viewsets.ModelViewSet):
     serializer_class = DepartmentSerializer
 
 
-class MaterialViewSet(viewsets.ModelViewSet):
-    """CRUD standard sur l'inventaire de matériel.
+class MaterialViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
+    """CRUD standard sur l'inventaire de matériel, filtrable par projet (`?project=<id>`).
 
     Le matériel désactivé (`is_active=False`, ex. un vieux rideau qu'on
     n'utilise plus) est masqué de la liste par défaut (`GET /api/materials/`)
@@ -83,7 +142,7 @@ class MaterialViewSet(viewsets.ModelViewSet):
     référencent un matériel entretemps désactivé. Décision du 2026-07-19.
     """
 
-    queryset = Material.objects.select_related('parent_material', 'venue', 'department').all()
+    queryset = Material.objects.select_related('project', 'parent_material', 'venue', 'department').all()
     serializer_class = MaterialSerializer
 
     def get_queryset(self):
@@ -97,10 +156,11 @@ class MaterialViewSet(viewsets.ModelViewSet):
         return queryset
 
 
-class ShowViewSet(viewsets.ModelViewSet):
-    """CRUD standard sur les fiches spectacles, plus l'action `conflicts` en lecture seule."""
+class ShowViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
+    """CRUD standard sur les fiches spectacles, filtrable par projet (`?project=<id>`),
+    plus l'action `conflicts` en lecture seule."""
 
-    queryset = Show.objects.select_related('venue').all()
+    queryset = Show.objects.select_related('project', 'venue').all()
     serializer_class = ShowSerializer
 
     @action(detail=True, methods=['get'])
@@ -145,10 +205,10 @@ class ShowMaterialViewSet(viewsets.ModelViewSet):
     serializer_class = ShowMaterialSerializer
 
 
-class TechnicianViewSet(viewsets.ModelViewSet):
-    """CRUD standard sur les techniciens."""
+class TechnicianViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
+    """CRUD standard sur les techniciens, filtrable par projet (`?project=<id>`)."""
 
-    queryset = Technician.objects.all()
+    queryset = Technician.objects.select_related('project').all()
     serializer_class = TechnicianSerializer
 
 

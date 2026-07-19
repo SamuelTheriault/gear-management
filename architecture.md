@@ -91,6 +91,18 @@ Samuel a demandé si géolocaliser les lieux pour calculer automatiquement les t
 - Dégradation silencieuse à chaque étape : pas de clé API configurée, coordonnées manquantes, erreur réseau/quota → retombe sur `settings.default_transport_duration_minutes`, jamais d'erreur ni de blocage.
 - **Étapes manuelles restantes côté Samuel** (voir aussi `inventory/maps.py` et `security.md`) : créer/choisir un projet Google Cloud, activer la facturation, activer "Routes API", créer une clé API restreinte à cette API, puis l'ajouter comme `GOOGLE_MAPS_API_KEY` dans les Variables Railway (et `backend/.env` en local, voir `.env.example`). Tant que ce n'est pas fait, l'app fonctionne normalement, juste sans l'auto-estimation.
 
+## 4quater. Isolation par projet (`projects`, décision du 2026-07-19)
+
+Samuel travaille en parallèle sur plusieurs productions qui n'ont rien en commun (compagnies de danse, musées, biennales comme CINARS/Parcours Danse/Furies). `Project` (voir `schema.md`, section 11) isole les données propres à chaque production :
+
+- `venues`, `materials`, `technicians` et `shows` portent chacun un `project_id` **obligatoire**. `departments` et `settings` restent volontairement **communs à tous les projets** — un choix explicite de Samuel, pas un oubli.
+- Validation bloquante côté serializers (`_same_project()` dans `serializers.py`) : impossible d'assigner du matériel/technicien d'un projet à un spectacle d'un autre (`ShowMaterialSerializer`/`ShowTechnicianSerializer`), impossible de donner à un `Show` un `venue` d'un autre projet (`ShowSerializer`), impossible qu'un `Material` référence un `parent_material` ou un `venue` d'entreposage d'un autre projet que le sien (`MaterialSerializer` — `department` reste volontairement exempté), et impossible qu'un `Transport` mélange un `show`, ses `origin_venue`/`destination_venue` et son `technician` de projets différents (`TransportSerializer`).
+- Filtrage optionnel `?project=<id>` sur les listes (`ProjectFilteredMixin` dans `views.py`) — optionnel plutôt qu'obligatoire pour ne pas casser un accès API brut, mais le frontend (une fois branché) passera toujours ce paramètre pour refléter le projet actif choisi par Samuel.
+- **Bascule entre projets** : entièrement côté frontend (sélecteur qui change le `?project=` utilisé par les appels API), sans recharger ni exporter/importer de fichier — c'est la demande initiale de Samuel (« comme une sauvegarde, mais je veux basculer sans charger un fichier »).
+- **Pas de vue « tous projets confondus »** (décision validée avec Samuel) : chaque vue reste filtrée par le projet actif. Conséquence assumée — la détection de conflits (section 4) ne peut jamais croiser deux projets différents, puisque `Technician`/`Material` d'un projet sont des lignes distinctes de celles d'un autre projet, même si elles représentent la même personne/le même équipement réel.
+- **Suppression** : `project` FK en `on_delete=PROTECT` sur les 4 modèles isolés — impossible de supprimer une `Project` tant qu'il lui reste des données. La voie normale pour retirer une production terminée est de l'archiver (`status='archived'`), pas de la supprimer.
+- **Duplication pour une nouvelle édition** (décision du 2026-07-19, voir `inventory/duplication.py`) : `POST /api/projects/{id}/duplicate/` copie `venues`, `materials` (hiérarchie parent/enfant remappée vers les nouvelles lignes) et `technicians` vers un nouveau projet — **jamais** `shows`/`show_materials`/`show_technicians`/`transports` (une nouvelle édition a son propre calendrier, pas celui de la précédente). `department` n'est jamais dupliqué ni remappé : référentiel commun, la copie pointe vers la même ligne que l'original. Le nouveau projet reprend `client_name` du projet source par défaut (surchargeable dans la requête) ; `notes`, `start_date`, `end_date` et `status` repartent à leurs valeurs par défaut (`status='active'`), quel que soit l'état du projet source. Réponse : `{'project': {...}, 'copied': {'venues': n, 'materials': n, 'technicians': n}}`. Opération atomique (tout ou rien) ; le projet source n'est jamais modifié.
+
 ## 5. Workflows principaux
 
 ### Workflow 1 — Créer une fiche spectacle
@@ -123,6 +135,18 @@ Samuel a demandé si géolocaliser les lieux pour calculer automatiquement les t
 ### Workflow 6 — Ajuster les réglages globaux
 1. `GET /api/settings/` pour consulter les valeurs actuelles (buffers par défaut, durée de transport par défaut, format de date/heure).
 2. `PATCH /api/settings/` avec les champs à changer — s'applique immédiatement aux prochaines fiches créées (pas de redéploiement, pas d'effet rétroactif sur les fiches existantes).
+
+### Workflow 7 — Basculer entre productions
+1. Créer une `project` par production (`POST /api/projects/` : nom, client, dates optionnelles).
+2. Tout le contenu propre à cette production (`venues`, `materials`, `technicians`, `shows`) se crée avec ce `project_id`.
+3. Le frontend (une fois branché) garde en mémoire le projet actif et l'ajoute systématiquement en `?project=<id>` sur les appels API — basculer d'une production à l'autre est instantané, sans recharger ni exporter/importer de fichier.
+4. Une production terminée s'archive (`PATCH /api/projects/{id}/` avec `status: "archived"`) plutôt que de se supprimer — elle reste consultable et re-sélectionnable.
+
+### Workflow 8 — Démarrer une nouvelle édition d'un mandat existant
+1. `POST /api/projects/{id}/duplicate/` sur le projet de l'édition précédente, avec au minimum `{"name": "Furies 2027"}`.
+2. Le nouveau projet reprend `client_name` de l'édition précédente (surchargeable avec `client_name` dans le corps de la requête), ainsi que tous les lieux, tout le matériel (hiérarchie kit/composants incluse) et tous les techniciens — copiés, pas partagés : modifier la copie n'affecte jamais l'édition précédente.
+3. Aucun spectacle, aucune assignation de matériel/technicien, aucun déplacement n'est copié — la nouvelle édition démarre avec un calendrier vierge, prête à recevoir ses propres `shows`.
+4. La réponse inclut le décompte de ce qui a été copié (`copied: {venues, materials, technicians}`) pour confirmation immédiate.
 
 ## 6. Explicitement hors scope (validé avec Samuel)
 

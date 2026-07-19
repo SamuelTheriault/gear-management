@@ -3,8 +3,10 @@ Modèles Django — Gestion de matériel.
 
 Correspond aux tables décrites dans /schema.md (source de vérité fonctionnelle,
 à garder synchronisé avec ce fichier à chaque décision structurante) : les 8
-tables initiales, plus `transports` (2026-07-18) et `settings` (2026-07-18,
-singleton — voir la classe `Settings` ci-dessous).
+tables initiales, plus `transports` (2026-07-18), `settings` (2026-07-18,
+singleton — voir la classe `Settings` ci-dessous), et `projects` (2026-07-19,
+voir la classe `Project` — isole `Venue`/`Material`/`Technician`/`Show` par
+production ; `Department` et `Settings` restent globaux).
 
 Note d'architecture : `User` ci-dessous est un modèle applicatif distinct du
 superutilisateur Django (django.contrib.auth.models.User) utilisé pour
@@ -145,9 +147,67 @@ def _default_transport_duration_minutes():
     return Settings.load().default_transport_duration_minutes
 
 
-class Venue(models.Model):
-    """Lieux (salles, théâtres, sites de représentation, entrepôts)."""
+class Project(models.Model):
+    """Une production — regroupe lieux, matériel, techniciens et spectacles propres
+    à un engagement précis (ajouté le 2026-07-19 à la demande de Samuel).
 
+    Samuel travaille en parallèle sur plusieurs productions qui n'ont rien en
+    commun entre elles (différentes compagnies de danse, musées, biennales
+    comme CINARS/Parcours Danse/Furies). `Project` isole donc les données :
+    `Venue`, `Material`, `Technician` et `Show` portent chacun un FK
+    `project` obligatoire (voir plus bas). Seul `Department` reste commun à
+    tous les projets (structure son/éclairage/décor réutilisée partout,
+    décision explicite de Samuel) — de même que `Settings`, qui reste une
+    préférence d'affichage globale, pas une donnée de production.
+
+    Pas de vue « tous projets confondus » pour l'instant (décision validée
+    avec Samuel) : chaque vue de l'app est toujours filtrée par le projet
+    actif (voir `?project=<id>` sur les ViewSets concernés dans `views.py`).
+    Conséquence assumée : aucune détection de conflit entre deux projets
+    différents (un même technicien réel entré dans deux projets isolés n'est
+    jamais reconnu comme la même personne).
+
+    `status` permet d'archiver une production terminée plutôt que de la
+    supprimer — basculer d'un projet à l'autre (actif ou archivé) doit rester
+    possible à tout moment sans recharger/exporter de fichier, contrairement
+    à une sauvegarde classique.
+    """
+
+    STATUS_ACTIVE = 'active'
+    STATUS_ARCHIVED = 'archived'
+    STATUS_CHOICES = [
+        (STATUS_ACTIVE, 'Actif'),
+        (STATUS_ARCHIVED, 'Archivé'),
+    ]
+
+    name = models.CharField(max_length=255)
+    client_name = models.CharField(
+        max_length=255, blank=True,
+        help_text="Compagnie ou organisation cliente, si pertinent (ex. une compagnie de danse, un musée).",
+    )
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
+    start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'projects'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return self.name
+
+
+class Venue(models.Model):
+    """Lieux (salles, théâtres, sites de représentation, entrepôts) — isolés par projet."""
+
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.PROTECT,
+        related_name='venues',
+        help_text="Production à laquelle ce lieu appartient — voir Project.",
+    )
     name = models.CharField(max_length=255)
     address = models.CharField(max_length=255, blank=True)
     contact_name = models.CharField(max_length=255, blank=True)
@@ -216,7 +276,7 @@ class Department(models.Model):
 
 
 class Material(models.Model):
-    """Inventaire de matériel — hiérarchie parent/enfant (kits) + catégorisation."""
+    """Inventaire de matériel — hiérarchie parent/enfant (kits) + catégorisation. Isolé par projet."""
 
     CATEGORY_AUDIO = 'audio'
     CATEGORY_ECLAIRAGE = 'eclairage'
@@ -246,6 +306,12 @@ class Material(models.Model):
         (OWNERSHIP_RENTAL, 'Location'),
     ]
 
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.PROTECT,
+        related_name='materials',
+        help_text="Production à laquelle ce matériel appartient — voir Project.",
+    )
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, blank=True)
@@ -308,7 +374,7 @@ class Material(models.Model):
 
 
 class Show(models.Model):
-    """Fiches spectacles — répétitions et représentations, avec horaires et lieu."""
+    """Fiches spectacles — répétitions et représentations, avec horaires et lieu. Isolées par projet."""
 
     EVENT_REHEARSAL = 'rehearsal'
     EVENT_PERFORMANCE = 'performance'
@@ -319,6 +385,12 @@ class Show(models.Model):
         (EVENT_STORAGE, 'Entreposage'),
     ]
 
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.PROTECT,
+        related_name='shows',
+        help_text="Production à laquelle ce spectacle appartient — voir Project. Doit correspondre au projet de `venue`.",
+    )
     title = models.CharField(max_length=255)
     venue = models.ForeignKey(Venue, on_delete=models.PROTECT, related_name='shows')
     event_type = models.CharField(max_length=15, choices=EVENT_TYPE_CHOICES)
@@ -378,8 +450,14 @@ class ShowMaterial(models.Model):
 
 
 class Technician(models.Model):
-    """Techniciens disponibles pour assignation aux spectacles."""
+    """Techniciens disponibles pour assignation aux spectacles. Isolés par projet."""
 
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.PROTECT,
+        related_name='technicians',
+        help_text="Production à laquelle ce technicien appartient — voir Project.",
+    )
     name = models.CharField(max_length=255)
     contact_info = models.CharField(max_length=255, blank=True)
     specialty = models.CharField(max_length=255, blank=True)
