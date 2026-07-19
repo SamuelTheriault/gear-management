@@ -788,3 +788,157 @@ class ProjectScopingTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.project_a.refresh_from_db()
         self.assertEqual(self.project_a.status, Project.STATUS_ARCHIVED)
+
+
+class ProjectDuplicationTests(TestCase):
+    """Vérifie `POST /api/projects/{id}/duplicate/` (ajouté le 2026-07-19) :
+    copie lieux/matériel/techniciens vers un nouveau projet, hiérarchie de
+    matériel préservée, AUCUNE assignation (shows/show_materials/
+    show_technicians/transports) copiée, projet source intact."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+
+        self.source = Project.objects.create(name="Furies 2026", client_name="Festival Furies", notes="Notes 2026")
+        self.dept = Department.objects.create(name="Son")
+
+        self.storage_venue = Venue.objects.create(
+            project=self.source, name="Entrepôt", is_storage=True,
+        )
+        self.stage_venue = Venue.objects.create(project=self.source, name="Salle principale")
+
+        self.kit = Material.objects.create(
+            project=self.source, name="Kit Audio", category="audio",
+            venue=self.storage_venue, department=self.dept,
+        )
+        self.mic = Material.objects.create(
+            project=self.source, name="Micro sans fil", category="audio",
+            parent_material=self.kit, venue=self.storage_venue,
+        )
+        self.standalone = Material.objects.create(
+            project=self.source, name="Rallonge", category="autre",
+            quantity=20, is_active=False,
+        )
+
+        self.technician = Technician.objects.create(
+            project=self.source, name="Alex Dupont", specialty="son", contact_info="alex@example.com",
+        )
+
+        self.show = Show.objects.create(
+            project=self.source, title="Répétition générale", venue=self.stage_venue,
+            event_type="rehearsal", start_datetime=_dt(14), end_datetime=_dt(16),
+        )
+        ShowMaterial.objects.create(show=self.show, material=self.kit)
+        ShowTechnician.objects.create(show=self.show, technician=self.technician)
+        Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=self.storage_venue, destination_venue=self.stage_venue,
+            scheduled_datetime=_dt(10), estimated_duration_minutes=30,
+        )
+
+    def test_name_is_required(self):
+        response = self.client.post(f'/api/projects/{self.source.id}/duplicate/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('name', response.data)
+
+    def test_creates_new_project_with_client_name_copied_by_default(self):
+        response = self.client.post(f'/api/projects/{self.source.id}/duplicate/', {
+            'name': "Furies 2027",
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        new_project_data = response.data['project']
+        self.assertEqual(new_project_data['name'], "Furies 2027")
+        self.assertEqual(new_project_data['client_name'], "Festival Furies")
+        self.assertEqual(new_project_data['status'], Project.STATUS_ACTIVE)
+        self.assertIsNone(new_project_data['start_date'])
+        self.assertIsNone(new_project_data['end_date'])
+
+    def test_notes_and_dates_are_not_copied(self):
+        # Décision Samuel (2026-07-19) : contrairement à client_name, les notes
+        # et les dates repartent à vide — spécifiques à chaque édition.
+        response = self.client.post(f'/api/projects/{self.source.id}/duplicate/', {
+            'name': "Furies 2027",
+        }, format='json')
+        self.assertEqual(response.data['project']['notes'], '')
+
+    def test_client_name_override_is_respected(self):
+        response = self.client.post(f'/api/projects/{self.source.id}/duplicate/', {
+            'name': "Coproduction 2027", 'client_name': "Autre client",
+        }, format='json')
+        self.assertEqual(response.data['project']['client_name'], "Autre client")
+
+    def test_copies_venues_materials_and_technicians_counts(self):
+        response = self.client.post(f'/api/projects/{self.source.id}/duplicate/', {
+            'name': "Furies 2027",
+        }, format='json')
+        self.assertEqual(response.data['copied'], {'venues': 2, 'materials': 3, 'technicians': 1})
+
+    def test_no_assignments_are_copied(self):
+        response = self.client.post(f'/api/projects/{self.source.id}/duplicate/', {
+            'name': "Furies 2027",
+        }, format='json')
+        new_project_id = response.data['project']['id']
+        self.assertEqual(Show.objects.filter(project_id=new_project_id).count(), 0)
+        # Le show/l'assignation source, eux, doivent rester intacts.
+        self.assertEqual(Show.objects.filter(project=self.source).count(), 1)
+        self.assertEqual(ShowMaterial.objects.count(), 1)
+        self.assertEqual(ShowTechnician.objects.count(), 1)
+        self.assertEqual(Transport.objects.count(), 1)
+
+    def test_material_hierarchy_is_preserved_with_remapped_ids(self):
+        response = self.client.post(f'/api/projects/{self.source.id}/duplicate/', {
+            'name': "Furies 2027",
+        }, format='json')
+        new_project_id = response.data['project']['id']
+
+        new_kit = Material.objects.get(project_id=new_project_id, name="Kit Audio")
+        new_mic = Material.objects.get(project_id=new_project_id, name="Micro sans fil")
+        self.assertEqual(new_mic.parent_material_id, new_kit.id)
+        # La hiérarchie copiée ne doit JAMAIS pointer vers du matériel du projet source.
+        self.assertNotEqual(new_kit.id, self.kit.id)
+
+    def test_material_venue_is_remapped_to_the_new_project(self):
+        response = self.client.post(f'/api/projects/{self.source.id}/duplicate/', {
+            'name': "Furies 2027",
+        }, format='json')
+        new_project_id = response.data['project']['id']
+
+        new_kit = Material.objects.get(project_id=new_project_id, name="Kit Audio")
+        new_storage_venue = Venue.objects.get(project_id=new_project_id, name="Entrepôt")
+        self.assertEqual(new_kit.venue_id, new_storage_venue.id)
+        self.assertNotEqual(new_kit.venue_id, self.storage_venue.id)
+
+    def test_department_is_kept_as_is_not_duplicated(self):
+        # Department est un référentiel commun à tous les projets — jamais remappé.
+        response = self.client.post(f'/api/projects/{self.source.id}/duplicate/', {
+            'name': "Furies 2027",
+        }, format='json')
+        new_project_id = response.data['project']['id']
+
+        new_kit = Material.objects.get(project_id=new_project_id, name="Kit Audio")
+        self.assertEqual(new_kit.department_id, self.dept.id)
+        self.assertEqual(Department.objects.count(), 1)
+
+    def test_inactive_material_is_copied_with_same_status(self):
+        response = self.client.post(f'/api/projects/{self.source.id}/duplicate/', {
+            'name': "Furies 2027",
+        }, format='json')
+        new_project_id = response.data['project']['id']
+
+        new_standalone = Material.objects.get(project_id=new_project_id, name="Rallonge")
+        self.assertFalse(new_standalone.is_active)
+        self.assertEqual(new_standalone.quantity, 20)
+
+    def test_source_project_is_left_untouched(self):
+        materials_before = Material.objects.filter(project=self.source).count()
+        venues_before = Venue.objects.filter(project=self.source).count()
+        technicians_before = Technician.objects.filter(project=self.source).count()
+
+        self.client.post(f'/api/projects/{self.source.id}/duplicate/', {'name': "Furies 2027"}, format='json')
+
+        self.assertEqual(Material.objects.filter(project=self.source).count(), materials_before)
+        self.assertEqual(Venue.objects.filter(project=self.source).count(), venues_before)
+        self.assertEqual(Technician.objects.filter(project=self.source).count(), technicians_before)
+        self.assertEqual(self.source.notes, "Notes 2026")

@@ -101,6 +101,7 @@ Samuel travaille en parallèle sur plusieurs productions qui n'ont rien en commu
 - **Bascule entre projets** : entièrement côté frontend (sélecteur qui change le `?project=` utilisé par les appels API), sans recharger ni exporter/importer de fichier — c'est la demande initiale de Samuel (« comme une sauvegarde, mais je veux basculer sans charger un fichier »).
 - **Pas de vue « tous projets confondus »** (décision validée avec Samuel) : chaque vue reste filtrée par le projet actif. Conséquence assumée — la détection de conflits (section 4) ne peut jamais croiser deux projets différents, puisque `Technician`/`Material` d'un projet sont des lignes distinctes de celles d'un autre projet, même si elles représentent la même personne/le même équipement réel.
 - **Suppression** : `project` FK en `on_delete=PROTECT` sur les 4 modèles isolés — impossible de supprimer une `Project` tant qu'il lui reste des données. La voie normale pour retirer une production terminée est de l'archiver (`status='archived'`), pas de la supprimer.
+- **Duplication pour une nouvelle édition** (décision du 2026-07-19, voir `inventory/duplication.py`) : `POST /api/projects/{id}/duplicate/` copie `venues`, `materials` (hiérarchie parent/enfant remappée vers les nouvelles lignes) et `technicians` vers un nouveau projet — **jamais** `shows`/`show_materials`/`show_technicians`/`transports` (une nouvelle édition a son propre calendrier, pas celui de la précédente). `department` n'est jamais dupliqué ni remappé : référentiel commun, la copie pointe vers la même ligne que l'original. Le nouveau projet reprend `client_name` du projet source par défaut (surchargeable dans la requête) ; `notes`, `start_date`, `end_date` et `status` repartent à leurs valeurs par défaut (`status='active'`), quel que soit l'état du projet source. Réponse : `{'project': {...}, 'copied': {'venues': n, 'materials': n, 'technicians': n}}`. Opération atomique (tout ou rien) ; le projet source n'est jamais modifié.
 
 ## 5. Workflows principaux
 
@@ -140,6 +141,12 @@ Samuel travaille en parallèle sur plusieurs productions qui n'ont rien en commu
 2. Tout le contenu propre à cette production (`venues`, `materials`, `technicians`, `shows`) se crée avec ce `project_id`.
 3. Le frontend (une fois branché) garde en mémoire le projet actif et l'ajoute systématiquement en `?project=<id>` sur les appels API — basculer d'une production à l'autre est instantané, sans recharger ni exporter/importer de fichier.
 4. Une production terminée s'archive (`PATCH /api/projects/{id}/` avec `status: "archived"`) plutôt que de se supprimer — elle reste consultable et re-sélectionnable.
+
+### Workflow 8 — Démarrer une nouvelle édition d'un mandat existant
+1. `POST /api/projects/{id}/duplicate/` sur le projet de l'édition précédente, avec au minimum `{"name": "Furies 2027"}`.
+2. Le nouveau projet reprend `client_name` de l'édition précédente (surchargeable avec `client_name` dans le corps de la requête), ainsi que tous les lieux, tout le matériel (hiérarchie kit/composants incluse) et tous les techniciens — copiés, pas partagés : modifier la copie n'affecte jamais l'édition précédente.
+3. Aucun spectacle, aucune assignation de matériel/technicien, aucun déplacement n'est copié — la nouvelle édition démarre avec un calendrier vierge, prête à recevoir ses propres `shows`.
+4. La réponse inclut le décompte de ce qui a été copié (`copied: {venues, materials, technicians}`) pour confirmation immédiate.
 
 ## 6. Explicitement hors scope (validé avec Samuel)
 

@@ -9,10 +9,12 @@ action `conflicts` en lecture seule pour lister les chevauchements
 actuellement en place sur un spectacle — matériel, techniciens, ET
 déplacements (utile pour repérer les assignations faites avec `force: true`).
 `SettingsView` est une vue singleton (pas de liste/création) pour la future
-page de réglages du frontend.
+page de réglages du frontend. `ProjectViewSet` expose en plus une action
+`duplicate` pour copier un projet (lieux/matériel/techniciens, sans
+assignations) vers un nouveau projet — voir `duplication.py`.
 """
 
-from rest_framework import generics, viewsets
+from rest_framework import generics, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -23,6 +25,7 @@ from .conflicts import (
     serialize_material_conflict,
     serialize_technician_conflict,
 )
+from .duplication import duplicate_project
 from .models import (
     Department,
     Material,
@@ -77,10 +80,39 @@ class UserViewSet(viewsets.ModelViewSet):
 
 
 class ProjectViewSet(viewsets.ModelViewSet):
-    """CRUD standard sur les productions — voir `Project` (models.py)."""
+    """CRUD standard sur les productions — voir `Project` (models.py), plus
+    l'action `duplicate` pour démarrer une nouvelle édition d'un mandat."""
 
     queryset = Project.objects.all()
     serializer_class = ProjectSerializer
+
+    @action(detail=True, methods=['post'])
+    def duplicate(self, request, pk=None):
+        """Duplique ce projet vers un nouveau projet : lieux, matériel (hiérarchie
+        préservée) et techniciens copiés, AUCUNE assignation/horaire (spectacles,
+        déplacements) — voir `duplication.duplicate_project()`.
+
+        Corps de requête : `name` (obligatoire) — nom du nouveau projet ;
+        `client_name` (optionnel) — sinon repris du projet source (décision
+        Samuel du 2026-07-19 : une nouvelle édition, c'est généralement le même
+        client).
+        """
+        source_project = self.get_object()
+        name = (request.data.get('name') or '').strip()
+        if not name:
+            return Response(
+                {'name': "Le nom du nouveau projet est requis."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        client_name = request.data.get('client_name')
+        if client_name is None:
+            client_name = source_project.client_name
+
+        new_project, counts = duplicate_project(source_project, name=name, client_name=client_name)
+        return Response(
+            {'project': ProjectSerializer(new_project).data, 'copied': counts},
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class VenueViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):

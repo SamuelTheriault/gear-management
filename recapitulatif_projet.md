@@ -18,6 +18,7 @@ Application web interne pour gérer l'inventaire de matériel de production (son
 - **Authentification** : login via Google OAuth (pas de gestion de mot de passe custom), avec rôles admin / viewer.
 - **Réglages globaux (`settings`)** : buffers par défaut, durée de transport par défaut, format d'affichage des dates/heures — ajustables via l'API sans redéploiement, en prévision d'une page de réglages côté frontend. Voir note dédiée plus bas.
 - **Productions (`projects`)** : Samuel travaille en parallèle sur plusieurs productions sans rien en commun (compagnies de danse, musées, biennales) — `venues`, `materials`, `technicians` et `shows` sont isolés par production, `departments` et `settings` restent communs à toutes. Bascule d'une production à l'autre entièrement côté frontend (à venir), sans recharger/exporter de fichier. Voir note dédiée plus bas.
+- **Duplication de projet** (`POST /api/projects/{id}/duplicate/`) : démarrer une nouvelle édition d'un mandat (ex. Furies 2027 après Furies 2026) en copiant lieux/matériel/techniciens de l'édition précédente, sans copier ni spectacles ni assignations — le calendrier repart vierge. Voir note dédiée plus bas.
 
 ## Ce qui a été volontairement exclu de la V1
 
@@ -58,6 +59,7 @@ Détails complets des champs → voir `schema.md`.
 11. ~~Quantité de matériel (`Material.quantity` / `ShowMaterial.quantity`).~~ ✅ (2026-07-19) — voir note ci-dessous
 12. ~~Matériel désactivable (`Material.is_active`).~~ ✅ (2026-07-19) — voir note ci-dessous
 13. ~~Isolation par projet (`Project`) pour travailler sur plusieurs productions en parallèle.~~ ✅ (2026-07-19) — voir note ci-dessous
+14. ~~Duplication de projet (`POST /api/projects/{id}/duplicate/`) pour démarrer une nouvelle édition d'un mandat.~~ ✅ (2026-07-19) — voir note ci-dessous
 
 ### Notes de déploiement (piège à retenir)
 
@@ -306,6 +308,38 @@ unitaires.
 - 13 nouveaux tests (isolation, filtrage, blocage cross-projet, département
   resté global, suppression protégée) — suite complète à 87 tests, tous
   passent. flake8 propre.
+
+### Note sur la duplication de projet (étape 14, 2026-07-19)
+
+- Besoin exprimé par Samuel : pouvoir copier un projet vers un nouveau projet
+  pour démarrer une nouvelle édition d'un mandat (ex. une nouvelle année de
+  Furies), sans repartir de zéro sur le matériel/les lieux/les techniciens,
+  mais SANS traîner le calendrier de l'édition précédente.
+- Vérification faite avant de coder (demandée par Samuel) : sur les 11
+  modèles de l'app, seuls `Venue`, `Material` et `Technician` sont scopés par
+  projet en plus de `Show` — `Department`/`Settings`/`User` sont globaux (rien
+  à copier), et `ShowMaterial`/`ShowTechnician`/`Transport` sont des
+  assignations rattachées à `Show`, explicitement exclues. La liste proposée
+  par Samuel (matériel, lieux, techniciens) était donc déjà complète.
+- Décision sur les champs du nouveau projet (clarifiée avec Samuel) :
+  `client_name` repris du projet source par défaut (surchargeable) — une
+  nouvelle édition, c'est généralement le même client. `notes`,
+  `start_date`/`end_date` et `status` repartent à leurs valeurs par défaut
+  (`status='active'`), quel que soit l'état du projet source — spécifiques à
+  chaque édition, jamais hérités.
+- `POST /api/projects/{id}/duplicate/` (`inventory/duplication.py`) : copie
+  atomique (tout ou rien) des lieux, du matériel (hiérarchie parent/enfant
+  remappée vers les nouvelles lignes créées, pas vers celles du projet
+  source) et des techniciens vers un nouveau `Project`. `department` sur le
+  matériel copié n'est jamais remappé : référentiel commun à tous les
+  projets, la copie pointe vers la même ligne que l'original. Réponse :
+  `{'project': {...}, 'copied': {'venues': n, 'materials': n, 'technicians': n}}`
+  pour confirmation immédiate du volume copié.
+- Le projet source n'est jamais modifié par l'opération.
+- 11 nouveaux tests (`inventory/tests.py`, `ProjectDuplicationTests` —
+  décompte, hiérarchie remappée, venue remappée, département non dupliqué,
+  aucune assignation copiée, projet source intact, nom obligatoire) — suite
+  complète à 98 tests, tous passent. flake8 propre.
 
 ## Fichiers produits
 
