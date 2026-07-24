@@ -60,6 +60,7 @@ Détails complets des champs → voir `schema.md`.
 12. ~~Matériel désactivable (`Material.is_active`).~~ ✅ (2026-07-19) — voir note ci-dessous
 13. ~~Isolation par projet (`Project`) pour travailler sur plusieurs productions en parallèle.~~ ✅ (2026-07-19) — voir note ci-dessous
 14. ~~Duplication de projet (`POST /api/projects/{id}/duplicate/`) pour démarrer une nouvelle édition d'un mandat.~~ ✅ (2026-07-19) — voir note ci-dessous
+15. ~~Code court par lieu (`Venue.code`).~~ ✅ (2026-07-19) — voir note ci-dessous
 
 ### Notes de déploiement (piège à retenir)
 
@@ -340,6 +341,22 @@ unitaires.
   décompte, hiérarchie remappée, venue remappée, département non dupliqué,
   aucune assignation copiée, projet source intact, nom obligatoire) — suite
   complète à 98 tests, tous passent. flake8 propre.
+
+### Note sur le code court par lieu (étape 15, 2026-07-19)
+
+- Besoin exprimé par Samuel : pouvoir inscrire un code court (ex. `CHAP` pour
+  la Chapelle) à la création d'un lieu, réutilisable pour afficher le
+  départ/arrivée d'un déplacement (`transports`) de façon compacte.
+- `Venue.code` (jusqu'à 4 caractères — pas nécessairement exactement 4,
+  ex. `MEM` pour le Musée de la santé Armand-Frappier reste valide),
+  normalisé en majuscules à l'enregistrement, optionnel. Unicité vérifiée
+  par projet (`VenueSerializer`, pas une contrainte en base — sinon
+  plusieurs lieux sans code, chaîne vide, entreraient en conflit entre eux).
+  Le même code peut être réutilisé dans deux projets différents (productions
+  isolées, voir étape 13).
+- `TransportSerializer` expose `origin_venue_code`/`destination_venue_code`
+  en lecture seule (vide si le lieu concerné n'a pas de code).
+- 6 nouveaux tests — suite complète à 104 tests, tous passent. flake8 propre.
 
 ## Fichiers produits
 

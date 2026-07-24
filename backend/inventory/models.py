@@ -209,6 +209,19 @@ class Venue(models.Model):
         help_text="Production à laquelle ce lieu appartient — voir Project.",
     )
     name = models.CharField(max_length=255)
+    code = models.CharField(
+        max_length=4,
+        blank=True,
+        help_text=(
+            "Code court (jusqu'à 4 caractères, ex. CHAP pour Chapelle) saisi "
+            "à la création du lieu — sert d'identifiant rapide, notamment pour "
+            "afficher le départ/arrivée d'un Transport de façon compacte (voir "
+            "TransportSerializer). Normalisé en majuscules à l'enregistrement. "
+            "Unique par projet si renseigné (validé par VenueSerializer, pas "
+            "en base — plusieurs lieux sans code coexistent normalement). "
+            "Ajouté le 2026-07-19."
+        ),
+    )
     address = models.CharField(max_length=255, blank=True)
     contact_name = models.CharField(max_length=255, blank=True)
     contact_info = models.CharField(max_length=255, blank=True)
@@ -241,6 +254,12 @@ class Venue(models.Model):
 
     def __str__(self):
         return self.name
+
+    def save(self, *args, **kwargs):
+        """Normalise `code` en majuscules (ex. "chap" saisi -> "CHAP" stocké)."""
+        if self.code:
+            self.code = self.code.upper()
+        super().save(*args, **kwargs)
 
 
 class Department(models.Model):

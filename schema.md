@@ -29,6 +29,7 @@ Lieux (salles, théâtres, sites de représentation, entrepôts). Isolés par pr
 | id | INT, PK | Identifiant unique |
 | project_id | INT, FK → projects.id | Production à laquelle ce lieu appartient |
 | name | VARCHAR | Nom du lieu |
+| code | VARCHAR(4), nullable/vide | Code court saisi à la création (ex. `CHAP` pour Chapelle) — voir note ci-dessous |
 | address | VARCHAR | Adresse |
 | contact_name | VARCHAR | Contact sur place |
 | contact_info | VARCHAR | Téléphone / email du contact |
@@ -36,6 +37,8 @@ Lieux (salles, théâtres, sites de représentation, entrepôts). Isolés par pr
 | is_storage | BOOLEAN (default false) | Lieu d'entreposage (entrepôt) plutôt qu'un vrai lieu de spectacle — voir règle d'exemption dans la section `show_materials` |
 | latitude | DECIMAL(9,6), nullable | Coordonnée GPS (ex. copiée depuis Google Maps) — voir section 10, calcul de trajet |
 | longitude | DECIMAL(9,6), nullable | Coordonnée GPS — voir latitude |
+
+**Code court** (décision du 2026-07-19) : `code` (jusqu'à 4 caractères, normalisé en majuscules à l'enregistrement) sert d'identifiant rapide pour un lieu — ex. `CHAP` pour la Chapelle. Optionnel, unique par projet si renseigné (validé par `VenueSerializer`, pas une contrainte en base — plusieurs lieux sans code coexistent normalement dans un même projet). Réutilisé sur `TransportSerializer` (`origin_venue_code`/`destination_venue_code`) pour un affichage compact du départ/arrivée d'un déplacement.
 
 ---
 
@@ -170,6 +173,7 @@ Table ajoutée le 2026-07-18 (hors des 8 tables initiales) — trace la livraiso
 | origin_venue_id | INT, FK → venues.id | Lieu de départ (souvent un entrepôt pour une livraison) |
 | destination_venue_id | INT, FK → venues.id | Lieu d'arrivée (souvent le lieu du spectacle pour une livraison) — doit être différent de `origin_venue_id` |
 | scheduled_datetime | DATETIME | Heure prévue du déplacement |
+| *(dérivé)* origin_venue_code / destination_venue_code | VARCHAR(4) | Code court des lieux (voir `venues.code`), exposé en lecture seule pour un affichage compact départ/arrivée — vide si le lieu n'a pas de code |
 | estimated_duration_minutes | INT (default : voir `settings.default_transport_duration_minutes`) | Durée estimée (trajet + chargement/déchargement) — pré-remplie automatiquement via l'API Google Routes si les deux venues ont des coordonnées GPS (voir section 10) |
 | technician_id | INT, FK → technicians.id (nullable) | Technicien assigné (peut être vide tant que non confirmé) |
 | notes | TEXT | Notes diverses |
