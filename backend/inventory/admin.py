@@ -55,9 +55,11 @@ class ProjectAdmin(admin.ModelAdmin):
 class VenueAdmin(admin.ModelAdmin):
     """Admin pour les lieux (salles, théâtres, sites de représentation, entrepôts), isolés par projet."""
 
-    list_display = ('name', 'project', 'address', 'contact_name', 'contact_info', 'is_storage', 'latitude', 'longitude')
+    list_display = (
+        'name', 'code', 'project', 'address', 'contact_name', 'contact_info', 'is_storage', 'latitude', 'longitude',
+    )
     list_filter = ('project', 'is_storage')
-    search_fields = ('name', 'address', 'contact_name')
+    search_fields = ('name', 'code', 'address', 'contact_name')
     autocomplete_fields = ('project',)
 
 

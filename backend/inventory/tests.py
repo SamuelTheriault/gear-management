@@ -280,6 +280,67 @@ class MaterialQuantityHierarchyValidationTests(TestCase):
         self.assertEqual(response.data['quantity'], 20)
 
 
+class VenueCodeTests(TestCase):
+    """Vérifie `Venue.code` (ajouté le 2026-07-19) : normalisation en
+    majuscules, unicité par projet (pas de contrainte DB — plusieurs codes
+    vides doivent coexister), et exposition sur `TransportSerializer` pour un
+    affichage compact départ/arrivée."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+
+    def test_code_is_normalized_to_uppercase(self):
+        venue = Venue.objects.create(project=self.project, name="Chapelle", code="chap")
+        venue.refresh_from_db()
+        self.assertEqual(venue.code, "CHAP")
+
+    def test_code_defaults_to_blank(self):
+        venue = Venue.objects.create(project=self.project, name="Salle test")
+        self.assertEqual(venue.code, "")
+
+    def test_duplicate_code_rejected_within_same_project(self):
+        Venue.objects.create(project=self.project, name="Chapelle", code="CHAP")
+        response = self.client.post('/api/venues/', {
+            'project': self.project.id, 'name': "Chapelle annexe", 'code': "chap",
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('code', response.data)
+
+    def test_same_code_allowed_in_different_projects(self):
+        other_project = Project.objects.create(name="Autre projet")
+        Venue.objects.create(project=self.project, name="Chapelle", code="CHAP")
+        response = self.client.post('/api/venues/', {
+            'project': other_project.id, 'name': "Chapelle", 'code': "CHAP",
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_multiple_venues_without_code_coexist(self):
+        Venue.objects.create(project=self.project, name="Salle A")
+        response = self.client.post('/api/venues/', {
+            'project': self.project.id, 'name': "Salle B",
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_transport_serializer_exposes_venue_codes(self):
+        origin = Venue.objects.create(project=self.project, name="Entrepôt", code="ENTR", is_storage=True)
+        destination = Venue.objects.create(project=self.project, name="Chapelle", code="CHAP")
+        show = Show.objects.create(
+            project=self.project, title="Show", venue=destination, event_type="performance",
+            start_datetime=_dt(14), end_datetime=_dt(16),
+        )
+        response = self.client.post('/api/transports/', {
+            'show': show.id, 'transport_type': 'delivery',
+            'origin_venue': origin.id, 'destination_venue': destination.id,
+            'scheduled_datetime': _dt(8).isoformat(), 'estimated_duration_minutes': 60,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['origin_venue_code'], "ENTR")
+        self.assertEqual(response.data['destination_venue_code'], "CHAP")
+
+
 class MaterialActiveFlagTests(TestCase):
     """Vérifie `Material.is_active` (ajouté le 2026-07-19) : masqué de la
     liste par défaut, visible avec `?include_inactive=true`, toujours

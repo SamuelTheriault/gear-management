@@ -95,9 +95,28 @@ class VenueSerializer(serializers.ModelSerializer):
     class Meta:
         model = Venue
         fields = [
-            'id', 'project', 'project_name', 'name', 'address', 'contact_name', 'contact_info', 'notes',
+            'id', 'project', 'project_name', 'name', 'code', 'address', 'contact_name', 'contact_info', 'notes',
             'is_storage', 'latitude', 'longitude',
         ]
+
+    def validate_code(self, value):
+        # Unicité par projet, pas en base : plusieurs lieux sans code (chaîne
+        # vide) doivent pouvoir coexister normalement, ce qu'une contrainte
+        # unique_together classique interdirait.
+        value = value.strip()
+        if not value:
+            return value
+        project = self.initial_data.get('project') or getattr(self.instance, 'project_id', None)
+        if project is None:
+            return value
+        existing = Venue.objects.filter(project_id=project, code__iexact=value)
+        if self.instance is not None:
+            existing = existing.exclude(id=self.instance.id)
+        if existing.exists():
+            raise serializers.ValidationError(
+                f'Le code "{value.upper()}" est déjà utilisé par un autre lieu de ce projet.',
+            )
+        return value
 
 
 class DepartmentSerializer(serializers.ModelSerializer):
@@ -339,6 +358,10 @@ class TransportSerializer(serializers.ModelSerializer):
     show_title = serializers.CharField(source='show.title', read_only=True)
     origin_venue_name = serializers.CharField(source='origin_venue.name', read_only=True)
     destination_venue_name = serializers.CharField(source='destination_venue.name', read_only=True)
+    # Code court (voir Venue.code) pour un affichage compact départ/arrivée
+    # (ex. "CHAP -> Salle principale") — vide si le lieu n'a pas de code.
+    origin_venue_code = serializers.CharField(source='origin_venue.code', read_only=True, default='')
+    destination_venue_code = serializers.CharField(source='destination_venue.code', read_only=True, default='')
     technician_name = serializers.CharField(source='technician.name', read_only=True, default=None)
     effective_end = serializers.DateTimeField(read_only=True)
 
@@ -346,8 +369,8 @@ class TransportSerializer(serializers.ModelSerializer):
         model = Transport
         fields = [
             'id', 'show', 'show_title', 'transport_type',
-            'origin_venue', 'origin_venue_name',
-            'destination_venue', 'destination_venue_name',
+            'origin_venue', 'origin_venue_name', 'origin_venue_code',
+            'destination_venue', 'destination_venue_name', 'destination_venue_code',
             'scheduled_datetime', 'estimated_duration_minutes', 'effective_end',
             'technician', 'technician_name', 'notes', 'force',
         ]
