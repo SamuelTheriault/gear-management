@@ -84,16 +84,47 @@ status checks to pass before merging" (sélectionner les jobs `Backend
 (Django)` et `Frontend (Vue)`). Nécessite un accès admin au repo GitHub —
 pas faisable depuis Claude Code.
 
-## État actuel (2026-07-17)
+## État actuel (2026-07-24)
 
 Backend/frontend scaffoldés, déploiement Railway fonctionnel
-(`gear-management-production.up.railway.app`). En cours (non commité au
-moment de la rédaction de ce fichier) : 8 modèles Django, logique de
-détection de conflits (`backend/inventory/conflicts.py`, chevauchement
-strict — deux fenêtres dos-à-dos ne sont pas en conflit), serializers DRF
+(`gear-management-production.up.railway.app`). Modèles Django (8 tables
+initiales + `Transport`, `Settings`, `Project`, et `TransportMaterial`
+ajouté le 2026-07-24), logique de détection de conflits
+(`backend/inventory/conflicts.py`, chevauchement strict — deux fenêtres
+dos-à-dos ne sont pas en conflit), serializers DRF
 (`backend/inventory/serializers.py`, validation bloquante par défaut avec
-override via un champ `force`), vues/urls DRF déjà câblées
+override via un champ `force`), vues/urls DRF câblées
 (`backend/inventory/views.py`/`urls.py`, montées sous `/api/`), et une suite
-de tests sur la logique de conflits (`backend/inventory/tests.py`, 15 tests).
+de tests (`backend/inventory/tests.py`, 124 tests, tous au vert).
+
+**Module transport — cohérence des emplacements (2026-07-24)** :
+`backend/inventory/transport_coherence.py` reconstruit une timeline de
+position par matériel (départ = `Material.venue`, puis transports **confirmés**
+via la table de liaison `TransportMaterial`) et produit un **rapport non
+bloquant** (≠ des conflits, qui sont bloquants) : matériel requis mais non
+livré (`materiel_non_livre`, avec `etat` orange/rouge), transport à l'origine
+incohérente (`origine_incoherente`), matériel sans entrepôt
+(`origine_inconnue`). Exposé par `GET /api/shows/{id}/transport-coherence/` et
+`GET /api/projects/{id}/transport-coherence/`. Portée : aller seulement.
+
+**Module transport — création manuelle + génération auto (2026-07-24)** :
+`Transport` gagne un `status` (`confirmed`/`to_approve`) et un
+`scheduled_datetime` nullable. `backend/inventory/transport_autogen.py`
+(`regenerate_project_proposals`) génère automatiquement des propositions
+`to_approve` (orange) pour chaque déplacement manquant — origines chaînées,
+matériel groupé par couple origine/spectacle — déclenché par signaux
+(`regenerate_signals.py`) sur `ShowMaterial`/`Transport` confirmé/
+`TransportMaterial`/`Show`, avec garde de réentrance. Resync idempotent, pas
+de mémoire de rejet, transports confirmés jamais touchés. Le conflit de
+technicien reste **bloquant + force** ; `has_technician_conflict` (dérivé sur
+`TransportSerializer`) l'expose pour l'indicateur orange. Voir
+`architecture.md`, section 4quinquies, et `schema.md`, sections 9 et 12.
+
+Suite de tests : `inventory/tests.py` (113) + `test_settings_and_maps.py` (20)
++ `test_oauth_provisioning.py` (4) = 137 tests, tous au vert ; flake8
+(docstrings) propre. Migrations `0011_transportmaterial` et
+`0012_transport_status_scheduled_nullable`.
+
 Reste à faire : superutilisateur Django, OAuth Google, frontend connecté à
-l'API.
+l'API (dont l'UI du module transport : menus déroulants de lieux, indicateur
+orange « à approuver », complétion/confirmation des propositions).

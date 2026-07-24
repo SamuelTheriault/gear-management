@@ -40,7 +40,7 @@ Application web interne pour gérer l'inventaire de matériel de production (son
 
 ## Tables principales
 
-`users` · `venues` · `departments` · `materials` (avec hiérarchie parent/enfant + catégorie + département responsable) · `shows` · `show_materials` · `technicians` · `show_technicians` · `transports` (ajoutée le 2026-07-18) · `settings` (singleton, ajoutée le 2026-07-18) · `projects` (ajoutée le 2026-07-19 — isole `venues`/`materials`/`technicians`/`shows`)
+`users` · `venues` · `departments` · `materials` (avec hiérarchie parent/enfant + catégorie + département responsable) · `shows` · `show_materials` · `technicians` · `show_technicians` · `transports` (ajoutée le 2026-07-18) · `settings` (singleton, ajoutée le 2026-07-18) · `projects` (ajoutée le 2026-07-19 — isole `venues`/`materials`/`technicians`/`shows`) · `transport_materials` (liaison transport↔matériel, ajoutée le 2026-07-24 — alimente le module de cohérence des emplacements)
 
 Détails complets des champs → voir `schema.md`.
 
@@ -357,6 +357,58 @@ unitaires.
 - `TransportSerializer` expose `origin_venue_code`/`destination_venue_code`
   en lecture seule (vide si le lieu concerné n'a pas de code).
 - 6 nouveaux tests — suite complète à 104 tests, tous passent. flake8 propre.
+
+### Note sur le module transport — cohérence des emplacements (étape 16, 2026-07-24)
+
+- Besoin exprimé par Samuel : un module qui vérifie (1) que « tout est
+  possible sur les emplacements du matériel prévus » et (2) que « tout
+  déplacement de matériel est associé à un transport ». Constat de départ :
+  `transports` savait *quand*/*où* le matériel bougeait et *quel* technicien
+  s'en chargeait, mais pas *quel matériel* montait dans le camion.
+- Décision (parmi 2 options proposées) : table de liaison explicite
+  `TransportMaterial` (`transport` → `material` + `quantity`), plutôt qu'une
+  inférence lieu+horaire — seule façon de détecter un oubli de chargement.
+  Écriture imbriquée sur `TransportSerializer.materials`.
+- Décision : rapport **non bloquant** (≠ des conflits, bloquants + `force`) —
+  `GET /api/shows/{id}/transport-coherence/` et
+  `GET /api/projects/{id}/transport-coherence/`.
+- Décision : **aller seulement** — on vérifie la présence du matériel là où
+  il est requis (livraisons), sans exiger qu'un `pickup` referme la boucle
+  vers l'entrepôt.
+- `transport_coherence.py` reconstruit une timeline de position par matériel
+  (départ = `Material.venue`, transports appliqués à leur `effective_end`) et
+  produit trois types d'issue : `materiel_non_livre`, `origine_incoherente`,
+  `origine_inconnue`. Exemption d'entreposage respectée.
+- 20 nouveaux tests (logique + API imbriquée + endpoints) — suite complète à
+  124 tests, tous passent. flake8 (docstrings) propre, `makemigrations
+  --check` et `manage.py check` propres. Migration `0011_transportmaterial`.
+
+### Note sur la création des transports — manuelle + génération auto (étape 17, 2026-07-24)
+
+- Deux façons de créer un transport (décidées avec Samuel) : **manuelle**
+  (lieux choisis parmi les lieux existants, confirmé d'emblée) et
+  **automatique** — l'app détecte le matériel assigné à deux lieux consécutifs
+  dans le temps et crée une **proposition** pré-remplie (lieux + matériel), en
+  attente de complétion (heure, technicien).
+- `Transport.status` (`confirmed`/`to_approve`) + `scheduled_datetime` rendu
+  nullable (une proposition n'a pas encore d'heure). Migration
+  `0012_transport_status_scheduled_nullable`.
+- Décisions Samuel (2026-07-24) : génération **automatique par signaux** (pas
+  un bouton) ; **pas de mémoire de rejet** (resync idempotent à chaque
+  changement) ; une proposition reste **orange (non résolue)** tant qu'elle
+  n'est pas confirmée (exclue de la timeline de position) ; conflit de
+  technicien **gardé bloquant + force**, on ajoute juste l'indicateur
+  (`has_technician_conflict`).
+- `transport_autogen.py` (`regenerate_project_proposals`) : timeline projetée
+  par matériel (origines chaînées entrepôt→A puis A→B), groupage par couple
+  (origine, spectacle), upsert des propositions (préserve les éditions),
+  suppression des obsolètes. `regenerate_signals.py` branche les signaux
+  (garde de réentrance). `TransportViewSet` gagne `?status=`/`?show=`.
+- 21 nouveaux tests (`TransportAutogenTests` 9, `TransportStatusAPITests` 3,
+  + coquilles ajustées) — suite complète à **137 tests** (`tests.py` 113 +
+  `test_settings_and_maps.py` 20 + `test_oauth_provisioning.py` 4), tous
+  passent. flake8 (docstrings), `makemigrations --check` et `manage.py check`
+  propres.
 
 ## Fichiers produits
 

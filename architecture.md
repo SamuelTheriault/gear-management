@@ -103,6 +103,43 @@ Samuel travaille en parallèle sur plusieurs productions qui n'ont rien en commu
 - **Suppression** : `project` FK en `on_delete=PROTECT` sur les 4 modèles isolés — impossible de supprimer une `Project` tant qu'il lui reste des données. La voie normale pour retirer une production terminée est de l'archiver (`status='archived'`), pas de la supprimer.
 - **Duplication pour une nouvelle édition** (décision du 2026-07-19, voir `inventory/duplication.py`) : `POST /api/projects/{id}/duplicate/` copie `venues`, `materials` (hiérarchie parent/enfant remappée vers les nouvelles lignes) et `technicians` vers un nouveau projet — **jamais** `shows`/`show_materials`/`show_technicians`/`transports` (une nouvelle édition a son propre calendrier, pas celui de la précédente). `department` n'est jamais dupliqué ni remappé : référentiel commun, la copie pointe vers la même ligne que l'original. Le nouveau projet reprend `client_name` du projet source par défaut (surchargeable dans la requête) ; `notes`, `start_date`, `end_date` et `status` repartent à leurs valeurs par défaut (`status='active'`), quel que soit l'état du projet source. Réponse : `{'project': {...}, 'copied': {'venues': n, 'materials': n, 'technicians': n}}`. Opération atomique (tout ou rien) ; le projet source n'est jamais modifié.
 
+## 4quinquies. Module transport — cohérence des emplacements (décision du 2026-07-24)
+
+Complément à la détection de conflits (section 4) : là où celle-ci vérifie les chevauchements d'horaire (capacité matériel, techniciens), ce module vérifie la cohérence **spatiale** du matériel dans le temps. Deux questions posées par Samuel :
+
+1. **« Tout est-il possible sur les emplacements prévus ? »** — un `Transport` prétend transporter du matériel depuis un lieu de départ ; ce matériel s'y trouve-t-il vraiment à ce moment ?
+2. **« Tout déplacement de matériel est-il associé à un transport ? »** — le matériel requis à un lieu de spectacle y est-il bien amené par un transport ?
+
+**Lien matériel↔transport** : nouvelle table de liaison `transport_materials` (voir `schema.md`, section 12), gérée en écriture imbriquée sur `TransportSerializer.materials`. C'est ce lien explicite (plutôt qu'une inférence lieu+horaire) qui permet de vérifier réellement *quel* matériel voyage — choix retenu avec Samuel le 2026-07-24 pour pouvoir détecter un oubli de chargement.
+
+**Timeline de position** (`inventory/transport_coherence.py`) : pour chaque matériel, on reconstruit un « grand livre » de positions dans le temps — départ = `Material.venue` (lieu d'entreposage, le « bercail »), avec `Material.quantity` unités, puis application chronologique des transports qui le transportent. Un transport est réputé « arrivé » (matériel présent à destination) à la fin de sa fenêtre (`effective_end` = `scheduled_datetime` + `estimated_duration_minutes`). On compare ensuite :
+- chaque `Transport` : son matériel est-il disponible à l'origine à l'heure du départ ? Sinon → `origine_incoherente`.
+- chaque `ShowMaterial` : le matériel est-il présent (en quantité suffisante) au lieu du spectacle au début de sa fenêtre effective ? Sinon → `materiel_non_livre`.
+- matériel sans `venue` d'entreposage → `origine_inconnue` (position de départ inconnue, non suivi).
+
+**Non bloquant** (décision Samuel du 2026-07-24) : contrairement à la détection de conflits (bloquante + `force`), la cohérence des emplacements est un **rapport** consultable à la demande, jamais un refus `400`. Endpoints : `GET /api/shows/{id}/transport-coherence/` (centré sur un spectacle, à la manière de `/conflicts/`) et `GET /api/projects/{id}/transport-coherence/` (toute la production). Réponse : `{'issues': [...], 'issue_count': n}`.
+
+**Portée — aller seulement** (décision Samuel du 2026-07-24) : on vérifie la présence du matériel là où il est requis (livraisons). On n'exige PAS qu'un ramassage (`pickup`) ferme la boucle en ramenant le matériel à son entrepôt — un `pickup` reste pris en compte dans la timeline comme tout déplacement, sans contrôle de retour.
+
+**Exemption d'entreposage** : un `ShowMaterial` sur un `show` d'entrepôt (`venue.is_storage=True`) n'exige aucune livraison, cohérent avec l'exemption matériel de la section 4.
+
+### Création des transports — manuelle et automatique (décision du 2026-07-24)
+
+Deux façons de créer un `Transport`, décidées avec Samuel :
+
+1. **Manuelle** : l'utilisateur crée un déplacement (lieux de départ/arrivée choisis parmi les lieux existants, heure, matériel). Créé directement en `status='confirmed'` (une heure est alors obligatoire).
+2. **Automatique** (`inventory/transport_autogen.py`) : dès que du matériel est requis à un lieu où rien ne l'amène, l'app crée une **proposition** en `status='to_approve'`, pré-remplie avec ce qu'on peut déduire — lieu de départ (dernière position connue du matériel, origines **chaînées** via la timeline : entrepôt→A puis A→B, pas entrepôt→B), lieu d'arrivée (le lieu du spectacle) et matériel (groupé par couple origine/spectacle). Ce qu'on ne peut pas déduire — heure, technicien — reste vide ; l'utilisateur complète puis confirme, ce qui fait passer la proposition de l'**orange** (à approuver) au **vert** (confirmé).
+
+**Déclenchement** (décision Samuel : automatique, pas un bouton à la demande) : signaux (`regenerate_signals.py`) sur `ShowMaterial` (assignation), `Transport` confirmé, `TransportMaterial` d'un transport confirmé, et `Show` (horaire/lieu). Chaque déclenchement lance `regenerate_project_proposals`, un *resync* idempotent des seules propositions `to_approve` du projet (garde de réentrance pour ne pas boucler sur ses propres écritures).
+
+**Pas de mémoire de rejet** (décision Samuel) : chaque régénération recalcule l'ensemble des propositions nécessaires ; une proposition écartée réapparaîtra si le besoin est toujours là. Les transports **confirmés** ne sont jamais touchés, et un déplacement déjà couvert par un transport confirmé (même mal chronométré — c'est au rapport de cohérence de le signaler) n'est pas reproposé.
+
+**Une proposition ne livre rien** tant qu'elle n'est pas confirmée : elle est exclue de la timeline de position (donc l'alerte `materiel_non_livre` reste, mais en `etat='propose'` / orange, avec `proposal_transport_id`), et son technicien/heure vides l'excluent de la détection de conflit.
+
+### Conflit de technicien — reste bloquant, indicateur ajouté (décision du 2026-07-24)
+
+Samuel a confirmé qu'un technicien ne peut pas être à deux endroits en même temps — ce qui **était déjà** détecté (section 4c), de façon **bloquante avec override `force`**. Décision retenue : **garder ce comportement** (ne pas passer en non-bloquant) et simplement **exposer l'information** pour un indicateur orange côté frontend, via le champ dérivé `has_technician_conflict` sur `TransportSerializer` (lecture seule ; vrai même pour une assignation créée avec `force: true`). Autrement dit : le blocage à la saisie reste, l'indicateur sert à repérer après coup les conflits acceptés avec `force`.
+
 ## 5. Workflows principaux
 
 ### Workflow 1 — Créer une fiche spectacle
@@ -128,9 +165,11 @@ Samuel travaille en parallèle sur plusieurs productions qui n'ont rien en commu
 2. Créer un `show` sur ce venue (convention : `event_type = 'storage'`) pour la période où le matériel y est rangé, puis y assigner le matériel via `show_materials` — comme pour un vrai spectacle, mais sans jamais déclencher de conflit (voir section 4).
 
 ### Workflow 5 — Planifier une livraison ou un ramassage
-1. Depuis la fiche spectacle, créer un `transport` : type (livraison/ramassage), lieu de départ, lieu d'arrivée, heure prévue. La durée estimée peut être laissée vide : si les deux lieux ont des coordonnées GPS, elle est calculée automatiquement (Google Routes) ; sinon elle prend la valeur par défaut des réglages.
-2. Assigner (ou laisser vide pour l'instant) le technicien qui s'en charge — le système valide en temps réel qu'il n'est pas déjà engagé (spectacle ou autre déplacement) sur cette fenêtre.
-3. `GET /api/shows/{id}/conflicts/` inclut les déplacements dans les conflits techniciens listés, aux côtés des assignations `show_technicians`.
+1. Deux entrées possibles (voir section 4quinquies) : soit **créer manuellement** un `transport` (type, lieu de départ, lieu d'arrivée, heure) — confirmé d'emblée ; soit **compléter une proposition auto** déjà générée (`status='to_approve'`, orange) quand du matériel manque à un lieu — lieux et matériel sont déjà préremplis, il ne reste qu'à saisir l'heure (et le technicien) puis à confirmer. La durée estimée peut être laissée vide : si les deux lieux ont des coordonnées GPS, elle est calculée automatiquement (Google Routes) ; sinon elle prend la valeur par défaut des réglages.
+2. Renseigner le matériel transporté via le champ `materials` (liste de `{material, quantity}`) — c'est ce qui permet au module de cohérence de vérifier que le matériel requis à destination y est bien amené, et que l'origine du déplacement est cohérente (voir section 4quinquies).
+3. Assigner (ou laisser vide pour l'instant) le technicien qui s'en charge — le système valide en temps réel qu'il n'est pas déjà engagé (spectacle ou autre déplacement) sur cette fenêtre.
+4. `GET /api/shows/{id}/conflicts/` inclut les déplacements dans les conflits techniciens listés, aux côtés des assignations `show_technicians`.
+5. `GET /api/shows/{id}/transport-coherence/` (ou `/api/projects/{id}/transport-coherence/`) liste, sans rien bloquer, le matériel requis mais non livré et les transports dont l'origine est incohérente — le rapport de cohérence des emplacements (section 4quinquies).
 
 ### Workflow 6 — Ajuster les réglages globaux
 1. `GET /api/settings/` pour consulter les valeurs actuelles (buffers par défaut, durée de transport par défaut, format de date/heure).

@@ -524,6 +524,28 @@ class Transport(models.Model):
         (TYPE_PICKUP, 'Ramassage'),
     ]
 
+    STATUS_CONFIRMED = 'confirmed'
+    STATUS_TO_APPROVE = 'to_approve'
+    STATUS_CHOICES = [
+        (STATUS_CONFIRMED, 'Confirmé'),
+        (STATUS_TO_APPROVE, 'À approuver'),
+    ]
+
+    status = models.CharField(
+        max_length=12,
+        choices=STATUS_CHOICES,
+        default=STATUS_CONFIRMED,
+        help_text=(
+            "Cycle de vie du déplacement. 'confirmed' : créé/complété par "
+            "l'utilisateur, participe à la timeline de position et à la "
+            "détection de conflit du technicien. 'to_approve' : proposition "
+            "générée automatiquement (voir transport_autogen.py) quand du "
+            "matériel est requis à un lieu où rien ne l'amène — pré-remplie "
+            "(lieux + matériel) mais incomplète (heure/technicien à saisir), "
+            "affichée en orange. Une proposition NE compte PAS comme livraison "
+            "tant qu'elle n'est pas confirmée. Ajouté le 2026-07-24."
+        ),
+    )
     show = models.ForeignKey(
         Show,
         on_delete=models.CASCADE,
@@ -543,7 +565,16 @@ class Transport(models.Model):
         related_name='transports_to',
         help_text="Lieu d'arrivée (souvent le lieu du spectacle pour une livraison).",
     )
-    scheduled_datetime = models.DateTimeField(help_text="Heure prévue du déplacement.")
+    scheduled_datetime = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Heure prévue du déplacement. Nullable depuis le 2026-07-24 : une "
+            "proposition auto (status='to_approve') n'a pas encore d'heure "
+            "tant que l'utilisateur ne l'a pas complétée. Obligatoire pour un "
+            "déplacement 'confirmed' (imposé par TransportSerializer)."
+        ),
+    )
     estimated_duration_minutes = models.PositiveIntegerField(
         default=_default_transport_duration_minutes,
         help_text=(
@@ -572,6 +603,70 @@ class Transport(models.Model):
 
     @property
     def effective_end(self):
-        """Fin de la fenêtre = scheduled_datetime + estimated_duration_minutes."""
+        """Fin de la fenêtre = scheduled_datetime + estimated_duration_minutes.
+
+        `None` si `scheduled_datetime` n'est pas encore renseigné (proposition
+        auto 'to_approve' non complétée) — un tel déplacement n'a pas de fenêtre
+        exploitable et est ignoré par les timelines/conflits jusqu'à sa
+        confirmation.
+        """
         from datetime import timedelta
+        if self.scheduled_datetime is None:
+            return None
         return self.scheduled_datetime + timedelta(minutes=self.estimated_duration_minutes)
+
+    @property
+    def is_confirmed(self):
+        """True si le déplacement est confirmé ET a une heure — donc réellement
+        exploitable dans les timelines de position et la détection de conflit."""
+        return self.status == self.STATUS_CONFIRMED and self.scheduled_datetime is not None
+
+
+class TransportMaterial(models.Model):
+    """Matériel transporté par un `Transport` (table de liaison, ajoutée le 2026-07-24).
+
+    Ajoutée à la demande de Samuel pour le module transport : jusqu'ici un
+    `Transport` savait QUAND et OÙ le matériel se déplaçait, mais pas QUEL
+    matériel montait dans le camion. Cette table relie explicitement chaque
+    déplacement au matériel (et à la quantité) qu'il transporte, ce qui permet
+    au module de cohérence (voir `transport_coherence.py`) de vérifier deux
+    choses : (1) que le matériel requis à un lieu de spectacle y est bien amené
+    par un transport — « tout déplacement de matériel est associé à un
+    transport » ; (2) que l'origine d'un transport est cohérente — le matériel
+    qu'il prétend transporter se trouve bien au lieu de départ à ce moment.
+
+    `quantity` permet de ne transporter qu'une partie du matériel possédé en
+    plusieurs exemplaires (ex. 8 des 20 rallonges). Un même matériel n'apparaît
+    qu'une fois par transport (`unique_together`) — regrouper la quantité sur
+    une seule ligne plutôt que d'empiler des doublons.
+    """
+
+    transport = models.ForeignKey(
+        Transport,
+        on_delete=models.CASCADE,
+        related_name='transport_materials',
+        help_text="Déplacement qui transporte ce matériel.",
+    )
+    material = models.ForeignKey(
+        Material,
+        on_delete=models.CASCADE,
+        related_name='transport_materials',
+        help_text="Matériel transporté.",
+    )
+    quantity = models.PositiveIntegerField(
+        default=1,
+        validators=[MinValueValidator(1)],
+        help_text=(
+            "Quantité de ce matériel transportée par ce déplacement (ex. 8 des "
+            "20 rallonges en inventaire). Voir Material.quantity et "
+            "transport_coherence.py pour le suivi des emplacements."
+        ),
+    )
+
+    class Meta:
+        db_table = 'transport_materials'
+        unique_together = ('transport', 'material')
+        ordering = ['transport']
+
+    def __str__(self):
+        return f"{self.material} × {self.quantity} → {self.transport}"

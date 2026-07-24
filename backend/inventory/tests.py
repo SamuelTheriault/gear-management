@@ -33,8 +33,11 @@ from .models import (
     ShowTechnician,
     Technician,
     Transport,
+    TransportMaterial,
     Venue,
 )
+from .transport_autogen import regenerate_project_proposals
+from .transport_coherence import get_material_coherence_issues
 
 
 def _dt(hour, day=1):
@@ -942,11 +945,16 @@ class ProjectDuplicationTests(TestCase):
         }, format='json')
         new_project_id = response.data['project']['id']
         self.assertEqual(Show.objects.filter(project_id=new_project_id).count(), 0)
+        # Aucun déplacement (ni confirmé ni proposition auto) ne doit exister
+        # dans le nouveau projet — il n'a aucun spectacle.
+        self.assertEqual(Transport.objects.filter(show__project_id=new_project_id).count(), 0)
         # Le show/l'assignation source, eux, doivent rester intacts.
         self.assertEqual(Show.objects.filter(project=self.source).count(), 1)
         self.assertEqual(ShowMaterial.objects.count(), 1)
         self.assertEqual(ShowTechnician.objects.count(), 1)
-        self.assertEqual(Transport.objects.count(), 1)
+        # Le transport confirmé source reste (les propositions auto générées par
+        # la régénération ne sont pas des données copiées).
+        self.assertEqual(Transport.objects.filter(status=Transport.STATUS_CONFIRMED).count(), 1)
 
     def test_material_hierarchy_is_preserved_with_remapped_ids(self):
         response = self.client.post(f'/api/projects/{self.source.id}/duplicate/', {
@@ -1003,3 +1011,453 @@ class ProjectDuplicationTests(TestCase):
         self.assertEqual(Venue.objects.filter(project=self.source).count(), venues_before)
         self.assertEqual(Technician.objects.filter(project=self.source).count(), technicians_before)
         self.assertEqual(self.source.notes, "Notes 2026")
+
+
+class TransportCoherenceLogicTests(TestCase):
+    """Vérifie `transport_coherence.py` directement (module transport, ajouté le
+    2026-07-24) : suivi des emplacements du matériel, détection de matériel non
+    livré et d'origine de transport incohérente, exemption d'entreposage,
+    quantités, et cas du matériel sans lieu d'entreposage."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", code="ENTR", is_storage=True)
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle", code="CHAP")
+        # Console son entreposée à l'entrepôt (venue = home).
+        self.console = Material.objects.create(
+            project=self.project, name="Console son", category="audio", venue=self.entrepot,
+        )
+        # Show à la Chapelle, 14h-16h -> fenêtre effective 13h-17h.
+        self.show = Show.objects.create(
+            project=self.project, title="Show", venue=self.salle, event_type="performance",
+            start_datetime=_dt(14), end_datetime=_dt(16),
+        )
+
+    def _delivery(self, material, quantity=1, origin=None, destination=None, scheduled=None, duration=60):
+        transport = Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=origin or self.entrepot, destination_venue=destination or self.salle,
+            scheduled_datetime=scheduled or _dt(8), estimated_duration_minutes=duration,
+        )
+        TransportMaterial.objects.create(transport=transport, material=material, quantity=quantity)
+        return transport
+
+    def test_material_required_without_transport_is_flagged(self):
+        # Console requise à la Chapelle, mais aucun transport ne l'y amène.
+        ShowMaterial.objects.create(show=self.show, material=self.console)
+        issues = get_material_coherence_issues(self.console)
+        types = [i['type'] for i in issues]
+        self.assertIn('materiel_non_livre', types)
+
+    def test_material_delivered_before_show_is_coherent(self):
+        ShowMaterial.objects.create(show=self.show, material=self.console)
+        # Livraison 8h-9h (arrivée 9h <= 13h, début de la fenêtre du show).
+        self._delivery(self.console, scheduled=_dt(8), duration=60)
+        self.assertEqual(get_material_coherence_issues(self.console), [])
+
+    def test_material_already_at_venue_needs_no_transport(self):
+        # Le matériel est entreposé DANS la salle du show : déjà sur place,
+        # aucun transport requis, aucune incohérence.
+        local = Material.objects.create(
+            project=self.project, name="Pied de micro", category="audio", venue=self.salle,
+        )
+        ShowMaterial.objects.create(show=self.show, material=local)
+        self.assertEqual(get_material_coherence_issues(local), [])
+
+    def test_delivery_arriving_after_show_starts_is_flagged(self):
+        ShowMaterial.objects.create(show=self.show, material=self.console)
+        # Livraison 13h30-14h30 : arrive à 14h30, après le début de la fenêtre
+        # effective (13h) -> le matériel n'est pas là à temps.
+        self._delivery(self.console, scheduled=_dt(13) + timedelta(minutes=30), duration=60)
+        types = [i['type'] for i in get_material_coherence_issues(self.console)]
+        self.assertIn('materiel_non_livre', types)
+
+    def test_insufficient_quantity_delivered_is_flagged(self):
+        multi = Material.objects.create(
+            project=self.project, name="Rallonge", category="autre", venue=self.entrepot, quantity=20,
+        )
+        ShowMaterial.objects.create(show=self.show, material=multi, quantity=10)
+        # On n'en livre que 4 sur les 10 requises.
+        self._delivery(multi, quantity=4, scheduled=_dt(8), duration=60)
+        issues = get_material_coherence_issues(multi)
+        missing = [i for i in issues if i['type'] == 'materiel_non_livre']
+        self.assertEqual(len(missing), 1)
+        self.assertEqual(missing[0]['quantite_presente'], 4)
+        self.assertEqual(missing[0]['quantite_requise'], 10)
+
+    def test_transport_origin_impossible_is_flagged(self):
+        # Un transport part de la Chapelle (pas le home) alors que la console est
+        # à l'entrepôt à ce moment -> origine incohérente.
+        transport = Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=self.salle, destination_venue=self.entrepot,
+            scheduled_datetime=_dt(8), estimated_duration_minutes=60,
+        )
+        TransportMaterial.objects.create(transport=transport, material=self.console, quantity=1)
+        types = [i['type'] for i in get_material_coherence_issues(self.console)]
+        self.assertIn('origine_incoherente', types)
+
+    def test_transport_from_home_has_coherent_origin(self):
+        # Livraison depuis l'entrepôt (home) : la console y est bien -> pas
+        # d'incohérence d'origine (et le show est couvert).
+        ShowMaterial.objects.create(show=self.show, material=self.console)
+        self._delivery(self.console, scheduled=_dt(8), duration=60)
+        types = [i['type'] for i in get_material_coherence_issues(self.console)]
+        self.assertNotIn('origine_incoherente', types)
+
+    def test_storage_show_requires_no_delivery(self):
+        # Matériel « rangé » à l'entrepôt (show d'entreposage) : aucune livraison
+        # exigée, exemption d'entreposage.
+        storage_show = Show.objects.create(
+            project=self.project, title="Rangement", venue=self.entrepot, event_type="storage",
+            start_datetime=_dt(14), end_datetime=_dt(16),
+        )
+        ShowMaterial.objects.create(show=storage_show, material=self.console)
+        self.assertEqual(get_material_coherence_issues(self.console), [])
+
+    def test_material_without_home_is_flagged_once(self):
+        orphan = Material.objects.create(project=self.project, name="Matériel sans entrepôt", category="autre")
+        ShowMaterial.objects.create(show=self.show, material=orphan)
+        issues = get_material_coherence_issues(orphan)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]['type'], 'origine_inconnue')
+
+    def test_material_without_home_and_no_usage_is_silent(self):
+        # Sans lieu d'entreposage NI aucune assignation/transport, rien à suivre.
+        orphan = Material.objects.create(project=self.project, name="Inutilisé", category="autre")
+        self.assertEqual(get_material_coherence_issues(orphan), [])
+
+    def test_relocation_between_two_venues_needs_a_transport(self):
+        # Le matériel est livré et utilisé à la Chapelle, puis requis dans une
+        # 2e salle plus tard sans transport entre les deux -> non livré à la 2e.
+        autre_salle = Venue.objects.create(project=self.project, name="Salle 2", code="SAL2")
+        ShowMaterial.objects.create(show=self.show, material=self.console)
+        self._delivery(self.console, scheduled=_dt(8), duration=60)  # entrepôt -> Chapelle
+        show2 = Show.objects.create(
+            project=self.project, title="Show 2", venue=autre_salle, event_type="performance",
+            start_datetime=_dt(20), end_datetime=_dt(22),
+        )
+        ShowMaterial.objects.create(show=show2, material=self.console)
+        missing = [
+            i for i in get_material_coherence_issues(self.console)
+            if i['type'] == 'materiel_non_livre' and i['show_id'] == show2.id
+        ]
+        self.assertEqual(len(missing), 1)
+
+
+class TransportMaterialAPITests(TestCase):
+    """Vérifie l'écriture imbriquée du matériel transporté (`materials`) sur
+    `TransportSerializer` et les endpoints de rapport de cohérence
+    (`/shows/{id}/transport-coherence/`, `/projects/{id}/transport-coherence/`)."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.console = Material.objects.create(
+            project=self.project, name="Console son", category="audio", venue=self.entrepot,
+        )
+        self.show = Show.objects.create(
+            project=self.project, title="Show", venue=self.salle, event_type="performance",
+            start_datetime=_dt(14), end_datetime=_dt(16),
+        )
+
+    def _create_transport_payload(self, **overrides):
+        payload = {
+            'show': self.show.id, 'transport_type': 'delivery',
+            'origin_venue': self.entrepot.id, 'destination_venue': self.salle.id,
+            'scheduled_datetime': _dt(8).isoformat(), 'estimated_duration_minutes': 60,
+            'materials': [{'material': self.console.id, 'quantity': 1}],
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_create_transport_with_material_lines(self):
+        response = self.client.post('/api/transports/', self._create_transport_payload(), format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(response.data['materials']), 1)
+        self.assertEqual(response.data['materials'][0]['material'], self.console.id)
+        self.assertFalse(response.data['is_empty'])
+        self.assertEqual(TransportMaterial.objects.count(), 1)
+
+    def test_empty_transport_is_flagged(self):
+        # Un déplacement sans aucune ligne de matériel est signalé « vide ».
+        response = self.client.post('/api/transports/', self._create_transport_payload(materials=[]), format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data['is_empty'])
+
+    def test_material_line_from_other_project_rejected(self):
+        other_project = Project.objects.create(name="Autre")
+        foreign_material = Material.objects.create(project=other_project, name="Ampli", category="audio")
+        response = self.client.post(
+            '/api/transports/',
+            self._create_transport_payload(materials=[{'material': foreign_material.id, 'quantity': 1}]),
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('materials', response.data)
+
+    def test_duplicate_material_line_rejected(self):
+        response = self.client.post(
+            '/api/transports/',
+            self._create_transport_payload(materials=[
+                {'material': self.console.id, 'quantity': 1},
+                {'material': self.console.id, 'quantity': 2},
+            ]),
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('materials', response.data)
+
+    def test_quantity_above_owned_rejected(self):
+        response = self.client.post(
+            '/api/transports/',
+            self._create_transport_payload(materials=[{'material': self.console.id, 'quantity': 5}]),
+            format='json',
+        )
+        # console.quantity == 1 par défaut -> transporter 5 est une erreur de données.
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('materials', response.data)
+
+    def test_update_replaces_material_lines(self):
+        create = self.client.post('/api/transports/', self._create_transport_payload(), format='json')
+        transport_id = create.data['id']
+        autre = Material.objects.create(
+            project=self.project, name="Pied", category="audio", venue=self.entrepot,
+        )
+        response = self.client.patch(
+            f'/api/transports/{transport_id}/',
+            {'materials': [{'material': autre.id, 'quantity': 1}]},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        materials = TransportMaterial.objects.filter(transport_id=transport_id)
+        self.assertEqual(materials.count(), 1)
+        self.assertEqual(materials.first().material_id, autre.id)
+
+    def test_patch_without_materials_keeps_lines(self):
+        create = self.client.post('/api/transports/', self._create_transport_payload(), format='json')
+        transport_id = create.data['id']
+        response = self.client.patch(
+            f'/api/transports/{transport_id}/', {'notes': "Prévu tôt"}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(TransportMaterial.objects.filter(transport_id=transport_id).count(), 1)
+
+    def test_show_coherence_endpoint_flags_missing_delivery(self):
+        # Console requise au show, aucun transport -> l'endpoint doit lister une issue.
+        ShowMaterial.objects.create(show=self.show, material=self.console)
+        response = self.client.get(f'/api/shows/{self.show.id}/transport-coherence/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['issue_count'], 1)
+        self.assertEqual(response.data['issues'][0]['type'], 'materiel_non_livre')
+
+    def test_show_coherence_endpoint_clean_after_delivery(self):
+        ShowMaterial.objects.create(show=self.show, material=self.console)
+        self.client.post('/api/transports/', self._create_transport_payload(), format='json')
+        response = self.client.get(f'/api/shows/{self.show.id}/transport-coherence/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['issue_count'], 0)
+
+    def test_project_coherence_endpoint_aggregates(self):
+        ShowMaterial.objects.create(show=self.show, material=self.console)
+        response = self.client.get(f'/api/projects/{self.project.id}/transport-coherence/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(response.data['issue_count'], 1)
+
+
+class TransportAutogenTests(TestCase):
+    """Vérifie la génération automatique des propositions de transport (module
+    transport, 2026-07-24) : création par signal à l'assignation, origine
+    chaînée, groupage, idempotence, suppression sur désassignation, couverture
+    par un transport confirmé, cas matériel sans entrepôt / show d'entrepôt."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.salle1 = Venue.objects.create(project=self.project, name="Salle 1")
+        self.salle2 = Venue.objects.create(project=self.project, name="Salle 2")
+        self.console = Material.objects.create(
+            project=self.project, name="Console son", category="audio", venue=self.entrepot,
+        )
+
+    def _show(self, venue, hour, title="Show"):
+        return Show.objects.create(
+            project=self.project, title=title, venue=venue, event_type="performance",
+            start_datetime=_dt(hour), end_datetime=_dt(hour) + timedelta(hours=2),
+        )
+
+    def _proposals(self):
+        return Transport.objects.filter(status=Transport.STATUS_TO_APPROVE)
+
+    def test_assignment_creates_proposal(self):
+        show = self._show(self.salle1, 14)
+        ShowMaterial.objects.create(show=show, material=self.console)
+        proposals = self._proposals()
+        self.assertEqual(proposals.count(), 1)
+        proposal = proposals.first()
+        self.assertEqual(proposal.origin_venue_id, self.entrepot.id)
+        self.assertEqual(proposal.destination_venue_id, self.salle1.id)
+        self.assertIsNone(proposal.scheduled_datetime)
+        self.assertEqual(proposal.transport_type, Transport.TYPE_DELIVERY)
+        self.assertEqual(
+            list(proposal.transport_materials.values_list('material_id', flat=True)),
+            [self.console.id],
+        )
+
+    def test_chained_origin_for_second_move(self):
+        show1 = self._show(self.salle1, 10, "Show 1")
+        show2 = self._show(self.salle2, 20, "Show 2")
+        ShowMaterial.objects.create(show=show1, material=self.console)
+        ShowMaterial.objects.create(show=show2, material=self.console)
+        # Deux propositions : entrepôt->salle1 puis salle1->salle2 (origine chaînée).
+        move2 = self._proposals().get(destination_venue=self.salle2)
+        self.assertEqual(move2.origin_venue_id, self.salle1.id)
+        move1 = self._proposals().get(destination_venue=self.salle1)
+        self.assertEqual(move1.origin_venue_id, self.entrepot.id)
+
+    def test_multiple_materials_grouped_in_one_proposal(self):
+        ampli = Material.objects.create(
+            project=self.project, name="Ampli", category="audio", venue=self.entrepot,
+        )
+        show = self._show(self.salle1, 14)
+        ShowMaterial.objects.create(show=show, material=self.console)
+        ShowMaterial.objects.create(show=show, material=ampli)
+        # Même origine (entrepôt) + même destination -> une seule proposition, 2 lignes.
+        self.assertEqual(self._proposals().count(), 1)
+        proposal = self._proposals().first()
+        self.assertEqual(proposal.transport_materials.count(), 2)
+
+    def test_regeneration_is_idempotent(self):
+        show = self._show(self.salle1, 14)
+        ShowMaterial.objects.create(show=show, material=self.console)
+        first_id = self._proposals().first().id
+        # Relancer la régénération ne doit pas dupliquer ni recréer la proposition.
+        counts = regenerate_project_proposals(self.project)
+        self.assertEqual(self._proposals().count(), 1)
+        self.assertEqual(self._proposals().first().id, first_id)
+        self.assertEqual(counts['created'], 0)
+        self.assertEqual(counts['deleted'], 0)
+
+    def test_unassigning_material_removes_proposal(self):
+        show = self._show(self.salle1, 14)
+        sm = ShowMaterial.objects.create(show=show, material=self.console)
+        self.assertEqual(self._proposals().count(), 1)
+        sm.delete()
+        self.assertEqual(self._proposals().count(), 0)
+
+    def test_confirmed_transport_suppresses_proposal(self):
+        show = self._show(self.salle1, 14)
+        ShowMaterial.objects.create(show=show, material=self.console)
+        self.assertEqual(self._proposals().count(), 1)
+        # Un transport confirmé qui dessert la console à ce spectacle supprime la proposition.
+        confirmed = Transport.objects.create(
+            show=show, transport_type=Transport.TYPE_DELIVERY, status=Transport.STATUS_CONFIRMED,
+            origin_venue=self.entrepot, destination_venue=self.salle1,
+            scheduled_datetime=_dt(8), estimated_duration_minutes=60,
+        )
+        TransportMaterial.objects.create(transport=confirmed, material=self.console, quantity=1)
+        self.assertEqual(self._proposals().count(), 0)
+
+    def test_material_without_home_generates_no_proposal(self):
+        orphan = Material.objects.create(project=self.project, name="Sans entrepôt", category="autre")
+        show = self._show(self.salle1, 14)
+        ShowMaterial.objects.create(show=show, material=orphan)
+        self.assertFalse(self._proposals().filter(transport_materials__material=orphan).exists())
+
+    def test_storage_show_generates_no_proposal(self):
+        storage_show = Show.objects.create(
+            project=self.project, title="Rangement", venue=self.entrepot, event_type="storage",
+            start_datetime=_dt(14), end_datetime=_dt(16),
+        )
+        ShowMaterial.objects.create(show=storage_show, material=self.console)
+        self.assertEqual(self._proposals().count(), 0)
+
+    def test_missing_delivery_issue_is_orange_when_proposal_exists(self):
+        show = self._show(self.salle1, 14)
+        ShowMaterial.objects.create(show=show, material=self.console)
+        issues = get_material_coherence_issues(self.console)
+        missing = [i for i in issues if i['type'] == 'materiel_non_livre']
+        self.assertEqual(len(missing), 1)
+        self.assertEqual(missing[0]['etat'], 'propose')
+        self.assertIsNotNone(missing[0]['proposal_transport_id'])
+
+
+class TransportStatusAPITests(TestCase):
+    """Vérifie le cycle de vie `status` du Transport via l'API : une création
+    manuelle confirmée exige une heure, une proposition se confirme en la
+    complétant, et l'indicateur `has_technician_conflict` reflète un
+    chevauchement (sans bloquer, décision Samuel du 2026-07-24)."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.salle = Venue.objects.create(project=self.project, name="Salle")
+        self.console = Material.objects.create(
+            project=self.project, name="Console son", category="audio", venue=self.entrepot,
+        )
+        self.technician = Technician.objects.create(project=self.project, name="Alex", specialty="son")
+        self.show = Show.objects.create(
+            project=self.project, title="Show", venue=self.salle, event_type="performance",
+            start_datetime=_dt(14), end_datetime=_dt(16),
+        )
+
+    def test_manual_confirmed_transport_requires_scheduled_datetime(self):
+        response = self.client.post('/api/transports/', {
+            'show': self.show.id, 'transport_type': 'delivery',
+            'origin_venue': self.entrepot.id, 'destination_venue': self.salle.id,
+            # pas de scheduled_datetime, status confirmed par défaut
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('scheduled_datetime', response.data)
+
+    def test_completing_a_proposal_confirms_it_and_clears_alert(self):
+        # Assigner la console crée une proposition (signal).
+        ShowMaterial.objects.create(show=self.show, material=self.console)
+        proposal = Transport.objects.filter(status=Transport.STATUS_TO_APPROVE).first()
+        self.assertIsNotNone(proposal)
+
+        # Confirmer sans heure -> refus.
+        refused = self.client.patch(f'/api/transports/{proposal.id}/', {
+            'status': 'confirmed',
+        }, format='json')
+        self.assertEqual(refused.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # Confirmer avec une heure -> OK, et l'alerte de cohérence disparaît.
+        ok = self.client.patch(f'/api/transports/{proposal.id}/', {
+            'status': 'confirmed',
+            'scheduled_datetime': _dt(8).isoformat(),
+            'estimated_duration_minutes': 60,
+        }, format='json')
+        self.assertEqual(ok.status_code, status.HTTP_200_OK)
+        coherence = self.client.get(f'/api/shows/{self.show.id}/transport-coherence/')
+        self.assertEqual(coherence.data['issue_count'], 0)
+
+    def test_has_technician_conflict_indicator(self):
+        # Deux déplacements qui se chevauchent pour le même technicien.
+        first = self.client.post('/api/transports/', {
+            'show': self.show.id, 'transport_type': 'delivery',
+            'origin_venue': self.entrepot.id, 'destination_venue': self.salle.id,
+            'scheduled_datetime': _dt(8).isoformat(), 'estimated_duration_minutes': 120,
+            'technician': self.technician.id,
+        }, format='json')
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        # Le second chevauche 8h-10h ; on force pour passer outre le blocage.
+        second = self.client.post('/api/transports/', {
+            'show': self.show.id, 'transport_type': 'pickup',
+            'origin_venue': self.salle.id, 'destination_venue': self.entrepot.id,
+            'scheduled_datetime': _dt(9).isoformat(), 'estimated_duration_minutes': 60,
+            'technician': self.technician.id, 'force': True,
+        }, format='json')
+        self.assertEqual(second.status_code, status.HTTP_201_CREATED)
+
+        detail = self.client.get(f"/api/transports/{first.data['id']}/")
+        self.assertTrue(detail.data['has_technician_conflict'])

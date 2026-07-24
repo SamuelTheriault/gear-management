@@ -159,7 +159,13 @@ def _technician_commitments(technician_id, exclude_show_technician_id=None, excl
     if exclude_show_technician_id is not None:
         show_technicians = show_technicians.exclude(id=exclude_show_technician_id)
 
-    transports = Transport.objects.filter(technician_id=technician_id).select_related('show')
+    # Une proposition auto ('to_approve') sans heure n'a pas de fenêtre
+    # exploitable : on exclut les transports sans `scheduled_datetime` pour
+    # ne jamais comparer une fenêtre incomplète (effective_end=None).
+    transports = (
+        Transport.objects.filter(technician_id=technician_id, scheduled_datetime__isnull=False)
+        .select_related('show')
+    )
     if exclude_transport_id is not None:
         transports = transports.exclude(id=exclude_transport_id)
 

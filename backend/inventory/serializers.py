@@ -41,6 +41,7 @@ from .models import (
     ShowTechnician,
     Technician,
     Transport,
+    TransportMaterial,
     User,
     Venue,
 )
@@ -346,15 +347,35 @@ class ShowTechnicianSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class TransportMaterialSerializer(serializers.ModelSerializer):
+    """Sérialise une ligne « matériel transporté » d'un `Transport` (voir
+    `TransportMaterial`, models.py). Utilisée en écriture imbriquée dans
+    `TransportSerializer.materials` et exposée en lecture avec le nom du
+    matériel pour l'affichage."""
+
+    material_name = serializers.CharField(source='material.name', read_only=True)
+
+    class Meta:
+        model = TransportMaterial
+        fields = ['id', 'material', 'material_name', 'quantity']
+
+
 class TransportSerializer(serializers.ModelSerializer):
     """Sérialise un déplacement (livraison/ramassage) de matériel, avec
     validation de conflit bloquante sur le technicien assigné (voir `force`).
 
     Un technicien assigné à un `Transport` est croisé avec ses engagements
     `ShowTechnician` ET ses autres `Transport` — voir `conflicts.py`.
+
+    Le matériel transporté est géré en écriture imbriquée via `materials`
+    (liste de `{material, quantity}`) — voir `TransportMaterial` et
+    `transport_coherence.py`. Fournir `materials` lors d'une mise à jour
+    remplace intégralement la liste des lignes du transport ; l'omettre la
+    laisse inchangée.
     """
 
     force = serializers.BooleanField(write_only=True, required=False, default=False)
+    materials = TransportMaterialSerializer(many=True, source='transport_materials', required=False)
     show_title = serializers.CharField(source='show.title', read_only=True)
     origin_venue_name = serializers.CharField(source='origin_venue.name', read_only=True)
     destination_venue_name = serializers.CharField(source='destination_venue.name', read_only=True)
@@ -364,16 +385,44 @@ class TransportSerializer(serializers.ModelSerializer):
     destination_venue_code = serializers.CharField(source='destination_venue.code', read_only=True, default='')
     technician_name = serializers.CharField(source='technician.name', read_only=True, default=None)
     effective_end = serializers.DateTimeField(read_only=True)
+    # Indicateur (orange) pour le frontend : ce déplacement met-il le technicien
+    # assigné en conflit d'horaire (spectacle ou autre déplacement) ? La
+    # détection de conflit reste bloquante à l'assignation (voir `validate` et
+    # décision Samuel du 2026-07-24 : garder bloquant + exposer l'indicateur) ;
+    # ce champ sert juste à colorer l'affichage, y compris pour les assignations
+    # créées avec `force: true`.
+    has_technician_conflict = serializers.SerializerMethodField()
+    # Indicateur (lecture seule) : ce déplacement ne transporte aucun matériel.
+    # Sert à signaler un « camion vide » côté frontend ; le contenu détaillé
+    # reste visible via `materials`.
+    is_empty = serializers.SerializerMethodField()
 
     class Meta:
         model = Transport
         fields = [
-            'id', 'show', 'show_title', 'transport_type',
+            'id', 'show', 'show_title', 'transport_type', 'status',
             'origin_venue', 'origin_venue_name', 'origin_venue_code',
             'destination_venue', 'destination_venue_name', 'destination_venue_code',
             'scheduled_datetime', 'estimated_duration_minutes', 'effective_end',
-            'technician', 'technician_name', 'notes', 'force',
+            'technician', 'technician_name', 'has_technician_conflict',
+            'materials', 'is_empty', 'notes', 'force',
         ]
+
+    def get_is_empty(self, obj):
+        """True si le déplacement ne transporte aucun matériel (aucune ligne
+        `TransportMaterial`). Utilise le cache de prefetch quand disponible."""
+        return len(obj.transport_materials.all()) == 0
+
+    def get_has_technician_conflict(self, obj):
+        """True si le technicien assigné est en conflit d'horaire sur ce
+        déplacement (pour l'indicateur orange). False si pas de technicien ou
+        pas d'heure (proposition non complétée)."""
+        if obj.technician_id is None or obj.scheduled_datetime is None:
+            return False
+        conflicts = get_transport_conflicts(
+            obj.scheduled_datetime, obj.estimated_duration_minutes, obj.technician, exclude_id=obj.id,
+        )
+        return bool(conflicts)
 
     def validate(self, attrs):
         origin = attrs.get('origin_venue', getattr(self.instance, 'origin_venue', None))
@@ -381,6 +430,16 @@ class TransportSerializer(serializers.ModelSerializer):
         if origin and destination and origin.id == destination.id:
             raise serializers.ValidationError({
                 'destination_venue': "Doit être différent du lieu de départ.",
+            })
+
+        # Un déplacement confirmé doit avoir une heure. Une proposition
+        # ('to_approve') peut rester sans heure tant qu'elle n'est pas complétée
+        # — c'est justement ce qui la garde en orange (voir Transport.status).
+        new_status = attrs.get('status', getattr(self.instance, 'status', Transport.STATUS_CONFIRMED))
+        scheduled = attrs.get('scheduled_datetime', getattr(self.instance, 'scheduled_datetime', None))
+        if new_status == Transport.STATUS_CONFIRMED and scheduled is None:
+            raise serializers.ValidationError({
+                'scheduled_datetime': "Obligatoire pour un déplacement confirmé (heure prévue du déplacement).",
             })
 
         # Isolation par projet (voir Project, models.py) : le spectacle, les
@@ -392,6 +451,34 @@ class TransportSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "Le spectacle, les lieux et le technicien d'un déplacement doivent tous appartenir au même projet."
             )
+
+        # Lignes de matériel transporté (écriture imbriquée) : chaque matériel
+        # doit appartenir au même projet que le spectacle, ne pas apparaître en
+        # double dans la même requête (une seule ligne par matériel, cf.
+        # unique_together), et ne pas dépasser la quantité totale possédée
+        # (transporter 25 rallonges quand on en possède 20 est une erreur de
+        # données, pas un arbitrage — non overridable par `force`).
+        material_lines = attrs.get('transport_materials', None)
+        if material_lines is not None:
+            seen_material_ids = set()
+            for line in material_lines:
+                material = line['material']
+                if show is not None and not _same_project(show, material):
+                    raise serializers.ValidationError({
+                        'materials': f"Le matériel « {material.name} » appartient à un autre projet que le déplacement.",
+                    })
+                if material.id in seen_material_ids:
+                    raise serializers.ValidationError({
+                        'materials': f"Le matériel « {material.name} » est listé deux fois — regroupe la quantité sur une seule ligne.",
+                    })
+                seen_material_ids.add(material.id)
+                if line.get('quantity', 1) > material.quantity:
+                    raise serializers.ValidationError({
+                        'materials': (
+                            f"Quantité transportée ({line['quantity']}) supérieure à la quantité "
+                            f"totale possédée de « {material.name} » ({material.quantity})."
+                        ),
+                    })
 
         # Auto-estimation via Google Routes : seulement si le client n'a pas
         # explicitement fourni de durée, et que les deux venues ont des
@@ -448,6 +535,30 @@ class TransportSerializer(serializers.ModelSerializer):
                     ),
                 })
         return attrs
+
+    def create(self, validated_data):
+        """Crée le déplacement puis ses lignes de matériel transporté (le cas
+        échéant). `transport_materials` est retiré des données du modèle avant
+        `super().create()` car ce sont des lignes d'une table liée, pas des
+        champs de `Transport`."""
+        material_lines = validated_data.pop('transport_materials', [])
+        transport = super().create(validated_data)
+        for line in material_lines:
+            TransportMaterial.objects.create(transport=transport, **line)
+        return transport
+
+    def update(self, instance, validated_data):
+        """Met à jour le déplacement. Si `materials` est fourni, remplace
+        intégralement les lignes de matériel transporté ; s'il est absent, les
+        laisse inchangées (permet un PATCH qui ne touche qu'aux notes ou au
+        technicien sans effacer la liste)."""
+        material_lines = validated_data.pop('transport_materials', None)
+        transport = super().update(instance, validated_data)
+        if material_lines is not None:
+            transport.transport_materials.all().delete()
+            for line in material_lines:
+                TransportMaterial.objects.create(transport=transport, **line)
+        return transport
 
 
 class SettingsSerializer(serializers.ModelSerializer):
