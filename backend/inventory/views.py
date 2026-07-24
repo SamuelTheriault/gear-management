@@ -26,6 +26,7 @@ from .conflicts import (
     serialize_technician_conflict,
 )
 from .duplication import duplicate_project
+from .transport_coherence import get_project_coherence_report, get_show_coherence_report
 from .models import (
     Department,
     Material,
@@ -114,6 +115,18 @@ class ProjectViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
+    @action(detail=True, methods=['get'], url_path='transport-coherence')
+    def transport_coherence(self, request, pk=None):
+        """Rapport de cohérence des emplacements de matériel pour toute la
+        production (non bloquant — voir `transport_coherence.py`). Liste les
+        incohérences spatiales : matériel requis à un lieu sans transport pour
+        l'y amener (`materiel_non_livre`), transport partant d'un lieu où le
+        matériel n'est pas présent (`origine_incoherente`), et matériel sans
+        lieu d'entreposage donc non suivi (`origine_inconnue`)."""
+        project = self.get_object()
+        issues = get_project_coherence_report(project)
+        return Response({'issues': issues, 'issue_count': len(issues)})
+
 
 class VenueViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
     """CRUD standard sur les lieux, filtrable par projet (`?project=<id>`)."""
@@ -197,6 +210,17 @@ class ShowViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
             'technician_conflicts': technician_conflicts,
         })
 
+    @action(detail=True, methods=['get'], url_path='transport-coherence')
+    def transport_coherence(self, request, pk=None):
+        """Rapport de cohérence des emplacements de matériel centré sur ce
+        spectacle (non bloquant — voir `transport_coherence.py`) : matériel
+        requis par ce spectacle mais non livré, transports de ce spectacle dont
+        l'origine est incohérente, et matériel de ce spectacle sans lieu
+        d'entreposage."""
+        show = self.get_object()
+        issues = get_show_coherence_report(show)
+        return Response({'issues': issues, 'issue_count': len(issues)})
+
 
 class ShowMaterialViewSet(viewsets.ModelViewSet):
     """CRUD standard sur les assignations de matériel (validation de conflit dans le serializer)."""
@@ -220,10 +244,30 @@ class ShowTechnicianViewSet(viewsets.ModelViewSet):
 
 
 class TransportViewSet(viewsets.ModelViewSet):
-    """CRUD standard sur les déplacements (livraison/ramassage), validation de conflit dans le serializer."""
+    """CRUD standard sur les déplacements (livraison/ramassage), validation de conflit dans le serializer.
 
-    queryset = Transport.objects.select_related('show', 'origin_venue', 'destination_venue', 'technician').all()
+    Filtres optionnels : `?status=to_approve` (ne renvoyer que les propositions
+    auto à approuver — voir `transport_autogen.py`) ou `?status=confirmed` ;
+    `?show=<id>` pour les déplacements d'un spectacle.
+    """
+
+    queryset = (
+        Transport.objects
+        .select_related('show', 'origin_venue', 'destination_venue', 'technician')
+        .prefetch_related('transport_materials__material')
+        .all()
+    )
     serializer_class = TransportSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        status_param = self.request.query_params.get('status')
+        if status_param:
+            queryset = queryset.filter(status=status_param)
+        show_id = self.request.query_params.get('show')
+        if show_id:
+            queryset = queryset.filter(show_id=show_id)
+        return queryset
 
 
 class SettingsView(generics.RetrieveUpdateAPIView):

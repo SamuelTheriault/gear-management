@@ -170,9 +170,10 @@ Table ajoutée le 2026-07-18 (hors des 8 tables initiales) — trace la livraiso
 | id | INT, PK | Identifiant unique |
 | show_id | INT, FK → shows.id | Spectacle desservi par ce déplacement |
 | transport_type | ENUM('delivery','pickup') | Livraison (aller) ou ramassage (retour) |
+| status | ENUM('confirmed','to_approve') (default 'confirmed') | Cycle de vie (ajouté le 2026-07-24) — voir note ci-dessous |
 | origin_venue_id | INT, FK → venues.id | Lieu de départ (souvent un entrepôt pour une livraison) |
 | destination_venue_id | INT, FK → venues.id | Lieu d'arrivée (souvent le lieu du spectacle pour une livraison) — doit être différent de `origin_venue_id` |
-| scheduled_datetime | DATETIME | Heure prévue du déplacement |
+| scheduled_datetime | DATETIME, **nullable** | Heure prévue du déplacement — nullable depuis le 2026-07-24 (une proposition `to_approve` n'a pas encore d'heure). Obligatoire pour un `status='confirmed'` (validé par `TransportSerializer`) |
 | *(dérivé)* origin_venue_code / destination_venue_code | VARCHAR(4) | Code court des lieux (voir `venues.code`), exposé en lecture seule pour un affichage compact départ/arrivée — vide si le lieu n'a pas de code |
 | estimated_duration_minutes | INT (default : voir `settings.default_transport_duration_minutes`) | Durée estimée (trajet + chargement/déchargement) — pré-remplie automatiquement via l'API Google Routes si les deux venues ont des coordonnées GPS (voir section 10) |
 | technician_id | INT, FK → technicians.id (nullable) | Technicien assigné (peut être vide tant que non confirmé) |
@@ -181,6 +182,41 @@ Table ajoutée le 2026-07-18 (hors des 8 tables initiales) — trace la livraiso
 **Fenêtre effective** = `scheduled_datetime` à `scheduled_datetime + estimated_duration_minutes` (pas de buffers séparés — la durée estimée couvre déjà trajet + chargement).
 
 **Règle de conflit** : le technicien assigné à un `transport` ne peut pas non plus être engagé (spectacle OU autre déplacement) sur une fenêtre qui chevauche celle-ci — bloquant, avec possibilité de forcer via `force: true`, comme pour `show_materials`/`show_technicians`. Cette table ne participe PAS à l'exemption d'entreposage (section 6) : un déplacement est toujours un vrai engagement de temps pour le technicien qui le fait.
+
+**Matériel transporté** (décision du 2026-07-24) : *quel* matériel monte dans un déplacement est décrit par la table de liaison `transport_materials` (section 12), pas directement ici. Ce lien alimente le module de cohérence des emplacements (voir section 12 et `transport_coherence.py`).
+
+**Statut `to_approve` / `confirmed`** (décision du 2026-07-24) : un déplacement `confirmed` est créé/complété par l'utilisateur — il a une heure, participe à la timeline de position (cohérence) et à la détection de conflit du technicien. Un déplacement `to_approve` est une **proposition générée automatiquement** (voir `transport_autogen.py`) quand du matériel est requis à un lieu où rien ne l'amène : lieux + matériel préremplis, mais heure/technicien à saisir. Une proposition est affichée en orange et ne « livre » rien tant qu'elle n'est pas confirmée (elle n'entre pas dans la timeline de position). Deux façons de créer un transport : manuellement (`confirmed` d'emblée) ou automatiquement (`to_approve`, à compléter puis confirmer).
+
+---
+
+## 12. `transport_materials`
+
+Table de liaison ajoutée le 2026-07-24 (module transport) — relie un `transport` au matériel (et à la quantité) qu'il transporte. Sans elle, un `transport` savait *quand* et *où* le matériel bougeait, mais pas *lequel* montait dans le camion.
+
+| Champ | Type | Description |
+|---|---|---|
+| id | INT, PK | Identifiant unique |
+| transport_id | INT, FK → transports.id (CASCADE) | Déplacement qui transporte ce matériel |
+| material_id | INT, FK → materials.id (CASCADE) | Matériel transporté |
+| quantity | INT (default 1) | Quantité transportée (ex. 8 des 20 rallonges) — un même matériel n'apparaît qu'une fois par transport (`unique_together (transport, material)`) |
+
+**Écriture** : géré en écriture imbriquée sur `TransportSerializer` via le champ `materials` (liste de `{material, quantity}`). Fournir `materials` lors d'un PATCH remplace intégralement les lignes du transport ; l'omettre les laisse inchangées. Validations (non overridables par `force`, ce sont des erreurs de données) : chaque matériel doit appartenir au même projet que le déplacement, ne pas être listé deux fois, et sa quantité transportée ne peut dépasser `materials.quantity` (la quantité totale possédée).
+
+**Module de cohérence des emplacements** (`transport_coherence.py`, non bloquant) : à partir de ce lien, le module reconstruit une *timeline* de position par matériel — départ au lieu d'entreposage `materials.venue`, puis application chronologique des transports (un transport est réputé « arrivé » à sa `effective_end`). Il produit un **rapport** (jamais un blocage) exposé par `GET /api/shows/{id}/transport-coherence/` (centré sur un spectacle) et `GET /api/projects/{id}/transport-coherence/` (toute la production). Trois types d'incohérence :
+
+- `materiel_non_livre` : un `show_material` requiert du matériel à un lieu où il n'est pas présent (en quantité suffisante) au début de la fenêtre effective — aucun transport **confirmé** ne l'y amène. Répond à « tout déplacement de matériel est associé à un transport ». Porte un champ `etat` : `propose` (orange — une proposition auto `to_approve` couvre le déplacement, `proposal_transport_id` la pointe) ou `manquant` (rouge — rien, même proposé, ne le couvre).
+- `origine_incoherente` : un `transport` prétend transporter du matériel depuis un lieu où ce matériel n'est pas disponible à l'heure du départ. Répond à « tout est possible sur les emplacements prévus ».
+- `origine_inconnue` : le matériel n'a pas de lieu d'entreposage (`materials.venue` vide), sa position de départ est inconnue — signalé une seule fois, impossible à suivre.
+
+**Portée assumée — aller seulement** (décision du 2026-07-24) : le module vérifie la *présence* du matériel là où il est requis (livraisons). Il n'exige PAS qu'un ramassage (`pickup`) ramène le matériel à son entrepôt d'origine (pas de boucle de retour fermée) — un `pickup` est tout de même pris en compte dans la timeline comme tout déplacement.
+
+**Exemption d'entreposage** : un `show_material` rattaché à un `show` d'entrepôt (`venue.is_storage=True`) n'exige aucune livraison — cohérent avec l'exemption de la section 6.
+
+**Génération automatique des propositions** (`transport_autogen.py`, décision du 2026-07-24) : plutôt que d'attendre que l'utilisateur crée chaque transport, l'app **génère automatiquement** un `transports` en `status='to_approve'` pour chaque déplacement manquant détecté. Déclenchement par signaux (`regenerate_signals.py`), à chaque changement pertinent : assignation de matériel (`show_materials`), transport confirmé, ligne `transport_materials` d'un transport confirmé, ou horaire/lieu d'un `shows`. La proposition est préremplie avec le lieu de départ (dernière position connue du matériel — origines chaînées entrepôt→A puis A→B), le lieu d'arrivée (le lieu du spectacle) et le matériel (groupé : une proposition par couple origine/spectacle peut porter plusieurs matériels). Régénération = *resync* idempotent des seules propositions `to_approve` (pas de mémoire de rejet — décision Samuel : on recalcule à chaque fois ; les transports confirmés ne sont jamais touchés). L'utilisateur complète (heure, technicien) puis confirme, ce qui fait passer la proposition de l'orange au vert.
+
+**Conflit de technicien sur un transport** (rappel) : reste **bloquant + `force`** comme avant (section 9 / `architecture.md` section 4). Le champ dérivé `has_technician_conflict` sur `TransportSerializer` expose l'info en lecture seule pour l'indicateur orange du frontend, y compris pour une assignation créée avec `force: true`.
+
+**Déplacement vide** : le champ dérivé `is_empty` sur `TransportSerializer` (lecture seule) vaut `true` si le déplacement ne transporte aucun matériel — pour un indicateur « camion vide » côté frontend (le contenu détaillé reste visible via `materials`).
 
 ---
 
@@ -243,6 +279,8 @@ shows 1───N transports
 transports N───1 venues (origin_venue_id)
 transports N───1 venues (destination_venue_id)
 transports N───1 technicians (nullable)
+transports 1───N transport_materials N───1 materials
+materials N───1 venues (entreposage = point de départ des timelines de cohérence)
 settings (singleton, COMMUN à tous les projets — lu par shows/transports comme source de leurs valeurs par défaut)
 ```
 

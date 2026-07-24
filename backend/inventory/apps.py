@@ -10,5 +10,7 @@ class InventoryConfig(AppConfig):
     name = 'inventory'
 
     def ready(self):
-        """Branche les signaux de provisioning OAuth (voir inventory/signals.py)."""
+        """Branche les signaux : provisioning OAuth (`signals.py`) et
+        régénération auto des propositions de transport (`regenerate_signals.py`)."""
+        from . import regenerate_signals  # noqa: F401
         from . import signals  # noqa: F401
