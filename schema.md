@@ -109,6 +109,8 @@ Fiches spectacles — regroupe répétitions et représentations avec leurs hora
 
 **Entreposage** : un `show` dont le `venue_id` pointe vers un lieu avec `is_storage = true` représente une période où le matériel est simplement rangé — voir la règle d'exemption dans `show_materials` ci-dessous. `event_type = 'storage'` est la convention pour étiqueter ce genre de fiche (mais c'est bien `venue.is_storage` qui déclenche l'exemption, pas `event_type`).
 
+**Conflit de lieu** (décision du 2026-07-19) : deux `shows` ne peuvent pas se chevaucher dans le **même** `venue_id` — occupation physique exclusive, indépendante de tout matériel ou technicien partagé (ceux-là restent en conflit peu importe le lieu, voir sections 6 et 8). Bloquant + `force: true`, même exemption d'entreposage que le matériel (une même `venue` d'entrepôt peut recevoir plusieurs fiches de rangement qui se chevauchent). Voir `conflicts.get_venue_conflicts` et `architecture.md`, section 4d.
+
 ---
 
 ## 6. `show_materials`
