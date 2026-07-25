@@ -21,14 +21,18 @@ bloquer tout mélange entre deux projets (ex. assigner du matériel du Projet A
 concernés par cette vérification.
 """
 
+from datetime import timedelta
+
 from rest_framework import serializers
 
 from .conflicts import (
     get_material_conflicts,
     get_technician_conflicts,
     get_transport_conflicts,
+    get_venue_conflicts,
     serialize_material_conflict,
     serialize_technician_conflict,
+    serialize_venue_conflict,
 )
 from .maps import estimate_travel_minutes
 from .models import (
@@ -204,8 +208,15 @@ class MaterialSerializer(serializers.ModelSerializer):
 
 class ShowSerializer(serializers.ModelSerializer):
     """Sérialise les fiches spectacles, isolées par projet, en exposant la fenêtre
-    effective calculée (buffers inclus)."""
+    effective calculée (buffers inclus).
 
+    Validation de conflit de lieu (voir `conflicts.get_venue_conflicts`,
+    décision du 2026-07-19) : deux spectacles ne peuvent pas se chevaucher
+    dans le même lieu, indépendamment du matériel ou des techniciens assignés
+    — bloquant par défaut, overridable via `force` (même pattern que les
+    autres conflits)."""
+
+    force = serializers.BooleanField(write_only=True, required=False, default=False)
     project_name = serializers.CharField(source='project.name', read_only=True)
     venue_name = serializers.CharField(source='venue.name', read_only=True)
     effective_start = serializers.DateTimeField(read_only=True)
@@ -217,10 +228,11 @@ class ShowSerializer(serializers.ModelSerializer):
             'id', 'project', 'project_name', 'title', 'venue', 'venue_name', 'event_type',
             'start_datetime', 'end_datetime',
             'buffer_before_minutes', 'buffer_after_minutes',
-            'notes', 'effective_start', 'effective_end',
+            'notes', 'effective_start', 'effective_end', 'force',
         ]
 
     def validate(self, attrs):
+        force = attrs.pop('force', False)
         start = attrs.get('start_datetime', getattr(self.instance, 'start_datetime', None))
         end = attrs.get('end_datetime', getattr(self.instance, 'end_datetime', None))
         if start and end and end <= start:
@@ -236,6 +248,34 @@ class ShowSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 'venue': "Le lieu doit appartenir au même projet que le spectacle.",
             })
+
+        # Conflit de lieu : deux spectacles ne peuvent pas se chevaucher dans
+        # le même venue. Les buffers non fournis explicitement retombent sur
+        # le défaut Settings (à la création) ou la valeur déjà en base (à la
+        # mise à jour), pour refléter fidèlement la fenêtre qui sera
+        # réellement enregistrée.
+        buffer_before = attrs.get('buffer_before_minutes', getattr(self.instance, 'buffer_before_minutes', None))
+        if buffer_before is None:
+            buffer_before = Settings.load().default_buffer_before_minutes
+        buffer_after = attrs.get('buffer_after_minutes', getattr(self.instance, 'buffer_after_minutes', None))
+        if buffer_after is None:
+            buffer_after = Settings.load().default_buffer_after_minutes
+
+        if venue and start and end and not force:
+            effective_start = start - timedelta(minutes=buffer_before)
+            effective_end = end + timedelta(minutes=buffer_after)
+            exclude_id = self.instance.id if self.instance else None
+            conflicts = get_venue_conflicts(venue, effective_start, effective_end, exclude_id=exclude_id)
+            if conflicts:
+                raise serializers.ValidationError({
+                    'conflicts': [serialize_venue_conflict(c) for c in conflicts],
+                    'detail': (
+                        "Chevauchement d'horaire détecté avec un autre spectacle dans le "
+                        "même lieu. "
+                        'Ajoute "force": true dans la requête pour forcer la création '
+                        'malgré le conflit.'
+                    ),
+                })
         return attrs
 
 

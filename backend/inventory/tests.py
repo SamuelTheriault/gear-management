@@ -23,7 +23,12 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from .conflicts import get_material_conflicts, get_technician_conflicts, get_transport_conflicts
+from .conflicts import (
+    get_material_conflicts,
+    get_technician_conflicts,
+    get_transport_conflicts,
+    get_venue_conflicts,
+)
 from .models import (
     Department,
     Material,
@@ -386,6 +391,102 @@ class MaterialActiveFlagTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['name'], "Rideau")
         self.assertFalse(response.data['is_active'])
+
+
+class VenueConflictTests(TestCase):
+    """Vérifie `get_venue_conflicts` et la validation bloquante correspondante
+    sur `ShowSerializer` (décision du 2026-07-19) : deux spectacles ne
+    peuvent pas se chevaucher dans le même lieu, indépendamment de tout
+    matériel/technicien partagé — sauf exemption d'entreposage."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.venue = Venue.objects.create(project=self.project, name="Chapelle")
+        # 14h-16h, buffers par défaut (60 min) -> fenêtre effective 13h-17h
+        self.show_a = Show.objects.create(
+            project=self.project, title="Show A", venue=self.venue, event_type="rehearsal",
+            start_datetime=_dt(14), end_datetime=_dt(16),
+        )
+
+    def test_no_conflict_when_venue_unused(self):
+        other_venue = Venue.objects.create(project=self.project, name="Autre salle")
+        self.assertEqual(get_venue_conflicts(other_venue, _dt(14), _dt(16)), [])
+
+    def test_conflict_detected_on_overlap_same_venue(self):
+        # 15h-17h chevauche la fenêtre effective 13h-17h de Show A
+        conflicts = get_venue_conflicts(self.venue, _dt(15), _dt(17))
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(conflicts[0].id, self.show_a.id)
+
+    def test_no_conflict_beyond_buffers(self):
+        conflicts = get_venue_conflicts(self.venue, _dt(20), _dt(22))
+        self.assertEqual(conflicts, [])
+
+    def test_no_conflict_different_venue_even_if_overlapping(self):
+        other_venue = Venue.objects.create(project=self.project, name="Autre salle")
+        conflicts = get_venue_conflicts(other_venue, _dt(14), _dt(16))
+        self.assertEqual(conflicts, [])
+
+    def test_exclude_id_excludes_the_show_itself(self):
+        conflicts = get_venue_conflicts(self.venue, _dt(14), _dt(16), exclude_id=self.show_a.id)
+        self.assertEqual(conflicts, [])
+
+    def test_storage_venue_is_exempt(self):
+        storage_venue = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        Show.objects.create(
+            project=self.project, title="Rangement A", venue=storage_venue, event_type="storage",
+            start_datetime=_dt(14), end_datetime=_dt(16),
+        )
+        conflicts = get_venue_conflicts(storage_venue, _dt(14), _dt(16))
+        self.assertEqual(conflicts, [])
+
+    def test_api_blocks_overlapping_show_in_same_venue(self):
+        response = self.client.post('/api/shows/', {
+            'project': self.project.id, 'title': "Show B", 'venue': self.venue.id, 'event_type': 'rehearsal',
+            'start_datetime': _dt(15).isoformat(), 'end_datetime': _dt(17).isoformat(),
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('conflicts', response.data)
+
+    def test_api_allows_overlapping_show_with_force(self):
+        response = self.client.post('/api/shows/', {
+            'project': self.project.id, 'title': "Show B", 'venue': self.venue.id, 'event_type': 'rehearsal',
+            'start_datetime': _dt(15).isoformat(), 'end_datetime': _dt(17).isoformat(), 'force': True,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_api_allows_overlapping_show_in_different_venue(self):
+        other_venue = Venue.objects.create(project=self.project, name="Autre salle")
+        response = self.client.post('/api/shows/', {
+            'project': self.project.id, 'title': "Show B", 'venue': other_venue.id, 'event_type': 'rehearsal',
+            'start_datetime': _dt(15).isoformat(), 'end_datetime': _dt(17).isoformat(),
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_api_allows_non_overlapping_show_same_venue(self):
+        response = self.client.post('/api/shows/', {
+            'project': self.project.id, 'title': "Show B", 'venue': self.venue.id, 'event_type': 'rehearsal',
+            'start_datetime': _dt(20).isoformat(), 'end_datetime': _dt(22).isoformat(),
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_updating_show_does_not_conflict_with_itself(self):
+        response = self.client.patch(f'/api/shows/{self.show_a.id}/', {
+            'notes': "mise à jour sans changement d'horaire",
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_show_conflicts_endpoint_lists_venue_conflict(self):
+        self.client.post('/api/shows/', {
+            'project': self.project.id, 'title': "Show B", 'venue': self.venue.id, 'event_type': 'rehearsal',
+            'start_datetime': _dt(15).isoformat(), 'end_datetime': _dt(17).isoformat(), 'force': True,
+        }, format='json')
+        response = self.client.get(f'/api/shows/{self.show_a.id}/conflicts/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data['venue_conflicts']), 1)
 
 
 class StorageExemptionTests(TestCase):

@@ -61,6 +61,7 @@ Détails complets des champs → voir `schema.md`.
 13. ~~Isolation par projet (`Project`) pour travailler sur plusieurs productions en parallèle.~~ ✅ (2026-07-19) — voir note ci-dessous
 14. ~~Duplication de projet (`POST /api/projects/{id}/duplicate/`) pour démarrer une nouvelle édition d'un mandat.~~ ✅ (2026-07-19) — voir note ci-dessous
 15. ~~Code court par lieu (`Venue.code`).~~ ✅ (2026-07-19) — voir note ci-dessous
+16. ~~Conflit de lieu entre spectacles.~~ ✅ (2026-07-19) — voir note ci-dessous
 
 ### Notes de déploiement (piège à retenir)
 
@@ -409,6 +410,24 @@ unitaires.
   `test_settings_and_maps.py` 20 + `test_oauth_provisioning.py` 4), tous
   passent. flake8 (docstrings), `makemigrations --check` et `manage.py check`
   propres.
+
+### Note sur le conflit de lieu (étape 16, 2026-07-19)
+
+- Clarification demandée par Samuel : le matériel et les techniciens ne
+  doivent jamais pouvoir être utilisés à deux endroits en même temps, peu
+  importe le lieu (déjà le cas — ces vérifications ne tiennent jamais
+  compte du lieu). Mais l'inverse manquait : rien n'empêchait de créer deux
+  spectacles qui se chevauchent dans le **même** lieu, sans matériel ni
+  technicien en commun.
+- Nouvelle fonction `conflicts.get_venue_conflicts` : deux `shows` ne
+  peuvent pas se chevaucher dans le même `venue`, occupation physique
+  exclusive, indépendante du matériel/technicien. Même exemption
+  d'entreposage que le matériel (un entrepôt peut recevoir plusieurs fiches
+  de rangement qui se chevauchent). Bloquant + `force: true`, câblé dans
+  `ShowSerializer.validate()` (nouveau champ `force` sur ce serializer) et
+  exposé sous `venue_conflicts` dans `GET /api/shows/{id}/conflicts/`.
+- 12 nouveaux tests — suite complète à 149 tests, tous passent. flake8
+  propre.
 
 ## Fichiers produits
 

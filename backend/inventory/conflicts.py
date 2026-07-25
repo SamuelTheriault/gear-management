@@ -43,11 +43,20 @@ technicien ne peut pas être sur un spectacle ET faire un déplacement en même
 temps — `get_technician_conflicts` (assignation à un Show) et
 `get_transport_conflicts` (assignation à un Transport) vérifient donc
 désormais l'une contre l'autre, via `_technician_commitments`.
+
+Conflit de lieu (décision prise avec Samuel le 2026-07-19) : deux spectacles
+ne peuvent jamais physiquement occuper le même lieu (`venue`) en même temps
+— `get_venue_conflicts` vérifie ça directement entre `Show`, complètement
+indépendamment du matériel ou des techniciens assignés (qui, eux, restent
+interdits de chevauchement peu importe le lieu — voir plus haut). Même
+exemption d'entreposage que pour le matériel : un lieu d'entrepôt peut
+recevoir plusieurs fiches de rangement qui se chevauchent sans que ce soit
+un vrai conflit d'occupation physique.
 """
 
 from datetime import timedelta
 
-from .models import Material, ShowMaterial, ShowTechnician, Transport
+from .models import Material, Show, ShowMaterial, ShowTechnician, Transport
 
 
 def _collect_material_family(material, _seen=None):
@@ -151,6 +160,36 @@ def get_material_conflicts(show, material, exclude_id=None, quantity=1):
     return conflicts
 
 
+def get_venue_conflicts(venue, effective_start, effective_end, exclude_id=None):
+    """Retourne la liste des `Show` existants qui entreraient en conflit de
+    lieu si un spectacle occupait `venue` sur la fenêtre
+    `[effective_start, effective_end]` (déjà bufferisée par l'appelant).
+
+    Deux spectacles ne peuvent jamais physiquement occuper le même lieu en
+    même temps — vérification indépendante de tout matériel ou technicien
+    partagé (voir `get_material_conflicts`/`get_technician_conflicts`, qui
+    ignorent complètement le lieu).
+
+    Un lieu d'entrepôt (`venue.is_storage=True`) n'est jamais soumis à cette
+    règle : plusieurs fiches de rangement peuvent coexister au même entrepôt
+    en même temps, ce n'est pas une occupation physique exclusive.
+
+    `exclude_id` : id du `Show` à exclure lors d'une mise à jour (le
+    spectacle qu'on modifie ne doit pas se comparer à lui-même).
+    """
+    if venue.is_storage:
+        return []
+
+    candidates = Show.objects.filter(venue_id=venue.id).select_related('venue')
+    if exclude_id is not None:
+        candidates = candidates.exclude(id=exclude_id)
+
+    return [
+        s for s in candidates
+        if windows_overlap(effective_start, effective_end, s.effective_start, s.effective_end)
+    ]
+
+
 def _technician_commitments(technician_id, exclude_show_technician_id=None, exclude_transport_id=None):
     """Liste de `(objet, début, fin)` pour tous les engagements d'un technicien
     (assignations à des spectacles ET déplacements), utilisée pour croiser les
@@ -219,6 +258,18 @@ def serialize_material_conflict(show_material):
         'show_end': sm.show.end_datetime,
         'material_id': sm.material_id,
         'material_name': sm.material.name,
+    }
+
+
+def serialize_venue_conflict(show):
+    """Représentation compacte d'un `Show` en conflit de lieu, pour la réponse API."""
+    return {
+        'type': 'show',
+        'show_id': show.id,
+        'show_title': show.title,
+        'show_start': show.start_datetime,
+        'show_end': show.end_datetime,
+        'venue_id': show.venue_id,
     }
 
 

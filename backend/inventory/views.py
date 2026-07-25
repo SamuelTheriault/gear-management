@@ -22,8 +22,10 @@ from .conflicts import (
     get_material_conflicts,
     get_technician_conflicts,
     get_transport_conflicts,
+    get_venue_conflicts,
     serialize_material_conflict,
     serialize_technician_conflict,
+    serialize_venue_conflict,
 )
 from .duplication import duplicate_project
 from .transport_coherence import get_project_coherence_report, get_show_coherence_report
@@ -179,10 +181,17 @@ class ShowViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['get'])
     def conflicts(self, request, pk=None):
         """Liste les chevauchements actuellement en place pour ce spectacle
-        (matériel, techniciens et déplacements), y compris les assignations
-        créées avec `force: true` malgré un conflit signalé au moment de la
-        création."""
+        (lieu, matériel, techniciens et déplacements), y compris les
+        assignations créées avec `force: true` malgré un conflit signalé au
+        moment de la création."""
         show = self.get_object()
+
+        venue_conflicts = [
+            serialize_venue_conflict(conflict)
+            for conflict in get_venue_conflicts(
+                show.venue, show.effective_start, show.effective_end, exclude_id=show.id,
+            )
+        ]
 
         material_conflicts = []
         for sm in show.show_materials.select_related('material').all():
@@ -206,6 +215,7 @@ class ShowViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
                 technician_conflicts.append(serialize_technician_conflict(conflict))
 
         return Response({
+            'venue_conflicts': venue_conflicts,
             'material_conflicts': material_conflicts,
             'technician_conflicts': technician_conflicts,
         })
