@@ -16,11 +16,10 @@ production tant que le frontend n'a pas de sélecteur de projet dédié.
 """
 
 from django.contrib import admin
-from django.utils.html import format_html
 
 from .models import (
-    Department,
     Material,
+    MaterialCategory,
     Project,
     Settings,
     Show,
@@ -28,6 +27,7 @@ from .models import (
     ShowTechnician,
     Technician,
     Transport,
+    TransportTechnician,
     User,
     Venue,
 )
@@ -63,23 +63,6 @@ class VenueAdmin(admin.ModelAdmin):
     autocomplete_fields = ('project',)
 
 
-@admin.register(Department)
-class DepartmentAdmin(admin.ModelAdmin):
-    """Admin pour les départements responsables du matériel, couleur d'identification incluse."""
-
-    list_display = ('name', 'color_swatch', 'contact_name', 'contact_info')
-    search_fields = ('name', 'contact_name')
-
-    @admin.display(description='Couleur')
-    def color_swatch(self, obj):
-        """Aperçu visuel de `Department.color` dans la liste admin."""
-        return format_html(
-            '<span style="display:inline-block;width:14px;height:14px;'
-            'border-radius:3px;border:1px solid #0002;background:{}"></span> {}',
-            obj.color, obj.color,
-        )
-
-
 class MaterialInline(admin.TabularInline):
     """Liste les composants (matériel enfant) directement sur la fiche du matériel parent."""
 
@@ -90,17 +73,27 @@ class MaterialInline(admin.TabularInline):
     show_change_link = True
 
 
+@admin.register(MaterialCategory)
+class MaterialCategoryAdmin(admin.ModelAdmin):
+    """Admin pour les catégories de matériel (une liste par projet — voir MaterialCategory)."""
+
+    list_display = ('name', 'project', 'color')
+    list_filter = ('project',)
+    search_fields = ('name',)
+    autocomplete_fields = ('project',)
+
+
 @admin.register(Material)
 class MaterialAdmin(admin.ModelAdmin):
     """Admin pour l'inventaire de matériel, isolé par projet, avec hiérarchie parent/enfant en inline."""
 
     list_display = (
-        'name', 'project', 'category', 'quantity', 'is_active', 'parent_material', 'venue', 'department',
+        'name', 'project', 'category', 'quantity', 'is_active', 'parent_material', 'venue',
         'ownership_status',
     )
-    list_filter = ('project', 'is_active', 'category', 'ownership_status', 'venue', 'department')
+    list_filter = ('project', 'is_active', 'category', 'ownership_status', 'venue')
     search_fields = ('name', 'description')
-    autocomplete_fields = ('project', 'parent_material', 'venue', 'department')
+    autocomplete_fields = ('project', 'parent_material', 'venue', 'category')
     inlines = [MaterialInline]
     actions = ['mark_active', 'mark_inactive']
 
@@ -134,7 +127,7 @@ class TransportInline(admin.TabularInline):
 
     model = Transport
     extra = 0
-    autocomplete_fields = ('origin_venue', 'destination_venue', 'technician')
+    autocomplete_fields = ('origin_venue', 'destination_venue')
 
 
 @admin.register(Show)
@@ -162,17 +155,28 @@ class TechnicianAdmin(admin.ModelAdmin):
     autocomplete_fields = ('project',)
 
 
+class TransportTechnicianInline(admin.TabularInline):
+    """Techniciens affectés à un déplacement (voir TransportTechnician, 2026-07-30)."""
+
+    model = TransportTechnician
+    extra = 0
+    autocomplete_fields = ('technician',)
+
+
 @admin.register(Transport)
 class TransportAdmin(admin.ModelAdmin):
     """Admin pour les déplacements (livraison/ramassage) — vue globale utile pour la logistique."""
 
     list_display = (
         'show', 'transport_type', 'origin_venue', 'destination_venue',
-        'scheduled_datetime', 'estimated_duration_minutes', 'technician',
+        'scheduled_datetime', 'estimated_duration_minutes',
     )
-    list_filter = ('transport_type', 'technician', 'origin_venue', 'destination_venue')
+    list_filter = ('transport_type', 'origin_venue', 'destination_venue')
     search_fields = ('show__title', 'notes')
-    autocomplete_fields = ('show', 'origin_venue', 'destination_venue', 'technician')
+    autocomplete_fields = ('show', 'origin_venue', 'destination_venue')
+    # Les techniciens affectés sont passés en inline le 2026-07-30 : un
+    # déplacement peut en mobiliser plusieurs (voir TransportTechnician).
+    inlines = [TransportTechnicianInline]
 
 
 @admin.register(Settings)

@@ -17,7 +17,6 @@ Niveaux :
 from datetime import timedelta
 
 from django.contrib.auth.models import User as DjangoUser
-from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
@@ -25,13 +24,14 @@ from rest_framework.test import APIClient
 
 from .conflicts import (
     get_material_conflicts,
+    get_project_conflicts,
     get_technician_conflicts,
     get_transport_conflicts,
     get_venue_conflicts,
 )
 from .models import (
-    Department,
     Material,
+    MaterialCategory,
     Project,
     Show,
     ShowMaterial,
@@ -39,15 +39,46 @@ from .models import (
     Technician,
     Transport,
     TransportMaterial,
+    TransportTechnician,
     Venue,
 )
 from .transport_autogen import regenerate_project_proposals
-from .transport_coherence import get_material_coherence_issues
+from .transport_coherence import (
+    get_material_coherence_issues,
+    get_project_coherence_report,
+    get_project_horizon,
+)
 
 
 def _dt(hour, day=1):
     """Petit helper pour construire des datetimes aware sur une même journée de test."""
     return timezone.make_aware(timezone.datetime(2026, 9, day, hour, 0))
+
+
+def _transport_avec_technicien(technician, **kwargs):
+    """Crée un `Transport` et y affecte `technician`.
+
+    Depuis le 2026-07-30, `Transport.technician` n'existe plus : les
+    techniciens passent par la table de liaison `TransportTechnician` (un
+    déplacement peut en mobiliser plusieurs). Ce helper garde les tests de
+    conflit lisibles, où l'on ne veut qu'une personne.
+    """
+    transport = Transport.objects.create(**kwargs)
+    TransportTechnician.objects.create(transport=transport, technician=technician)
+    return transport
+
+
+def _cat(project, name="Audio"):
+    """Récupère la catégorie de matériel `name` du projet (voir MaterialCategory).
+
+    Depuis le 2026-07-30, `Material.category` est une FK et non plus un slug
+    figé : les tests passaient `category="audio"`. Les 9 catégories par défaut
+    sont créées automatiquement à la création de chaque `Project` (signal
+    `creer_categories_par_defaut`), donc un simple `get()` suffit ici — le
+    `get_or_create` couvre le cas d'une catégorie de test hors défauts.
+    """
+    categorie, _ = MaterialCategory.objects.get_or_create(project=project, name=name)
+    return categorie
 
 
 class ConflictLogicTests(TestCase):
@@ -56,7 +87,7 @@ class ConflictLogicTests(TestCase):
     def setUp(self):
         self.project = Project.objects.create(name="Projet test")
         self.venue = Venue.objects.create(project=self.project, name="Salle test")
-        self.material = Material.objects.create(project=self.project, name="Console son", category="audio")
+        self.material = Material.objects.create(project=self.project, name="Console son", category=_cat(self.project, "Audio"))
         # 14h-16h, buffers par défaut (60 min) -> fenêtre effective 13h-17h
         self.show_a = Show.objects.create(
             project=self.project, title="Show A", venue=self.venue, event_type="rehearsal",
@@ -101,8 +132,8 @@ class ConflictLogicTests(TestCase):
         self.assertEqual(get_material_conflicts(show_b, self.material), [])
 
     def test_conflict_propagates_from_parent_to_child(self):
-        kit = Material.objects.create(project=self.project, name="Kit Audio", category="audio")
-        mic = Material.objects.create(project=self.project, name="Micro sans fil", category="audio", parent_material=kit)
+        kit = Material.objects.create(project=self.project, name="Kit Audio", category=_cat(self.project, "Audio"))
+        mic = Material.objects.create(project=self.project, name="Micro sans fil", category=_cat(self.project, "Audio"), parent_material=kit)
 
         show_b = Show.objects.create(
             project=self.project, title="Show B", venue=self.venue, event_type="rehearsal",
@@ -117,8 +148,8 @@ class ConflictLogicTests(TestCase):
         self.assertEqual(conflicts[0].material_id, kit.id)
 
     def test_conflict_propagates_from_child_to_parent(self):
-        kit = Material.objects.create(project=self.project, name="Kit Audio", category="audio")
-        mic = Material.objects.create(project=self.project, name="Micro sans fil", category="audio", parent_material=kit)
+        kit = Material.objects.create(project=self.project, name="Kit Audio", category=_cat(self.project, "Audio"))
+        mic = Material.objects.create(project=self.project, name="Micro sans fil", category=_cat(self.project, "Audio"), parent_material=kit)
 
         show_b = Show.objects.create(
             project=self.project, title="Show B", venue=self.venue, event_type="rehearsal",
@@ -135,8 +166,8 @@ class ConflictLogicTests(TestCase):
     def test_same_show_never_conflicts_with_itself(self):
         # Assigner le même matériel (ou un parent/enfant) une deuxième fois DANS
         # le même spectacle n'est pas un conflit d'horaire.
-        kit = Material.objects.create(project=self.project, name="Kit Audio", category="audio")
-        mic = Material.objects.create(project=self.project, name="Micro sans fil", category="audio", parent_material=kit)
+        kit = Material.objects.create(project=self.project, name="Kit Audio", category=_cat(self.project, "Audio"))
+        mic = Material.objects.create(project=self.project, name="Micro sans fil", category=_cat(self.project, "Audio"), parent_material=kit)
         ShowMaterial.objects.create(show=self.show_a, material=mic)
 
         self.assertEqual(get_material_conflicts(self.show_a, kit), [])
@@ -183,7 +214,7 @@ class MaterialQuantityConflictTests(TestCase):
         self.project = Project.objects.create(name="Projet test")
         self.venue = Venue.objects.create(project=self.project, name="Salle test")
         # 20 rallonges électriques identiques en inventaire.
-        self.material = Material.objects.create(project=self.project, name="Rallonge électrique", category="autre", quantity=20)
+        self.material = Material.objects.create(project=self.project, name="Rallonge électrique", category=_cat(self.project, "Autre"), quantity=20)
         # 14h-16h, buffers par défaut (60 min) -> fenêtre effective 13h-17h
         self.show_a = Show.objects.create(
             project=self.project, title="Show A", venue=self.venue, event_type="rehearsal",
@@ -228,7 +259,7 @@ class MaterialQuantityConflictTests(TestCase):
     def test_default_quantity_of_one_preserves_binary_behaviour(self):
         # Non-régression : un matériel simple (quantity=1 par défaut) doit se
         # comporter exactement comme avant — tout chevauchement est un conflit.
-        simple_material = Material.objects.create(project=self.project, name="Console son", category="audio")
+        simple_material = Material.objects.create(project=self.project, name="Console son", category=_cat(self.project, "Audio"))
         ShowMaterial.objects.create(show=self.show_a, material=simple_material)
         show_b = Show.objects.create(
             project=self.project, title="Show B", venue=self.venue, event_type="rehearsal",
@@ -252,37 +283,42 @@ class MaterialQuantityHierarchyValidationTests(TestCase):
 
     def setUp(self):
         self.project = Project.objects.create(name="Projet test")
+        # Lieu d'origine obligatoire à la création depuis le 2026-07-30.
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
         self.client = APIClient()
         self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
         self.client.force_authenticate(user=self.django_user)
 
     def test_cannot_create_material_with_quantity_and_parent(self):
-        kit = Material.objects.create(project=self.project, name="Kit Audio", category="audio")
+        kit = Material.objects.create(project=self.project, name="Kit Audio", category=_cat(self.project, "Audio"))
         response = self.client.post('/api/materials/', {
             'project': self.project.id,
-            'name': "Micro sans fil", 'category': "audio", 'parent_material': kit.id, 'quantity': 3,
+            'name': "Micro sans fil", 'category': _cat(self.project, "Audio").id,
+            'venue': self.entrepot.id, 'parent_material': kit.id, 'quantity': 3,
         }, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_cannot_set_quantity_above_one_on_material_with_components(self):
-        kit = Material.objects.create(project=self.project, name="Kit Audio", category="audio")
-        Material.objects.create(project=self.project, name="Micro sans fil", category="audio", parent_material=kit)
+        kit = Material.objects.create(project=self.project, name="Kit Audio", category=_cat(self.project, "Audio"))
+        Material.objects.create(project=self.project, name="Micro sans fil", category=_cat(self.project, "Audio"), parent_material=kit)
 
         response = self.client.patch(f'/api/materials/{kit.id}/', {'quantity': 2}, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_cannot_set_parent_to_material_with_quantity_above_one(self):
-        multi = Material.objects.create(project=self.project, name="Rallonge électrique", category="autre", quantity=20)
+        multi = Material.objects.create(project=self.project, name="Rallonge électrique", category=_cat(self.project, "Autre"), quantity=20)
         response = self.client.post('/api/materials/', {
             'project': self.project.id,
-            'name': "Composant", 'category': "autre", 'parent_material': multi.id,
+            'name': "Composant", 'category': _cat(self.project, "Autre").id,
+            'venue': self.entrepot.id, 'parent_material': multi.id,
         }, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_standalone_material_can_have_quantity_above_one(self):
         response = self.client.post('/api/materials/', {
             'project': self.project.id,
-            'name': "Rallonge électrique", 'category': "autre", 'quantity': 20,
+            'name': "Rallonge électrique", 'category': _cat(self.project, "Autre").id,
+            'venue': self.entrepot.id, 'quantity': 20,
         }, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['quantity'], 20)
@@ -332,6 +368,87 @@ class VenueCodeTests(TestCase):
         }, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
+    def test_patch_code_only_on_existing_venue(self):
+        # Cas du frontend (fiche lieu) : renseigner après coup le code d'un
+        # lieu créé sans code, avec un PATCH ne portant que ce champ — donc
+        # sans `project` dans les données, que `validate_code` doit alors
+        # retrouver depuis l'instance.
+        venue = Venue.objects.create(project=self.project, name="Chapelle")
+        response = self.client.patch(f'/api/venues/{venue.id}/', {'code': "chap"}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        venue.refresh_from_db()
+        self.assertEqual(venue.code, "CHAP")
+
+    def test_patch_code_unchanged_is_not_a_duplicate_of_itself(self):
+        venue = Venue.objects.create(project=self.project, name="Chapelle", code="CHAP")
+        response = self.client.patch(f'/api/venues/{venue.id}/', {'code': "CHAP"}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_patch_code_rejected_if_taken_by_another_venue(self):
+        Venue.objects.create(project=self.project, name="Chapelle", code="CHAP")
+        autre = Venue.objects.create(project=self.project, name="Salle 2")
+        response = self.client.patch(f'/api/venues/{autre.id}/', {'code': "chap"}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('code', response.data)
+
+    def test_patch_can_clear_code(self):
+        venue = Venue.objects.create(project=self.project, name="Chapelle", code="CHAP")
+        response = self.client.patch(f'/api/venues/{venue.id}/', {'code': ""}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        venue.refresh_from_db()
+        self.assertEqual(venue.code, "")
+
+    def test_patch_full_venue_fields(self):
+        # Cas du frontend (bouton « Modifier la fiche ») : un seul PATCH qui
+        # porte sur tous les champs éditables du lieu à la fois.
+        venue = Venue.objects.create(project=self.project, name="Chapelle")
+        response = self.client.patch(f'/api/venues/{venue.id}/', {
+            'name': "Chapelle historique",
+            'code': "chap",
+            'address': "100 rue Sainte-Catherine, Montréal",
+            'contact_name': "Marie Tremblay",
+            'contact_info': "514-555-0100",
+            'notes': "Quai de chargement à l'arrière.",
+            'is_storage': False,
+            'latitude': "45.508888",
+            'longitude': "-73.561668",
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        venue.refresh_from_db()
+        self.assertEqual(venue.name, "Chapelle historique")
+        self.assertEqual(venue.code, "CHAP")
+        self.assertEqual(venue.contact_name, "Marie Tremblay")
+        self.assertEqual(str(venue.latitude), "45.508888")
+        self.assertEqual(str(venue.longitude), "-73.561668")
+
+    def test_patch_can_clear_gps_coordinates(self):
+        # Le frontend envoie `null` (pas la chaîne vide) quand on vide les
+        # champs latitude/longitude — ils sont nullables côté modèle.
+        venue = Venue.objects.create(
+            project=self.project, name="Chapelle",
+            latitude="45.508888", longitude="-73.561668",
+        )
+        response = self.client.patch(f'/api/venues/{venue.id}/', {
+            'latitude': None, 'longitude': None,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        venue.refresh_from_db()
+        self.assertIsNone(venue.latitude)
+        self.assertIsNone(venue.longitude)
+
+    def test_patch_can_toggle_is_storage(self):
+        venue = Venue.objects.create(project=self.project, name="Chapelle")
+        response = self.client.patch(f'/api/venues/{venue.id}/', {'is_storage': True}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        venue.refresh_from_db()
+        self.assertTrue(venue.is_storage)
+
+    def test_patch_rejects_blank_name(self):
+        venue = Venue.objects.create(project=self.project, name="Chapelle")
+        response = self.client.patch(f'/api/venues/{venue.id}/', {'name': ""}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('name', response.data)
+
     def test_transport_serializer_exposes_venue_codes(self):
         origin = Venue.objects.create(project=self.project, name="Entrepôt", code="ENTR", is_storage=True)
         destination = Venue.objects.create(project=self.project, name="Chapelle", code="CHAP")
@@ -361,12 +478,12 @@ class MaterialActiveFlagTests(TestCase):
         self.client.force_authenticate(user=self.django_user)
 
     def test_material_defaults_to_active(self):
-        material = Material.objects.create(project=self.project, name="Console son", category="audio")
+        material = Material.objects.create(project=self.project, name="Console son", category=_cat(self.project, "Audio"))
         self.assertTrue(material.is_active)
 
     def test_inactive_material_excluded_from_list_by_default(self):
-        Material.objects.create(project=self.project, name="Rideau", category="decor", is_active=False)
-        active = Material.objects.create(project=self.project, name="Console son", category="audio")
+        Material.objects.create(project=self.project, name="Rideau", category=_cat(self.project, "Décor"), is_active=False)
+        active = Material.objects.create(project=self.project, name="Console son", category=_cat(self.project, "Audio"))
 
         response = self.client.get('/api/materials/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -375,8 +492,8 @@ class MaterialActiveFlagTests(TestCase):
         self.assertNotIn("Rideau", names)
 
     def test_include_inactive_returns_everything(self):
-        Material.objects.create(project=self.project, name="Rideau", category="decor", is_active=False)
-        Material.objects.create(project=self.project, name="Console son", category="audio")
+        Material.objects.create(project=self.project, name="Rideau", category=_cat(self.project, "Décor"), is_active=False)
+        Material.objects.create(project=self.project, name="Console son", category=_cat(self.project, "Audio"))
 
         response = self.client.get('/api/materials/?include_inactive=true')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -385,7 +502,7 @@ class MaterialActiveFlagTests(TestCase):
         self.assertIn("Console son", names)
 
     def test_retrieve_inactive_material_by_id_still_works(self):
-        material = Material.objects.create(project=self.project, name="Rideau", category="decor", is_active=False)
+        material = Material.objects.create(project=self.project, name="Rideau", category=_cat(self.project, "Décor"), is_active=False)
 
         response = self.client.get(f'/api/materials/{material.id}/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -499,7 +616,7 @@ class StorageExemptionTests(TestCase):
         self.project = Project.objects.create(name="Projet test")
         self.real_venue = Venue.objects.create(project=self.project, name="Salle test")
         self.storage_venue = Venue.objects.create(project=self.project, name="Entrepôt Rosemont", is_storage=True)
-        self.material = Material.objects.create(project=self.project, name="Console son", category="audio")
+        self.material = Material.objects.create(project=self.project, name="Console son", category=_cat(self.project, "Audio"))
         self.technician = Technician.objects.create(project=self.project, name="Alex Dupont", specialty="son")
 
         # Show réel 14h-16h -> fenêtre effective 13h-17h
@@ -578,7 +695,7 @@ class TransportConflictTests(TestCase):
     def test_show_assignment_conflicts_with_existing_transport(self):
         # Sens inverse : le technicien a déjà un transport qui chevauche la
         # fenêtre du show -> l'assigner au show doit être signalé en conflit.
-        Transport.objects.create(
+        _transport_avec_technicien(
             show=self.show, transport_type='delivery',
             origin_venue=self.venue_b, destination_venue=self.venue_a,
             scheduled_datetime=_dt(12), estimated_duration_minutes=90,
@@ -588,7 +705,7 @@ class TransportConflictTests(TestCase):
         self.assertEqual(len(conflicts), 1)
 
     def test_two_transports_for_same_technician_conflict(self):
-        Transport.objects.create(
+        _transport_avec_technicien(
             show=self.show, transport_type='delivery',
             origin_venue=self.venue_b, destination_venue=self.venue_a,
             scheduled_datetime=_dt(10), estimated_duration_minutes=60,
@@ -601,7 +718,7 @@ class TransportConflictTests(TestCase):
         self.assertEqual(len(conflicts), 1)
 
     def test_exclude_id_excludes_the_transport_itself(self):
-        transport = Transport.objects.create(
+        transport = _transport_avec_technicien(
             show=self.show, transport_type='delivery',
             origin_venue=self.venue_b, destination_venue=self.venue_a,
             scheduled_datetime=_dt(10), estimated_duration_minutes=60,
@@ -615,6 +732,117 @@ class TransportConflictTests(TestCase):
         self.assertEqual(conflicts, [])
 
 
+class TransportWindowValidationAPITests(TestCase):
+    """Vérifie la fenêtre départ/arrivée d'un déplacement (décision Samuel du
+    2026-07-30, voir conflicts.py : `find_departure_show`/`find_arrival_show`/
+    `validate_transport_window`) — le déplacement doit avoir lieu entre la fin
+    effective du spectacle de départ et le début effectif du spectacle
+    d'arrivée, bloquant + `force`."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name="Projet test")
+        self.user = DjangoUser.objects.create_superuser('admin', 'admin@test.com', 'testpass123')
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        self.venue_a = Venue.objects.create(project=self.project, name="Salle A")
+        self.venue_b = Venue.objects.create(project=self.project, name="Salle B")
+        self.storage = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+
+        # 14h-16h, buffers par défaut (60 min) -> fenêtre effective 13h-17h
+        self.departure_show = Show.objects.create(
+            project=self.project, title="Départ", venue=self.venue_a, event_type="rehearsal",
+            start_datetime=_dt(14), end_datetime=_dt(16),
+        )
+        # 20h-22h -> fenêtre effective 19h-23h
+        self.arrival_show = Show.objects.create(
+            project=self.project, title="Arrivée", venue=self.venue_b, event_type="rehearsal",
+            start_datetime=_dt(20), end_datetime=_dt(22),
+        )
+
+    def _post(self, **overrides):
+        payload = {
+            'show': self.arrival_show.id, 'transport_type': 'delivery',
+            'origin_venue': self.venue_a.id, 'destination_venue': self.venue_b.id,
+            'scheduled_datetime': _dt(17).isoformat(), 'estimated_duration_minutes': 60,
+        }
+        payload.update(overrides)
+        return self.client.post('/api/transports/', payload, format='json')
+
+    def test_scheduled_right_at_departure_effective_end_succeeds(self):
+        # Fin effective du départ = 17h00 pile -> "tout de suite après" est permis.
+        response = self._post(scheduled_datetime=_dt(17).isoformat())
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_scheduled_before_departure_effective_end_blocked(self):
+        response = self._post(scheduled_datetime=_dt(16).isoformat(), estimated_duration_minutes=30)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('departure_show', response.data)
+        # `response.data` sur une erreur 400 passe par `ValidationError`, qui
+        # enveloppe récursivement les valeurs en `ErrorDetail` (str) — voir
+        # aussi le pattern déjà en place pour `conflicts` ailleurs (material_id/
+        # show_id). Comparaison en texte, pas en int, pour cette raison.
+        self.assertEqual(str(response.data['departure_show']['id']), str(self.departure_show.id))
+
+    def test_ends_after_arrival_effective_start_blocked(self):
+        # 18h + 90 min = fenêtre jusqu'à 19h30, dépasse le début effectif de l'arrivée (19h00)
+        response = self._post(scheduled_datetime=_dt(18).isoformat(), estimated_duration_minutes=90)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('arrival_show', response.data)
+        self.assertEqual(str(response.data['arrival_show']['id']), str(self.arrival_show.id))
+
+    def test_force_bypasses_window_violation(self):
+        response = self._post(scheduled_datetime=_dt(16).isoformat(), estimated_duration_minutes=30, force=True)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_storage_origin_has_no_lower_bound(self):
+        # Origine = entrepôt : pas de spectacle de départ, donc pas de borne basse.
+        response = self._post(origin_venue=self.storage.id, scheduled_datetime=_dt(1).isoformat())
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_pickup_uses_show_as_departure_and_deduces_arrival(self):
+        # Ramassage : `show` = spectacle de départ ; l'arrivée est déduite du
+        # lieu de destination (venue_b, où se trouve `arrival_show`).
+        response = self.client.post('/api/transports/', {
+            'show': self.departure_show.id, 'transport_type': 'pickup',
+            'origin_venue': self.venue_a.id, 'destination_venue': self.venue_b.id,
+            'scheduled_datetime': _dt(18).isoformat(), 'estimated_duration_minutes': 30,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        # Trop tard : dépasse le début effectif de l'arrivée.
+        response = self.client.post('/api/transports/', {
+            'show': self.departure_show.id, 'transport_type': 'pickup',
+            'origin_venue': self.venue_a.id, 'destination_venue': self.venue_b.id,
+            'scheduled_datetime': (_dt(18) + timedelta(hours=1, minutes=30)).isoformat(),
+            'estimated_duration_minutes': 30,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('arrival_show', response.data)
+
+    def test_reference_shows_exposed_on_read(self):
+        transport = Transport.objects.create(
+            show=self.arrival_show, transport_type='delivery',
+            origin_venue=self.venue_a, destination_venue=self.venue_b,
+            scheduled_datetime=_dt(17), estimated_duration_minutes=60,
+        )
+        response = self.client.get(f'/api/transports/{transport.id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['departure_show']['id'], self.departure_show.id)
+        self.assertEqual(response.data['arrival_show']['id'], self.arrival_show.id)
+
+    def test_reference_shows_null_when_no_show_at_venue(self):
+        # Origine = entrepôt : aucun spectacle de départ à déduire.
+        transport = Transport.objects.create(
+            show=self.arrival_show, transport_type='delivery',
+            origin_venue=self.storage, destination_venue=self.venue_b,
+            scheduled_datetime=_dt(10), estimated_duration_minutes=60,
+        )
+        response = self.client.get(f'/api/transports/{transport.id}/')
+        self.assertIsNone(response.data['departure_show'])
+        self.assertEqual(response.data['arrival_show']['id'], self.arrival_show.id)
+
+
 class ConflictAPITests(TestCase):
     """Vérifie le comportement bloquant + override au niveau de l'API (squelette DRF)."""
 
@@ -625,7 +853,7 @@ class ConflictAPITests(TestCase):
         self.client.force_authenticate(user=self.user)
 
         self.venue = Venue.objects.create(project=self.project, name="Salle test")
-        self.material = Material.objects.create(project=self.project, name="Console son", category="audio")
+        self.material = Material.objects.create(project=self.project, name="Console son", category=_cat(self.project, "Audio"))
         self.technician = Technician.objects.create(project=self.project, name="Alex Dupont", specialty="son")
 
         self.show_a = Show.objects.create(
@@ -691,7 +919,7 @@ class ConflictAPITests(TestCase):
             'show': self.show_a.id, 'transport_type': 'delivery',
             'origin_venue': storage_venue.id, 'destination_venue': self.venue.id,
             'scheduled_datetime': _dt(12).isoformat(), 'estimated_duration_minutes': 90,
-            'technician': self.technician.id,
+            'technicians': [{'technician': self.technician.id}],
         }, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('conflicts', response.data)
@@ -702,14 +930,14 @@ class ConflictAPITests(TestCase):
             'show': self.show_a.id, 'transport_type': 'delivery',
             'origin_venue': storage_venue.id, 'destination_venue': self.venue.id,
             'scheduled_datetime': _dt(12).isoformat(), 'estimated_duration_minutes': 90,
-            'technician': self.technician.id, 'force': True,
+            'technicians': [{'technician': self.technician.id}], 'force': True,
         }, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
     def test_material_quantity_partial_allocation_succeeds(self):
         # 20 rallonges en inventaire, déjà 12 assignées à show_a (14h-16h).
         # En demander 5 de plus sur show_b (chevauche) reste sous la capacité.
-        multi = Material.objects.create(project=self.project, name="Rallonge électrique", category="autre", quantity=20)
+        multi = Material.objects.create(project=self.project, name="Rallonge électrique", category=_cat(self.project, "Autre"), quantity=20)
         ShowMaterial.objects.create(show=self.show_a, material=multi, quantity=12)
         response = self.client.post('/api/show-materials/', {
             'show': self.show_b.id, 'material': multi.id, 'quantity': 5,
@@ -717,7 +945,7 @@ class ConflictAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
     def test_material_quantity_exceeding_capacity_blocked(self):
-        multi = Material.objects.create(project=self.project, name="Rallonge électrique", category="autre", quantity=20)
+        multi = Material.objects.create(project=self.project, name="Rallonge électrique", category=_cat(self.project, "Autre"), quantity=20)
         ShowMaterial.objects.create(show=self.show_a, material=multi, quantity=12)
         response = self.client.post('/api/show-materials/', {
             'show': self.show_b.id, 'material': multi.id, 'quantity': 10,
@@ -726,7 +954,7 @@ class ConflictAPITests(TestCase):
         self.assertIn('conflicts', response.data)
 
     def test_material_quantity_exceeding_capacity_succeeds_with_force(self):
-        multi = Material.objects.create(project=self.project, name="Rallonge électrique", category="autre", quantity=20)
+        multi = Material.objects.create(project=self.project, name="Rallonge électrique", category=_cat(self.project, "Autre"), quantity=20)
         ShowMaterial.objects.create(show=self.show_a, material=multi, quantity=12)
         response = self.client.post('/api/show-materials/', {
             'show': self.show_b.id, 'material': multi.id, 'quantity': 10, 'force': True,
@@ -738,7 +966,7 @@ class ConflictAPITests(TestCase):
         # uniquement du fait que 25 > quantité totale possédée (20), pas d'un
         # chevauchement — ce cas n'est pas overridable par force (voir
         # ShowMaterialSerializer.validate()).
-        multi = Material.objects.create(project=self.project, name="Rallonge électrique", category="autre", quantity=20)
+        multi = Material.objects.create(project=self.project, name="Rallonge électrique", category=_cat(self.project, "Autre"), quantity=20)
         show_c = Show.objects.create(
             project=self.project, title="Show C", venue=self.venue, event_type="rehearsal",
             start_datetime=_dt(20), end_datetime=_dt(22),
@@ -759,9 +987,103 @@ class ConflictAPITests(TestCase):
         self.assertIn('destination_venue', response.data)
 
 
-class DepartmentColorTests(TestCase):
-    """Vérifie `Department.color` : validation du format hex + propagation aux sous-sections
-    (matériel, assignations show/matériel) via les serializers (voir serializers.py)."""
+class ProjectConflictsAPITests(TestCase):
+    """Vérifie `GET /api/projects/{id}/conflicts/` (`ProjectViewSet.conflicts` →
+    `get_project_conflicts`, conflicts.py, ajouté le 2026-07-30) — vue
+    d'ensemble dédupliquée des conflits pour l'écran « Conflits » du
+    frontend, distincte de `ShowViewSet.conflicts` qui répond par spectacle."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name="Projet test")
+        self.user = DjangoUser.objects.create_superuser('admin', 'admin@test.com', 'testpass123')
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+        self.venue = Venue.objects.create(project=self.project, name="Salle test")
+        self.other_venue = Venue.objects.create(project=self.project, name="Autre salle")
+        self.material = Material.objects.create(project=self.project, name="Console son", category=_cat(self.project, "Audio"))
+        self.technician = Technician.objects.create(project=self.project, name="Alex Dupont", specialty="son")
+
+        # Lieux différents par défaut : les tests matériel/technicien ne
+        # doivent pas hériter d'un conflit de lieu involontaire. Le test dédié
+        # au conflit de lieu recrée sa propre paire de shows au même lieu.
+        self.show_a = Show.objects.create(
+            project=self.project, title="Show A", venue=self.venue, event_type="rehearsal",
+            start_datetime=_dt(14), end_datetime=_dt(16),
+        )
+        self.show_b = Show.objects.create(
+            project=self.project, title="Show B", venue=self.other_venue, event_type="rehearsal",
+            start_datetime=_dt(16) + timedelta(minutes=30), end_datetime=_dt(18),
+        )
+
+    def test_no_conflicts_returns_empty_report(self):
+        response = self.client.get(f'/api/projects/{self.project.id}/conflicts/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['conflict_count'], 0)
+        self.assertEqual(response.data['venue_conflicts'], [])
+        self.assertEqual(response.data['material_conflicts'], [])
+        self.assertEqual(response.data['technician_conflicts'], [])
+
+    def test_material_conflict_appears_once_not_twice(self):
+        ShowMaterial.objects.create(show=self.show_a, material=self.material)
+        self.client.post('/api/show-materials/', {
+            'show': self.show_b.id, 'material': self.material.id, 'force': True,
+        }, format='json')
+
+        response = self.client.get(f'/api/projects/{self.project.id}/conflicts/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # Une seule paire, pas une par show malgré le chevauchement bidirectionnel.
+        self.assertEqual(len(response.data['material_conflicts']), 1)
+        pair = response.data['material_conflicts'][0]
+        show_ids = {pair['a']['show_id'], pair['b']['show_id']}
+        self.assertEqual(show_ids, {self.show_a.id, self.show_b.id})
+        self.assertEqual(response.data['conflict_count'], 1)
+
+    def test_technician_conflict_appears_once(self):
+        ShowTechnician.objects.create(show=self.show_a, technician=self.technician)
+        self.client.post('/api/show-technicians/', {
+            'show': self.show_b.id, 'technician': self.technician.id, 'force': True,
+        }, format='json')
+
+        response = self.client.get(f'/api/projects/{self.project.id}/conflicts/')
+        self.assertEqual(len(response.data['technician_conflicts']), 1)
+
+    def test_venue_conflict_appears_once(self):
+        # Deux shows créés directement via l'ORM (donc sans passer par
+        # ShowSerializer.validate()) partageant le même lieu et se
+        # chevauchant (16h30 < 17h, fenêtres effectives bufferisées).
+        Show.objects.create(
+            project=self.project, title="Show C", venue=self.venue, event_type="rehearsal",
+            start_datetime=_dt(16) + timedelta(minutes=30), end_datetime=_dt(18),
+        )
+        response = self.client.get(f'/api/projects/{self.project.id}/conflicts/')
+        self.assertEqual(len(response.data['venue_conflicts']), 1)
+        self.assertEqual(response.data['conflict_count'], 1)
+
+    def test_conflicts_scoped_to_project(self):
+        # Un conflit dans un autre projet ne doit jamais apparaître ici.
+        other_project = Project.objects.create(name="Autre projet")
+        other_venue = Venue.objects.create(project=other_project, name="Salle autre projet")
+        other_material = Material.objects.create(project=other_project, name="Autre console", category=_cat(other_project, "Audio"))
+        show_x = Show.objects.create(
+            project=other_project, title="Show X", venue=other_venue, event_type="rehearsal",
+            start_datetime=_dt(14), end_datetime=_dt(16),
+        )
+        show_y = Show.objects.create(
+            project=other_project, title="Show Y", venue=other_venue, event_type="rehearsal",
+            start_datetime=_dt(15), end_datetime=_dt(17),
+        )
+        ShowMaterial.objects.create(show=show_x, material=other_material)
+        ShowMaterial.objects.create(show=show_y, material=other_material)
+
+        response = self.client.get(f'/api/projects/{self.project.id}/conflicts/')
+        self.assertEqual(response.data['conflict_count'], 0)
+
+
+class MaterialCategorySerializerTests(TestCase):
+    """Vérifie que `Material.category` est correctement propagé par les serializers
+    (voir serializers.py) — remplace `DepartmentColorTests`, retirée le 2026-07-29 avec
+    le modèle `Department` (voir migration `0013_remove_department`)."""
 
     def setUp(self):
         self.project = Project.objects.create(name="Projet test")
@@ -770,46 +1092,10 @@ class DepartmentColorTests(TestCase):
         self.client.force_authenticate(user=self.django_user)
         self.venue = Venue.objects.create(project=self.project, name="Salle test")
 
-    def test_department_gets_default_color_when_not_specified(self):
-        dept = Department.objects.create(name="Son")
-        self.assertEqual(dept.color, Department.DEFAULT_COLOR)
-
-    def test_valid_hex_color_accepted(self):
-        dept = Department(name="Éclairage", color="#3B82F6")
-        dept.full_clean()  # ne doit pas lever
-
-    def test_invalid_hex_color_rejected(self):
-        dept = Department(name="Décor", color="bleu")
-        with self.assertRaises(ValidationError):
-            dept.full_clean()
-
-    def test_short_hex_color_rejected(self):
-        # #RGB (3 caractères) n'est pas accepté — on exige la forme longue #RRGGBB,
-        # cohérente avec un <input type="color"> HTML.
-        dept = Department(name="Vidéo", color="#FFF")
-        with self.assertRaises(ValidationError):
-            dept.full_clean()
-
-    def test_material_serializer_exposes_department_color(self):
-        dept = Department.objects.create(name="Audio", color="#F97316")
-        material = Material.objects.create(project=self.project, name="Console", category="audio", department=dept)
-
-        response = self.client.get(f'/api/materials/{material.id}/')
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data['department_color'], "#F97316")
-
-    def test_material_serializer_department_color_none_when_no_department(self):
-        material = Material.objects.create(project=self.project, name="Console sans département", category="audio")
-
-        response = self.client.get(f'/api/materials/{material.id}/')
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIsNone(response.data['department_color'])
-
-    def test_show_material_serializer_exposes_department_color(self):
-        dept = Department.objects.create(name="Vidéo", color="#22C55E")
-        material = Material.objects.create(project=self.project, name="Projecteur", category="video", department=dept)
+    def test_show_material_serializer_exposes_material_category(self):
+        material = Material.objects.create(project=self.project, name="Projecteur", category=_cat(self.project, "Vidéo"))
         show = Show.objects.create(
-            project=self.project, title="Show couleur", venue=self.venue, event_type="rehearsal",
+            project=self.project, title="Show catégorie", venue=self.venue, event_type="rehearsal",
             start_datetime=_dt(14), end_datetime=_dt(16),
         )
 
@@ -817,13 +1103,14 @@ class DepartmentColorTests(TestCase):
             'show': show.id, 'material': material.id,
         }, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data['department_color'], "#22C55E")
+        self.assertEqual(response.data['material_category'], _cat(self.project, "Vidéo").id)
+        self.assertEqual(response.data['material_category_name'], "Vidéo")
 
 
 class ProjectScopingTests(TestCase):
     """Vérifie l'isolation par projet (`Project`, ajouté le 2026-07-19 à la demande de
-    Samuel) : Venue/Material/Technician/Show isolés, Department resté global, blocage
-    de tout mélange entre deux projets, filtrage `?project=<id>`."""
+    Samuel) : Venue/Material/Technician/Show isolés, blocage de tout mélange entre deux
+    projets, filtrage `?project=<id>`."""
 
     def setUp(self):
         self.client = APIClient()
@@ -835,26 +1122,14 @@ class ProjectScopingTests(TestCase):
 
         self.venue_a = Venue.objects.create(project=self.project_a, name="Salle A")
         self.venue_b = Venue.objects.create(project=self.project_b, name="Salle B")
-        self.material_a = Material.objects.create(project=self.project_a, name="Console A", category="audio")
-        self.material_b = Material.objects.create(project=self.project_b, name="Console B", category="audio")
+        self.material_a = Material.objects.create(project=self.project_a, name="Console A", category=_cat(self.project_a, "Audio"))
+        self.material_b = Material.objects.create(project=self.project_b, name="Console B", category=_cat(self.project_b, "Audio"))
         self.technician_a = Technician.objects.create(project=self.project_a, name="Alex")
         self.technician_b = Technician.objects.create(project=self.project_b, name="Sam")
         self.show_a = Show.objects.create(
             project=self.project_a, title="Show A", venue=self.venue_a, event_type="rehearsal",
             start_datetime=_dt(14), end_datetime=_dt(16),
         )
-
-    # --- Département : seul élément volontairement global (décision Samuel) ---
-
-    def test_department_is_shared_across_projects(self):
-        dept = Department.objects.create(name="Son")
-        material_a = Material.objects.create(
-            project=self.project_a, name="Console A2", category="audio", department=dept,
-        )
-        material_b = Material.objects.create(
-            project=self.project_b, name="Console B2", category="audio", department=dept,
-        )
-        self.assertEqual(material_a.department_id, material_b.department_id)
 
     # --- Isolation : filtrage ?project=<id> ---
 
@@ -908,15 +1183,15 @@ class ProjectScopingTests(TestCase):
 
     def test_cannot_set_parent_material_from_other_project(self):
         response = self.client.post('/api/materials/', {
-            'project': self.project_a.id, 'name': "Composant", 'category': "audio",
-            'parent_material': self.material_b.id,
+            'project': self.project_a.id, 'name': "Composant", 'category': _cat(self.project_a, "Audio").id,
+            'venue': self.venue_a.id, 'parent_material': self.material_b.id,
         }, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('parent_material', response.data)
 
     def test_cannot_set_storage_venue_from_other_project_on_material(self):
         response = self.client.post('/api/materials/', {
-            'project': self.project_a.id, 'name': "Console rangée", 'category': "audio",
+            'project': self.project_a.id, 'name': "Console rangée", 'category': _cat(self.project_a, "Audio").id,
             'venue': self.venue_b.id,
         }, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
@@ -967,7 +1242,6 @@ class ProjectDuplicationTests(TestCase):
         self.client.force_authenticate(user=self.django_user)
 
         self.source = Project.objects.create(name="Furies 2026", client_name="Festival Furies", notes="Notes 2026")
-        self.dept = Department.objects.create(name="Son")
 
         self.storage_venue = Venue.objects.create(
             project=self.source, name="Entrepôt", is_storage=True,
@@ -975,15 +1249,15 @@ class ProjectDuplicationTests(TestCase):
         self.stage_venue = Venue.objects.create(project=self.source, name="Salle principale")
 
         self.kit = Material.objects.create(
-            project=self.source, name="Kit Audio", category="audio",
-            venue=self.storage_venue, department=self.dept,
+            project=self.source, name="Kit Audio", category=_cat(self.source, "Audio"),
+            venue=self.storage_venue,
         )
         self.mic = Material.objects.create(
-            project=self.source, name="Micro sans fil", category="audio",
+            project=self.source, name="Micro sans fil", category=_cat(self.source, "Audio"),
             parent_material=self.kit, venue=self.storage_venue,
         )
         self.standalone = Material.objects.create(
-            project=self.source, name="Rallonge", category="autre",
+            project=self.source, name="Rallonge", category=_cat(self.source, "Autre"),
             quantity=20, is_active=False,
         )
 
@@ -1038,7 +1312,12 @@ class ProjectDuplicationTests(TestCase):
         response = self.client.post(f'/api/projects/{self.source.id}/duplicate/', {
             'name': "Furies 2027",
         }, format='json')
-        self.assertEqual(response.data['copied'], {'venues': 2, 'materials': 3, 'technicians': 1})
+        # `material_categories` s'est ajouté au décompte le 2026-07-30 :
+        # les catégories sont devenues une table par projet, la duplication
+        # doit donc les recopier aussi (ici les 9 catégories par défaut).
+        self.assertEqual(response.data['copied'], {
+            'venues': 2, 'materials': 3, 'technicians': 1, 'material_categories': 9,
+        })
 
     def test_no_assignments_are_copied(self):
         response = self.client.post(f'/api/projects/{self.source.id}/duplicate/', {
@@ -1080,17 +1359,6 @@ class ProjectDuplicationTests(TestCase):
         self.assertEqual(new_kit.venue_id, new_storage_venue.id)
         self.assertNotEqual(new_kit.venue_id, self.storage_venue.id)
 
-    def test_department_is_kept_as_is_not_duplicated(self):
-        # Department est un référentiel commun à tous les projets — jamais remappé.
-        response = self.client.post(f'/api/projects/{self.source.id}/duplicate/', {
-            'name': "Furies 2027",
-        }, format='json')
-        new_project_id = response.data['project']['id']
-
-        new_kit = Material.objects.get(project_id=new_project_id, name="Kit Audio")
-        self.assertEqual(new_kit.department_id, self.dept.id)
-        self.assertEqual(Department.objects.count(), 1)
-
     def test_inactive_material_is_copied_with_same_status(self):
         response = self.client.post(f'/api/projects/{self.source.id}/duplicate/', {
             'name': "Furies 2027",
@@ -1126,7 +1394,7 @@ class TransportCoherenceLogicTests(TestCase):
         self.salle = Venue.objects.create(project=self.project, name="Chapelle", code="CHAP")
         # Console son entreposée à l'entrepôt (venue = home).
         self.console = Material.objects.create(
-            project=self.project, name="Console son", category="audio", venue=self.entrepot,
+            project=self.project, name="Console son", category=_cat(self.project, "Audio"), venue=self.entrepot,
         )
         # Show à la Chapelle, 14h-16h -> fenêtre effective 13h-17h.
         self.show = Show.objects.create(
@@ -1160,7 +1428,7 @@ class TransportCoherenceLogicTests(TestCase):
         # Le matériel est entreposé DANS la salle du show : déjà sur place,
         # aucun transport requis, aucune incohérence.
         local = Material.objects.create(
-            project=self.project, name="Pied de micro", category="audio", venue=self.salle,
+            project=self.project, name="Pied de micro", category=_cat(self.project, "Audio"), venue=self.salle,
         )
         ShowMaterial.objects.create(show=self.show, material=local)
         self.assertEqual(get_material_coherence_issues(local), [])
@@ -1175,7 +1443,7 @@ class TransportCoherenceLogicTests(TestCase):
 
     def test_insufficient_quantity_delivered_is_flagged(self):
         multi = Material.objects.create(
-            project=self.project, name="Rallonge", category="autre", venue=self.entrepot, quantity=20,
+            project=self.project, name="Rallonge", category=_cat(self.project, "Autre"), venue=self.entrepot, quantity=20,
         )
         ShowMaterial.objects.create(show=self.show, material=multi, quantity=10)
         # On n'en livre que 4 sur les 10 requises.
@@ -1217,7 +1485,7 @@ class TransportCoherenceLogicTests(TestCase):
         self.assertEqual(get_material_coherence_issues(self.console), [])
 
     def test_material_without_home_is_flagged_once(self):
-        orphan = Material.objects.create(project=self.project, name="Matériel sans entrepôt", category="autre")
+        orphan = Material.objects.create(project=self.project, name="Matériel sans entrepôt", category=_cat(self.project, "Autre"))
         ShowMaterial.objects.create(show=self.show, material=orphan)
         issues = get_material_coherence_issues(orphan)
         self.assertEqual(len(issues), 1)
@@ -1225,7 +1493,7 @@ class TransportCoherenceLogicTests(TestCase):
 
     def test_material_without_home_and_no_usage_is_silent(self):
         # Sans lieu d'entreposage NI aucune assignation/transport, rien à suivre.
-        orphan = Material.objects.create(project=self.project, name="Inutilisé", category="autre")
+        orphan = Material.objects.create(project=self.project, name="Inutilisé", category=_cat(self.project, "Autre"))
         self.assertEqual(get_material_coherence_issues(orphan), [])
 
     def test_relocation_between_two_venues_needs_a_transport(self):
@@ -1260,7 +1528,7 @@ class TransportMaterialAPITests(TestCase):
         self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
         self.salle = Venue.objects.create(project=self.project, name="Chapelle")
         self.console = Material.objects.create(
-            project=self.project, name="Console son", category="audio", venue=self.entrepot,
+            project=self.project, name="Console son", category=_cat(self.project, "Audio"), venue=self.entrepot,
         )
         self.show = Show.objects.create(
             project=self.project, title="Show", venue=self.salle, event_type="performance",
@@ -1293,7 +1561,7 @@ class TransportMaterialAPITests(TestCase):
 
     def test_material_line_from_other_project_rejected(self):
         other_project = Project.objects.create(name="Autre")
-        foreign_material = Material.objects.create(project=other_project, name="Ampli", category="audio")
+        foreign_material = Material.objects.create(project=other_project, name="Ampli", category=_cat(other_project, "Audio"))
         response = self.client.post(
             '/api/transports/',
             self._create_transport_payload(materials=[{'material': foreign_material.id, 'quantity': 1}]),
@@ -1328,7 +1596,7 @@ class TransportMaterialAPITests(TestCase):
         create = self.client.post('/api/transports/', self._create_transport_payload(), format='json')
         transport_id = create.data['id']
         autre = Material.objects.create(
-            project=self.project, name="Pied", category="audio", venue=self.entrepot,
+            project=self.project, name="Pied", category=_cat(self.project, "Audio"), venue=self.entrepot,
         )
         response = self.client.patch(
             f'/api/transports/{transport_id}/',
@@ -1383,7 +1651,7 @@ class TransportAutogenTests(TestCase):
         self.salle1 = Venue.objects.create(project=self.project, name="Salle 1")
         self.salle2 = Venue.objects.create(project=self.project, name="Salle 2")
         self.console = Material.objects.create(
-            project=self.project, name="Console son", category="audio", venue=self.entrepot,
+            project=self.project, name="Console son", category=_cat(self.project, "Audio"), venue=self.entrepot,
         )
 
     def _show(self, venue, hour, title="Show"):
@@ -1423,7 +1691,7 @@ class TransportAutogenTests(TestCase):
 
     def test_multiple_materials_grouped_in_one_proposal(self):
         ampli = Material.objects.create(
-            project=self.project, name="Ampli", category="audio", venue=self.entrepot,
+            project=self.project, name="Ampli", category=_cat(self.project, "Audio"), venue=self.entrepot,
         )
         show = self._show(self.salle1, 14)
         ShowMaterial.objects.create(show=show, material=self.console)
@@ -1465,7 +1733,7 @@ class TransportAutogenTests(TestCase):
         self.assertEqual(self._proposals().count(), 0)
 
     def test_material_without_home_generates_no_proposal(self):
-        orphan = Material.objects.create(project=self.project, name="Sans entrepôt", category="autre")
+        orphan = Material.objects.create(project=self.project, name="Sans entrepôt", category=_cat(self.project, "Autre"))
         show = self._show(self.salle1, 14)
         ShowMaterial.objects.create(show=show, material=orphan)
         self.assertFalse(self._proposals().filter(transport_materials__material=orphan).exists())
@@ -1503,7 +1771,7 @@ class TransportStatusAPITests(TestCase):
         self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
         self.salle = Venue.objects.create(project=self.project, name="Salle")
         self.console = Material.objects.create(
-            project=self.project, name="Console son", category="audio", venue=self.entrepot,
+            project=self.project, name="Console son", category=_cat(self.project, "Audio"), venue=self.entrepot,
         )
         self.technician = Technician.objects.create(project=self.project, name="Alex", specialty="son")
         self.show = Show.objects.create(
@@ -1548,7 +1816,7 @@ class TransportStatusAPITests(TestCase):
             'show': self.show.id, 'transport_type': 'delivery',
             'origin_venue': self.entrepot.id, 'destination_venue': self.salle.id,
             'scheduled_datetime': _dt(8).isoformat(), 'estimated_duration_minutes': 120,
-            'technician': self.technician.id,
+            'technicians': [{'technician': self.technician.id}],
         }, format='json')
         self.assertEqual(first.status_code, status.HTTP_201_CREATED)
         # Le second chevauche 8h-10h ; on force pour passer outre le blocage.
@@ -1556,9 +1824,1519 @@ class TransportStatusAPITests(TestCase):
             'show': self.show.id, 'transport_type': 'pickup',
             'origin_venue': self.salle.id, 'destination_venue': self.entrepot.id,
             'scheduled_datetime': _dt(9).isoformat(), 'estimated_duration_minutes': 60,
-            'technician': self.technician.id, 'force': True,
+            'technicians': [{'technician': self.technician.id}], 'force': True,
         }, format='json')
         self.assertEqual(second.status_code, status.HTTP_201_CREATED)
 
         detail = self.client.get(f"/api/transports/{first.data['id']}/")
         self.assertTrue(detail.data['has_technician_conflict'])
+
+
+class FicheEditionPatchAPITests(TestCase):
+    """Vérifie les PATCH déclenchés par le bouton « Modifier la fiche » du frontend.
+
+    Depuis le 2026-07-30, les fiches de détail (lieu, matériel, technicien,
+    spectacle) basculent en entier en mode édition et enregistrent en **un
+    seul PATCH** groupé (voir `frontend/src/composables/useFicheEdition.js`).
+    Les cas couverts ici sont ceux que ce formulaire produit réellement :
+    mise à jour multi-champs, FK nullables remises à `null`, et champ `notes`
+    — jusque-là éditable nulle part côté Vue. Le PATCH d'un lieu est couvert
+    à part, dans `VenueCodeTests`.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+
+    # --- Matériel ---
+
+    def test_patch_full_material_fields(self):
+        material = Material.objects.create(project=self.project, name="Console", quantity=1)
+        response = self.client.patch(f'/api/materials/{material.id}/', {
+            'name': "Console Yamaha CL5",
+            'description': "Console numérique 72 canaux",
+            'category': _cat(self.project, "Audio").id,
+            'ownership_status': 'rental',
+            'quantity': 2,
+            'venue': self.entrepot.id,
+            'parent_material': None,
+            'is_active': True,
+            'notes': "Retour de location le 12.",
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        material.refresh_from_db()
+        self.assertEqual(material.name, "Console Yamaha CL5")
+        self.assertEqual(material.category, _cat(self.project, "Audio"))
+        self.assertEqual(material.ownership_status, 'rental')
+        self.assertEqual(material.quantity, 2)
+        self.assertEqual(material.venue, self.entrepot)
+        self.assertEqual(material.notes, "Retour de location le 12.")
+
+    def test_patch_material_can_clear_parent(self):
+        # Le formulaire envoie `null` (option « Aucun ») et non une chaîne vide.
+        kit = Material.objects.create(project=self.project, name="Kit son", quantity=1, venue=self.entrepot)
+        material = Material.objects.create(
+            project=self.project, name="Micro", quantity=1,
+            venue=self.entrepot, parent_material=kit,
+        )
+        response = self.client.patch(f'/api/materials/{material.id}/', {
+            'parent_material': None,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        material.refresh_from_db()
+        self.assertIsNone(material.parent_material)
+
+    def test_patch_material_cannot_clear_venue(self):
+        # Le lieu d'origine est obligatoire depuis le 2026-07-30 : sans point de
+        # départ, la timeline de position ne peut plus rien vérifier (ni la
+        # disponibilité au départ d'un transport, ni le retour en fin de projet).
+        material = Material.objects.create(
+            project=self.project, name="Micro", quantity=1, venue=self.entrepot,
+        )
+        response = self.client.patch(f'/api/materials/{material.id}/', {
+            'venue': None,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('venue', response.data)
+
+    def test_patch_material_rejects_venue_from_another_project(self):
+        # Isolation par projet (MaterialSerializer.validate) : le formulaire ne
+        # propose que les lieux du projet, mais l'API doit refuser quand même.
+        autre_projet = Project.objects.create(name="Autre projet")
+        autre_lieu = Venue.objects.create(project=autre_projet, name="Ailleurs")
+        material = Material.objects.create(project=self.project, name="Console", quantity=1)
+        response = self.client.patch(f'/api/materials/{material.id}/', {
+            'venue': autre_lieu.id,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('venue', response.data)
+
+    def test_patch_material_can_deactivate(self):
+        material = Material.objects.create(project=self.project, name="Vieux rideau", quantity=1)
+        response = self.client.patch(f'/api/materials/{material.id}/', {'is_active': False}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        material.refresh_from_db()
+        self.assertFalse(material.is_active)
+
+    # --- Technicien ---
+
+    def test_patch_full_technician_fields(self):
+        technician = Technician.objects.create(project=self.project, name="Alex")
+        response = self.client.patch(f'/api/technicians/{technician.id}/', {
+            'name': "Alex Gagnon",
+            'specialty': "Éclairage",
+            'contact_info': "alex@example.com",
+            'notes': "Disponible en soirée seulement.",
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        technician.refresh_from_db()
+        self.assertEqual(technician.name, "Alex Gagnon")
+        self.assertEqual(technician.specialty, "Éclairage")
+        self.assertEqual(technician.contact_info, "alex@example.com")
+        self.assertEqual(technician.notes, "Disponible en soirée seulement.")
+
+    def test_patch_technician_rejects_blank_name(self):
+        technician = Technician.objects.create(project=self.project, name="Alex")
+        response = self.client.patch(f'/api/technicians/{technician.id}/', {'name': ""}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('name', response.data)
+
+    # --- Spectacle ---
+
+    def test_patch_show_notes_only(self):
+        # `notes` était exposé par ShowSerializer mais absent du formulaire Vue
+        # avant le 2026-07-30 — donc jamais modifiable depuis l'app.
+        show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+        )
+        response = self.client.patch(f'/api/shows/{show.id}/', {
+            'notes': "Prévoir 3 techniciens au montage.",
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        show.refresh_from_db()
+        self.assertEqual(show.notes, "Prévoir 3 techniciens au montage.")
+
+    def test_patch_full_show_fields(self):
+        autre_salle = Venue.objects.create(project=self.project, name="Salle 2")
+        show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='rehearsal', start_datetime=_dt(20), end_datetime=_dt(22),
+            buffer_before_minutes=60, buffer_after_minutes=60,
+        )
+        response = self.client.patch(f'/api/shows/{show.id}/', {
+            'title': "Vertiges — générale",
+            'venue': autre_salle.id,
+            'event_type': 'performance',
+            'start_datetime': _dt(19).isoformat(),
+            'end_datetime': _dt(21).isoformat(),
+            'buffer_before_minutes': 90,
+            'buffer_after_minutes': 30,
+            'notes': "Générale technique.",
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        show.refresh_from_db()
+        self.assertEqual(show.title, "Vertiges — générale")
+        self.assertEqual(show.venue, autre_salle)
+        self.assertEqual(show.event_type, 'performance')
+        self.assertEqual(show.buffer_before_minutes, 90)
+        self.assertEqual(show.notes, "Générale technique.")
+
+    def test_patch_show_venue_conflict_is_blocking_then_forceable(self):
+        # Le bandeau « Forcer malgré le conflit » du frontend rejoue le même
+        # PATCH avec `force: true` — les deux réponses sont testées ici.
+        Show.objects.create(
+            project=self.project, title="Autre spectacle", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='rehearsal', start_datetime=_dt(10), end_datetime=_dt(12),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        payload = {
+            'start_datetime': _dt(21).isoformat(),
+            'end_datetime': _dt(23).isoformat(),
+        }
+        refused = self.client.patch(f'/api/shows/{show.id}/', payload, format='json')
+        self.assertEqual(refused.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('conflicts', refused.data)
+
+        forced = self.client.patch(f'/api/shows/{show.id}/', {**payload, 'force': True}, format='json')
+        self.assertEqual(forced.status_code, status.HTTP_200_OK)
+
+
+class MaterialCategoryAPITests(TestCase):
+    """Vérifie la gestion des catégories de matériel (`MaterialCategory`, 2026-07-30).
+
+    Jusque-là `Material.category` était un slug figé parmi 9 valeurs codées en
+    dur dans le modèle. C'est désormais une FK vers une table éditable, isolée
+    par projet, avec une suppression qui passe par une réassignation explicite
+    du matériel concerné (voir `MaterialCategoryViewSet.destroy`).
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        # Lieu d'origine obligatoire sur le matériel depuis le 2026-07-30.
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+
+    # --- Création automatique et CRUD ---
+
+    def test_new_project_gets_default_categories(self):
+        # Signal `creer_categories_par_defaut` : une production ne démarre pas
+        # sur une liste vide.
+        noms = set(self.project.material_categories.values_list('name', flat=True))
+        self.assertEqual(noms, {nom for nom, _ in MaterialCategory.DEFAULTS})
+
+    def test_create_category(self):
+        response = self.client.post('/api/material-categories/', {
+            'project': self.project.id, 'name': "Machinerie", 'color': 'oklch(0.7 0.14 300)',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['name'], "Machinerie")
+        self.assertEqual(response.data['material_count'], 0)
+
+    def test_categories_listed_case_and_accent_insensitively(self):
+        # Bug signalé par Samuel le 2026-07-30 : sur SQLite, `Meta.ordering =
+        # ['name']` trie par octets — une catégorie commençant par une
+        # minuscule non accentuée atterrit après TOUTES les majuscules,
+        # indépendamment de l'alphabet ; un nom accentué après tout l'ASCII.
+        # `MaterialCategoryViewSet.list()` retrie donc explicitement en
+        # Python (NFKD + casefold) plutôt que de compter sur l'ORDER BY.
+        import unicodedata
+
+        self.client.post('/api/material-categories/', {
+            'project': self.project.id, 'name': "abricot",
+        }, format='json')
+        self.client.post('/api/material-categories/', {
+            'project': self.project.id, 'name': "étagères",
+        }, format='json')
+        response = self.client.get('/api/material-categories/', {'project': self.project.id})
+        names = [c['name'] for c in response.data]
+        expected = sorted(names, key=lambda n: unicodedata.normalize('NFKD', n).casefold())
+        self.assertEqual(names, expected)
+        # Ni l'un ni l'autre ne doit être relégué en fin de liste malgré la
+        # casse/l'accent — c'était exactement le bug signalé.
+        self.assertNotEqual(names[-1], "abricot")
+        self.assertNotEqual(names[-1], "étagères")
+
+    def test_duplicate_name_rejected_within_same_project(self):
+        response = self.client.post('/api/material-categories/', {
+            'project': self.project.id, 'name': "audio",
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('name', response.data)
+
+    def test_same_name_allowed_in_another_project(self):
+        autre = Project.objects.create(name="Autre projet")
+        # Les défauts des deux projets portent déjà les mêmes noms — c'est
+        # précisément ce que la contrainte (project, name) doit autoriser.
+        self.assertEqual(
+            MaterialCategory.objects.filter(name="Audio").count(), 2,
+        )
+        self.assertTrue(autre.material_categories.filter(name="Audio").exists())
+
+    def test_patch_name_and_color(self):
+        categorie = _cat(self.project, "Audio")
+        response = self.client.patch(f'/api/material-categories/{categorie.id}/', {
+            'name': "Son", 'color': 'oklch(0.7 0.16 35)',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        categorie.refresh_from_db()
+        self.assertEqual(categorie.name, "Son")
+        self.assertEqual(categorie.color, 'oklch(0.7 0.16 35)')
+
+    def test_list_is_filtered_by_project(self):
+        autre = Project.objects.create(name="Autre projet")
+        response = self.client.get('/api/material-categories/', {'project': autre.id})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {c['project'] for c in response.data}
+        self.assertEqual(ids, {autre.id})
+
+    def test_material_count_reflects_usage(self):
+        categorie = _cat(self.project, "Audio")
+        Material.objects.create(project=self.project, name="Console", category=categorie)
+        Material.objects.create(project=self.project, name="Micro", category=categorie)
+        response = self.client.get(f'/api/material-categories/{categorie.id}/')
+        self.assertEqual(response.data['material_count'], 2)
+
+    # --- Isolation par projet sur le matériel ---
+
+    def test_material_cannot_use_category_from_another_project(self):
+        autre = Project.objects.create(name="Autre projet")
+        response = self.client.post('/api/materials/', {
+            'project': self.project.id, 'name': "Console",
+            'venue': self.entrepot.id,
+            'category': _cat(autre, "Audio").id,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('category', response.data)
+
+    def test_material_serializer_exposes_category_name_and_color(self):
+        categorie = _cat(self.project, "Audio")
+        material = Material.objects.create(project=self.project, name="Console", category=categorie)
+        response = self.client.get(f'/api/materials/{material.id}/')
+        self.assertEqual(response.data['category'], categorie.id)
+        self.assertEqual(response.data['category_name'], "Audio")
+        self.assertEqual(response.data['category_color'], categorie.color)
+
+    # --- Suppression ---
+
+    def test_delete_unused_category(self):
+        categorie = _cat(self.project, "Machinerie")
+        response = self.client.delete(f'/api/material-categories/{categorie.id}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(MaterialCategory.objects.filter(id=categorie.id).exists())
+
+    def test_delete_used_category_without_target_is_refused(self):
+        categorie = _cat(self.project, "Audio")
+        Material.objects.create(project=self.project, name="Console", category=categorie)
+        response = self.client.delete(f'/api/material-categories/{categorie.id}/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['material_count'], 1)
+        self.assertTrue(MaterialCategory.objects.filter(id=categorie.id).exists())
+
+    def test_delete_used_category_reassigns_material(self):
+        source = _cat(self.project, "Audio")
+        cible = _cat(self.project, "Réseau")
+        material = Material.objects.create(project=self.project, name="Console", category=source)
+        response = self.client.delete(
+            f'/api/material-categories/{source.id}/?reassign_to={cible.id}',
+        )
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        material.refresh_from_db()
+        self.assertEqual(material.category, cible)
+        self.assertFalse(MaterialCategory.objects.filter(id=source.id).exists())
+
+    def test_delete_used_category_can_leave_material_uncategorized(self):
+        # `?reassign_to=` (vide) = laisser le matériel sans catégorie, la FK
+        # étant nullable — plutôt que de le forcer dans un fourre-tout.
+        source = _cat(self.project, "Audio")
+        material = Material.objects.create(project=self.project, name="Console", category=source)
+        response = self.client.delete(f'/api/material-categories/{source.id}/?reassign_to=')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        material.refresh_from_db()
+        self.assertIsNone(material.category)
+
+    def test_delete_rejects_target_from_another_project(self):
+        autre = Project.objects.create(name="Autre projet")
+        source = _cat(self.project, "Audio")
+        Material.objects.create(project=self.project, name="Console", category=source)
+        response = self.client.delete(
+            f'/api/material-categories/{source.id}/?reassign_to={_cat(autre, "Réseau").id}',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('reassign_to', response.data)
+
+    def test_delete_rejects_reassign_to_itself(self):
+        source = _cat(self.project, "Audio")
+        Material.objects.create(project=self.project, name="Console", category=source)
+        response = self.client.delete(
+            f'/api/material-categories/{source.id}/?reassign_to={source.id}',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('reassign_to', response.data)
+
+    # --- Duplication de projet ---
+
+    def test_duplicate_project_remaps_material_categories(self):
+        source = _cat(self.project, "Machinerie")
+        source.color = 'oklch(0.7 0.14 300)'
+        source.save(update_fields=['color'])
+        Material.objects.create(project=self.project, name="Palan", category=source)
+
+        response = self.client.post(f'/api/projects/{self.project.id}/duplicate/', {
+            'name': "Édition suivante",
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        nouveau = Project.objects.get(id=response.data['project']['id'])
+        copie = nouveau.material_categories.get(name="Machinerie")
+        # La catégorie du matériel copié doit pointer vers la copie, pas vers
+        # la catégorie du projet source.
+        palan = nouveau.materials.get(name="Palan")
+        self.assertEqual(palan.category, copie)
+        self.assertEqual(copie.color, 'oklch(0.7 0.14 300)')
+
+
+class TransportMaterialAvailabilityAPITests(TestCase):
+    """Vérifie `GET /api/transports/{id}/material-availability/` (2026-07-30).
+
+    Demande de Samuel : la modale « ajouter du matériel » d'un transport ne
+    doit proposer que ce qui se trouve réellement au lieu de DÉPART à l'heure
+    du départ. La disponibilité vient du grand livre de positions de
+    `transport_coherence.py` (entrepôt + transports confirmés antérieurs), pas
+    d'une comparaison naïve avec `Material.venue`.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+        )
+        self.console = Material.objects.create(
+            project=self.project, name="Console", venue=self.entrepot, quantity=1,
+        )
+        self.rallonges = Material.objects.create(
+            project=self.project, name="Rallonges", venue=self.entrepot, quantity=20,
+        )
+
+    def _availability(self, transport):
+        response = self.client.get(f'/api/transports/{transport.id}/material-availability/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return {m['name']: m for m in response.data['materials']}
+
+    def _transport(self, origin, destination, hour, status_value=Transport.STATUS_CONFIRMED):
+        return Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=origin, destination_venue=destination,
+            scheduled_datetime=_dt(hour), estimated_duration_minutes=60,
+            status=status_value,
+        )
+
+    def test_material_at_origin_is_available(self):
+        transport = self._transport(self.entrepot, self.salle, 8)
+        rows = self._availability(transport)
+        self.assertEqual(rows['Console']['available'], 1)
+        self.assertEqual(rows['Rallonges']['available'], 20)
+
+    def test_material_elsewhere_is_zero(self):
+        # Départ depuis la salle alors que tout est encore à l'entrepôt.
+        transport = self._transport(self.salle, self.entrepot, 8)
+        rows = self._availability(transport)
+        self.assertEqual(rows['Console']['available'], 0)
+        # Le matériel indisponible est renvoyé quand même (le frontend le grise).
+        self.assertEqual(rows['Console']['venue_name'], "Entrepôt")
+
+    def test_earlier_confirmed_transport_moves_the_material(self):
+        # Un premier transport confirmé amène la console en salle à 9h ;
+        # un second partant de la salle à 12h doit donc l'y trouver.
+        premier = self._transport(self.entrepot, self.salle, 8)
+        TransportMaterial.objects.create(transport=premier, material=self.console, quantity=1)
+
+        second = self._transport(self.salle, self.entrepot, 12)
+        rows = self._availability(second)
+        self.assertEqual(rows['Console']['available'], 1)
+
+        # …et le même départ depuis l'entrepôt ne l'y trouve plus.
+        depuis_entrepot = self._transport(self.entrepot, self.salle, 14)
+        rows = self._availability(depuis_entrepot)
+        self.assertEqual(rows['Console']['available'], 0)
+
+    def test_partial_quantity_moved(self):
+        premier = self._transport(self.entrepot, self.salle, 8)
+        TransportMaterial.objects.create(transport=premier, material=self.rallonges, quantity=12)
+
+        reste = self._transport(self.entrepot, self.salle, 14)
+        rows = self._availability(reste)
+        self.assertEqual(rows['Rallonges']['available'], 8)
+
+    def test_unconfirmed_transport_does_not_move_material(self):
+        # Une proposition auto ('to_approve') ne livre rien tant qu'elle n'est
+        # pas confirmée — même règle que le reste de transport_coherence.py.
+        proposition = self._transport(
+            self.entrepot, self.salle, 8, status_value=Transport.STATUS_TO_APPROVE,
+        )
+        TransportMaterial.objects.create(transport=proposition, material=self.console, quantity=1)
+
+        depuis_salle = self._transport(self.salle, self.entrepot, 12)
+        rows = self._availability(depuis_salle)
+        self.assertEqual(rows['Console']['available'], 0)
+
+    def test_transport_does_not_count_against_itself(self):
+        # Rouvrir la modale d'un transport déjà rempli ne doit pas montrer son
+        # propre chargement comme « déjà parti ».
+        transport = self._transport(self.entrepot, self.salle, 8)
+        TransportMaterial.objects.create(transport=transport, material=self.console, quantity=1)
+        rows = self._availability(transport)
+        self.assertEqual(rows['Console']['available'], 1)
+
+    def test_without_scheduled_datetime_everything_is_available(self):
+        transport = Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=self.salle, destination_venue=self.entrepot,
+            scheduled_datetime=None, estimated_duration_minutes=60,
+            status=Transport.STATUS_TO_APPROVE,
+        )
+        response = self.client.get(f'/api/transports/{transport.id}/material-availability/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data['at'])
+        rows = {m['name']: m for m in response.data['materials']}
+        # Position non calculable : on n'invente pas de restriction.
+        self.assertEqual(rows['Console']['available'], 1)
+        self.assertEqual(rows['Rallonges']['available'], 20)
+
+    def test_inactive_material_is_excluded(self):
+        Material.objects.create(
+            project=self.project, name="Vieux rideau", venue=self.entrepot,
+            quantity=1, is_active=False,
+        )
+        transport = self._transport(self.entrepot, self.salle, 8)
+        rows = self._availability(transport)
+        self.assertNotIn("Vieux rideau", rows)
+
+    def test_material_from_another_project_is_excluded(self):
+        autre = Project.objects.create(name="Autre projet")
+        autre_entrepot = Venue.objects.create(project=autre, name="Entrepôt B", is_storage=True)
+        Material.objects.create(project=autre, name="Console B", venue=autre_entrepot, quantity=1)
+        transport = self._transport(self.entrepot, self.salle, 8)
+        rows = self._availability(transport)
+        self.assertNotIn("Console B", rows)
+
+
+class TransportMultipleTechniciansAPITests(TestCase):
+    """Vérifie qu'un déplacement peut mobiliser plusieurs techniciens (2026-07-30).
+
+    `Transport.technician` (FK unique) a été remplacé par la table de liaison
+    `TransportTechnician`, exposée en écriture imbriquée sur
+    `TransportSerializer.technicians` — même pattern que `materials`. La
+    détection de conflit doit désormais vérifier CHAQUE personne affectée.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+        )
+        self.alex = Technician.objects.create(project=self.project, name="Alex")
+        self.brigitte = Technician.objects.create(project=self.project, name="Brigitte")
+
+    def _payload(self, technicians, hour=8, **extra):
+        payload = {
+            'show': self.show.id, 'transport_type': 'delivery',
+            'origin_venue': self.entrepot.id, 'destination_venue': self.salle.id,
+            'scheduled_datetime': _dt(hour).isoformat(), 'estimated_duration_minutes': 60,
+            'technicians': [{'technician': t.id} for t in technicians],
+        }
+        payload.update(extra)
+        return payload
+
+    def test_create_with_two_technicians(self):
+        response = self.client.post('/api/transports/', self._payload([self.alex, self.brigitte]), format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(response.data['technicians']), 2)
+        self.assertEqual(set(response.data['technician_names']), {"Alex", "Brigitte"})
+
+    def test_create_without_technician_is_allowed(self):
+        # Une proposition auto peut rester sans personne affectée.
+        response = self.client.post('/api/transports/', self._payload([]), format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['technicians'], [])
+
+    def test_same_technician_twice_is_rejected(self):
+        response = self.client.post('/api/transports/', self._payload([self.alex, self.alex]), format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('technicians', response.data)
+
+    def test_technician_from_another_project_is_rejected(self):
+        autre = Project.objects.create(name="Autre projet")
+        etranger = Technician.objects.create(project=autre, name="Étranger")
+        response = self.client.post('/api/transports/', self._payload([etranger]), format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('technicians', response.data)
+
+    def test_patch_replaces_the_whole_list(self):
+        created = self.client.post('/api/transports/', self._payload([self.alex, self.brigitte]), format='json')
+        response = self.client.patch(
+            f"/api/transports/{created.data['id']}/",
+            {'technicians': [{'technician': self.brigitte.id}]},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['technician_names'], ["Brigitte"])
+
+    def test_patch_without_technicians_leaves_them_untouched(self):
+        created = self.client.post('/api/transports/', self._payload([self.alex]), format='json')
+        response = self.client.patch(
+            f"/api/transports/{created.data['id']}/", {'notes': "Quai arrière"}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['technician_names'], ["Alex"])
+
+    # --- Conflits ---
+
+    def test_conflict_detected_on_any_of_the_technicians(self):
+        # Alex est libre, Brigitte est déjà sur le spectacle (20h-22h).
+        ShowTechnician.objects.create(show=self.show, technician=self.brigitte)
+        response = self.client.post(
+            '/api/transports/', self._payload([self.alex, self.brigitte], hour=20), format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('conflicts', response.data)
+
+    def test_conflict_is_forceable(self):
+        ShowTechnician.objects.create(show=self.show, technician=self.brigitte)
+        response = self.client.post(
+            '/api/transports/',
+            self._payload([self.alex, self.brigitte], hour=20, force=True),
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_no_conflict_when_every_technician_is_free(self):
+        response = self.client.post(
+            '/api/transports/', self._payload([self.alex, self.brigitte], hour=8), format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_has_technician_conflict_true_if_any_is_busy(self):
+        ShowTechnician.objects.create(show=self.show, technician=self.brigitte)
+        created = self.client.post(
+            '/api/transports/',
+            self._payload([self.alex, self.brigitte], hour=20, force=True),
+            format='json',
+        )
+        detail = self.client.get(f"/api/transports/{created.data['id']}/")
+        self.assertTrue(detail.data['has_technician_conflict'])
+
+    def test_project_conflicts_reports_each_technician_separately(self):
+        # Les deux personnes du déplacement sont aussi sur le spectacle : deux
+        # engagements distincts, donc deux conflits distincts.
+        ShowTechnician.objects.create(show=self.show, technician=self.alex)
+        ShowTechnician.objects.create(show=self.show, technician=self.brigitte)
+        self.client.post(
+            '/api/transports/',
+            self._payload([self.alex, self.brigitte], hour=20, force=True),
+            format='json',
+        )
+        response = self.client.get(f'/api/projects/{self.project.id}/conflicts/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data['technician_conflicts']), 2)
+
+    def test_filter_by_technician_traverses_the_link_table(self):
+        self.client.post('/api/transports/', self._payload([self.alex, self.brigitte]), format='json')
+        response = self.client.get('/api/transports/', {'technician': self.brigitte.id})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+
+
+class AssignmentRemovalAPITests(TestCase):
+    """Vérifie le retrait d'une assignation depuis les modales (2026-07-30).
+
+    Les modales « Assigner du matériel » et « Assigner des techniciens » d'un
+    spectacle permettent depuis cette date de **décocher** une ligne déjà
+    assignée pour la retirer, appliqué à la validation. Côté API c'est un
+    simple `DELETE` sur la table de liaison — jusque-là jamais couvert par un
+    test, alors que le frontend en dépend maintenant.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+        )
+        self.console = Material.objects.create(project=self.project, name="Console", quantity=1)
+        self.alex = Technician.objects.create(project=self.project, name="Alex")
+
+    def test_delete_show_technician(self):
+        assignment = ShowTechnician.objects.create(show=self.show, technician=self.alex)
+        response = self.client.delete(f'/api/show-technicians/{assignment.id}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(ShowTechnician.objects.filter(id=assignment.id).exists())
+
+    def test_delete_show_material(self):
+        assignment = ShowMaterial.objects.create(show=self.show, material=self.console, quantity=1)
+        response = self.client.delete(f'/api/show-materials/{assignment.id}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(ShowMaterial.objects.filter(id=assignment.id).exists())
+
+    def test_removing_frees_capacity_for_another_show(self):
+        # C'est la raison pour laquelle la modale applique les retraits AVANT
+        # les ajouts : libérer une ressource peut lever le conflit qui
+        # bloquerait l'ajout suivant dans la même fournée.
+        autre_show = Show.objects.create(
+            project=self.project, title="Autre", venue=self.salle,
+            event_type='rehearsal', start_datetime=_dt(20), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        assignment = ShowMaterial.objects.create(show=self.show, material=self.console, quantity=1)
+
+        refuse = self.client.post('/api/show-materials/', {
+            'show': autre_show.id, 'material': self.console.id, 'quantity': 1,
+        }, format='json')
+        self.assertEqual(refuse.status_code, status.HTTP_400_BAD_REQUEST)
+
+        self.client.delete(f'/api/show-materials/{assignment.id}/')
+        ok = self.client.post('/api/show-materials/', {
+            'show': autre_show.id, 'material': self.console.id, 'quantity': 1,
+        }, format='json')
+        self.assertEqual(ok.status_code, status.HTTP_201_CREATED)
+
+
+class MaterialReturnToOriginTests(TestCase):
+    """Vérifie le contrôle de retour à l'origine en fin de projet (2026-07-30).
+
+    Demande de Samuel : « à la fin du dernier événement, le matériel doit être
+    de retour à son origine ». C'est un renversement partiel de la portée
+    « aller seulement » décidée le 2026-07-24 — on ne vérifie toujours pas
+    qu'un `pickup` précis existe pour chaque livraison, mais on contrôle le
+    **résultat net** à l'horizon du projet. Non bloquant : une entrée de plus
+    dans le rapport de cohérence (`retour_manquant`).
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        self.console = Material.objects.create(
+            project=self.project, name="Console", venue=self.entrepot, quantity=1,
+        )
+
+    def _transport(self, origin, destination, hour, material=None, quantity=1, day=1):
+        transport = Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=origin, destination_venue=destination,
+            scheduled_datetime=_dt(hour, day=day), estimated_duration_minutes=60,
+            status=Transport.STATUS_CONFIRMED,
+        )
+        if material is not None:
+            TransportMaterial.objects.create(
+                transport=transport, material=material, quantity=quantity,
+            )
+        return transport
+
+    def _return_issues(self):
+        return [
+            issue for issue in get_project_coherence_report(self.project)
+            if issue['type'] == 'retour_manquant'
+        ]
+
+    def test_material_never_moved_is_not_reported(self):
+        # Jamais sorti du bercail : rien à signaler.
+        self.assertEqual(self._return_issues(), [])
+
+    def test_material_left_at_venue_is_reported(self):
+        self._transport(self.entrepot, self.salle, 8, material=self.console)
+        issues = self._return_issues()
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]['material_name'], "Console")
+        self.assertEqual(issues[0]['quantity_missing'], 1)
+        self.assertEqual(issues[0]['locations'][0]['venue_name'], "Chapelle")
+
+    def test_material_brought_back_is_not_reported(self):
+        self._transport(self.entrepot, self.salle, 8, material=self.console)
+        self._transport(self.salle, self.entrepot, 23, material=self.console)
+        self.assertEqual(self._return_issues(), [])
+
+    def test_partial_return_is_reported(self):
+        rallonges = Material.objects.create(
+            project=self.project, name="Rallonges", venue=self.entrepot, quantity=20,
+        )
+        self._transport(self.entrepot, self.salle, 8, material=rallonges, quantity=12)
+        self._transport(self.salle, self.entrepot, 23, material=rallonges, quantity=5)
+        issues = [i for i in self._return_issues() if i['material_name'] == "Rallonges"]
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]['quantity_missing'], 7)
+        self.assertEqual(issues[0]['quantity_home'], 13)
+
+    def test_return_after_project_end_date_does_not_count(self):
+        # La date de fin du projet fait foi : un retour prévu APRÈS ne compte
+        # pas — c'est précisément ce que Samuel veut détecter.
+        self.project.end_date = _dt(23).date()
+        self.project.save(update_fields=['end_date'])
+        self._transport(self.entrepot, self.salle, 8, material=self.console)
+        self._transport(self.salle, self.entrepot, 10, material=self.console, day=2)
+        self.assertEqual(len(self._return_issues()), 1)
+
+    def test_return_before_project_end_date_counts(self):
+        self.project.end_date = _dt(23, day=3).date()
+        self.project.save(update_fields=['end_date'])
+        self._transport(self.entrepot, self.salle, 8, material=self.console)
+        self._transport(self.salle, self.entrepot, 10, material=self.console, day=2)
+        self.assertEqual(self._return_issues(), [])
+
+    def test_horizon_falls_back_to_last_event(self):
+        # Sans `end_date`, l'horizon est la fin du dernier événement du projet.
+        self.assertIsNone(self.project.end_date)
+        horizon = get_project_horizon(self.project)
+        self.assertIsNotNone(horizon)
+        self.assertGreaterEqual(horizon, self.show.effective_end)
+
+    def test_horizon_is_none_without_dates_or_events(self):
+        vide = Project.objects.create(name="Projet vide")
+        self.assertIsNone(get_project_horizon(vide))
+
+    def test_report_exposes_the_issue_through_the_api(self):
+        self._transport(self.entrepot, self.salle, 8, material=self.console)
+        response = self.client.get(f'/api/projects/{self.project.id}/transport-coherence/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        types = {issue['type'] for issue in response.data['issues']}
+        self.assertIn('retour_manquant', types)
+
+
+class KitCascadeAssignmentTests(TestCase):
+    """Verrouille l'hypothèse derrière la sélection en cascade des kits (2026-07-30).
+
+    Les modales d'assignation cochent automatiquement les composants d'un kit
+    qu'on coche. Ça ne tient que si assigner le kit ET ses composants au MÊME
+    spectacle n'est pas vu comme un conflit de hiérarchie — ce qui est le cas
+    parce que `get_material_conflicts` exclut le spectacle courant de ses
+    candidats. Ce test fige ce comportement : le casser ferait échouer la
+    cascade côté frontend, sans que rien d'autre ne le signale.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+        )
+        self.kit = Material.objects.create(
+            project=self.project, name="Kit son", venue=self.entrepot, quantity=1,
+        )
+        self.micro = Material.objects.create(
+            project=self.project, name="Micro", venue=self.entrepot, quantity=1,
+            parent_material=self.kit,
+        )
+
+    def test_kit_and_its_component_on_the_same_show(self):
+        premier = self.client.post('/api/show-materials/', {
+            'show': self.show.id, 'material': self.kit.id, 'quantity': 1,
+        }, format='json')
+        self.assertEqual(premier.status_code, status.HTTP_201_CREATED)
+
+        second = self.client.post('/api/show-materials/', {
+            'show': self.show.id, 'material': self.micro.id, 'quantity': 1,
+        }, format='json')
+        self.assertEqual(second.status_code, status.HTTP_201_CREATED)
+
+    def test_component_on_another_overlapping_show_still_conflicts(self):
+        # La cascade ne doit pas affaiblir la règle : le kit ici, son composant
+        # ailleurs au même moment, reste un conflit.
+        autre_show = Show.objects.create(
+            project=self.project, title="Autre", venue=self.salle,
+            event_type='rehearsal', start_datetime=_dt(20), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        ShowMaterial.objects.create(show=self.show, material=self.kit, quantity=1)
+        response = self.client.post('/api/show-materials/', {
+            'show': autre_show.id, 'material': self.micro.id, 'quantity': 1,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('conflicts', response.data)
+
+    def test_component_ids_exposed_for_the_frontend_cascade(self):
+        # Le frontend construit la cascade à partir de `parent_material` du
+        # catalogue ; `component_ids` reste exposé côté kit pour la fiche.
+        response = self.client.get(f'/api/materials/{self.kit.id}/')
+        self.assertEqual(response.data['component_ids'], [self.micro.id])
+        composant = self.client.get(f'/api/materials/{self.micro.id}/')
+        self.assertEqual(composant.data['parent_material'], self.kit.id)
+
+
+class SuppressionFicheAPITests(TestCase):
+    """Vérifie la suppression d'un lieu, d'un spectacle et d'un déplacement (2026-07-30).
+
+    Demande de Samuel : un bouton Supprimer avec confirmation sur ces trois
+    fiches. Les trois entités ne se comportent PAS pareil, et c'est
+    volontaire :
+
+    - **Lieu** : refusé tant qu'il est référencé (`Show.venue` et les FK de
+      `Transport` sont en `PROTECT`, et le matériel qui en fait son origine
+      bloque aussi depuis que le lieu d'origine est obligatoire). Sans ce
+      garde-fou, Django lèverait un `ProtectedError` rendu en 500 par DRF.
+    - **Spectacle** : autorisé, emporte en cascade ses assignations et ses
+      déplacements — d'où `deletion_impact`, affiché dans la confirmation.
+    - **Déplacement** : autorisé, emporte ses lignes de matériel et de
+      techniciens.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+        )
+
+    # --- Lieu ---
+
+    def test_delete_unused_venue(self):
+        libre = Venue.objects.create(project=self.project, name="Salle inutilisée")
+        response = self.client.delete(f'/api/venues/{libre.id}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Venue.objects.filter(id=libre.id).exists())
+
+    def test_delete_venue_used_by_a_show_is_refused(self):
+        response = self.client.delete(f'/api/venues/{self.salle.id}/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['shows'], 1)
+        self.assertTrue(Venue.objects.filter(id=self.salle.id).exists())
+
+    def test_delete_venue_used_by_a_transport_is_refused(self):
+        Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=self.entrepot, destination_venue=self.salle,
+            scheduled_datetime=_dt(8), estimated_duration_minutes=60,
+        )
+        response = self.client.delete(f'/api/venues/{self.entrepot.id}/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['transports'], 1)
+
+    def test_delete_venue_used_as_material_origin_is_refused(self):
+        # `Material.venue` est en SET_NULL côté modèle, mais laisser vider
+        # silencieusement l'origine contredirait la règle du 2026-07-30.
+        Material.objects.create(
+            project=self.project, name="Console", venue=self.entrepot, quantity=1,
+        )
+        response = self.client.delete(f'/api/venues/{self.entrepot.id}/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['materials'], 1)
+
+    # --- Spectacle ---
+
+    def test_deletion_impact_is_exposed(self):
+        console = Material.objects.create(
+            project=self.project, name="Console", venue=self.entrepot, quantity=1,
+        )
+        alex = Technician.objects.create(project=self.project, name="Alex")
+        ShowMaterial.objects.create(show=self.show, material=console, quantity=1)
+        ShowTechnician.objects.create(show=self.show, technician=alex)
+        Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=self.entrepot, destination_venue=self.salle,
+            scheduled_datetime=_dt(8), estimated_duration_minutes=60,
+        )
+        response = self.client.get(f'/api/shows/{self.show.id}/')
+        impact = response.data['deletion_impact']
+        self.assertEqual(impact['materials'], 1)
+        self.assertEqual(impact['technicians'], 1)
+        # 2 et non 1 : assigner du matériel déclenche la génération automatique
+        # d'une proposition de déplacement (`transport_autogen`), qui compte
+        # elle aussi dans ce qui disparaîtra. Le décompte doit refléter la
+        # réalité de la base, pas seulement ce que Samuel a saisi à la main.
+        self.assertEqual(impact['transports'], Transport.objects.filter(show=self.show).count())
+        self.assertGreaterEqual(impact['transports'], 1)
+
+    def test_delete_show_cascades(self):
+        console = Material.objects.create(
+            project=self.project, name="Console", venue=self.entrepot, quantity=1,
+        )
+        ShowMaterial.objects.create(show=self.show, material=console, quantity=1)
+        transport = Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=self.entrepot, destination_venue=self.salle,
+            scheduled_datetime=_dt(8), estimated_duration_minutes=60,
+        )
+        response = self.client.delete(f'/api/shows/{self.show.id}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Show.objects.filter(id=self.show.id).exists())
+        self.assertFalse(Transport.objects.filter(id=transport.id).exists())
+        self.assertFalse(ShowMaterial.objects.filter(show_id=self.show.id).exists())
+        # Le matériel lui-même survit : seule l'assignation disparaît.
+        self.assertTrue(Material.objects.filter(id=console.id).exists())
+
+    # --- Déplacement ---
+
+    def test_delete_transport_cascades_its_lines(self):
+        console = Material.objects.create(
+            project=self.project, name="Console", venue=self.entrepot, quantity=1,
+        )
+        alex = Technician.objects.create(project=self.project, name="Alex")
+        transport = Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=self.entrepot, destination_venue=self.salle,
+            scheduled_datetime=_dt(8), estimated_duration_minutes=60,
+        )
+        TransportMaterial.objects.create(transport=transport, material=console, quantity=1)
+        TransportTechnician.objects.create(transport=transport, technician=alex)
+
+        response = self.client.delete(f'/api/transports/{transport.id}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(TransportMaterial.objects.filter(transport_id=transport.id).exists())
+        self.assertFalse(TransportTechnician.objects.filter(transport_id=transport.id).exists())
+        # Ni le matériel ni le technicien ne sont supprimés.
+        self.assertTrue(Material.objects.filter(id=console.id).exists())
+        self.assertTrue(Technician.objects.filter(id=alex.id).exists())
+
+
+class ParcoursAPITests(TestCase):
+    """Vérifie les endpoints « parcours » matériel et techniciens (2026-07-30).
+
+    Demande de Samuel : des écrans pour voir le cheminement du matériel et des
+    techniciens sur toute la durée de la production, avec sélection
+    individuelle. Le parcours matériel réutilise le grand livre de positions de
+    `transport_coherence.py` — même source de vérité que la cohérence des
+    emplacements, les deux écrans ne peuvent donc pas se contredire.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        self.console = Material.objects.create(
+            project=self.project, name="Console", venue=self.entrepot, quantity=1,
+        )
+        self.alex = Technician.objects.create(project=self.project, name="Alex", specialty="Son")
+
+    def _livraison(self, hour, origin, destination, material=None, day=1):
+        transport = Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=origin, destination_venue=destination,
+            scheduled_datetime=_dt(hour, day=day), estimated_duration_minutes=60,
+            status=Transport.STATUS_CONFIRMED,
+        )
+        if material is not None:
+            TransportMaterial.objects.create(transport=transport, material=material, quantity=1)
+        return transport
+
+    # --- Matériel ---
+
+    def test_material_journey_starts_at_home(self):
+        response = self.client.get(f'/api/projects/{self.project.id}/material-journey/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ligne = next(m for m in response.data['materials'] if m['name'] == "Console")
+        self.assertEqual(ligne['home_venue_name'], "Entrepôt")
+        self.assertEqual(len(ligne['stays']), 1)
+        self.assertEqual(ligne['stays'][0]['venue_name'], "Entrepôt")
+
+    def test_material_journey_splits_on_transport(self):
+        self._livraison(8, self.entrepot, self.salle, material=self.console)
+        response = self.client.get(f'/api/projects/{self.project.id}/material-journey/')
+        ligne = next(m for m in response.data['materials'] if m['name'] == "Console")
+        lieux = [s['venue_name'] for s in ligne['stays']]
+        self.assertEqual(lieux, ["Entrepôt", "Chapelle"])
+
+    def test_material_journey_includes_confirmed_transports(self):
+        self._livraison(8, self.entrepot, self.salle, material=self.console)
+        response = self.client.get(f'/api/projects/{self.project.id}/material-journey/')
+        ligne = next(m for m in response.data['materials'] if m['name'] == "Console")
+        self.assertEqual(len(ligne['transports']), 1)
+        self.assertEqual(ligne['transports'][0]['origin_venue_name'], "Entrepôt")
+        self.assertEqual(ligne['transports'][0]['destination_venue_name'], "Chapelle")
+        self.assertEqual(ligne['transports'][0]['quantity'], 1)
+        self.assertEqual(ligne['transports'][0]['show_title'], "Vertiges")
+
+    def test_material_journey_excludes_unconfirmed_transports(self):
+        transport = Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=self.entrepot, destination_venue=self.salle,
+            scheduled_datetime=_dt(8), estimated_duration_minutes=60,
+            status=Transport.STATUS_TO_APPROVE,
+        )
+        TransportMaterial.objects.create(transport=transport, material=self.console, quantity=1)
+        response = self.client.get(f'/api/projects/{self.project.id}/material-journey/')
+        ligne = next(m for m in response.data['materials'] if m['name'] == "Console")
+        self.assertEqual(ligne['transports'], [])
+
+    def test_material_journey_includes_assignments(self):
+        ShowMaterial.objects.create(show=self.show, material=self.console, quantity=1)
+        response = self.client.get(f'/api/projects/{self.project.id}/material-journey/')
+        ligne = next(m for m in response.data['materials'] if m['name'] == "Console")
+        self.assertEqual(len(ligne['assignments']), 1)
+        self.assertEqual(ligne['assignments'][0]['show_title'], "Vertiges")
+
+    def test_material_journey_filter(self):
+        autre = Material.objects.create(
+            project=self.project, name="Micro", venue=self.entrepot, quantity=1,
+        )
+        response = self.client.get(
+            f'/api/projects/{self.project.id}/material-journey/', {'materials': str(autre.id)},
+        )
+        noms = [m['name'] for m in response.data['materials']]
+        self.assertEqual(noms, ["Micro"])
+
+    def test_window_is_empty_without_dates_or_events(self):
+        vide = Project.objects.create(name="Projet vide")
+        response = self.client.get(f'/api/projects/{vide.id}/material-journey/')
+        self.assertIsNone(response.data['window'])
+        self.assertEqual(response.data['materials'], [])
+
+    # --- Techniciens ---
+
+    def test_technician_journey_mixes_shows_and_transports(self):
+        ShowTechnician.objects.create(show=self.show, technician=self.alex)
+        transport = self._livraison(8, self.entrepot, self.salle)
+        TransportTechnician.objects.create(transport=transport, technician=self.alex)
+
+        response = self.client.get(f'/api/projects/{self.project.id}/technician-journey/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ligne = next(t for t in response.data['technicians'] if t['name'] == "Alex")
+        kinds = [e['kind'] for e in ligne['engagements']]
+        self.assertEqual(sorted(kinds), ['show', 'transport'])
+        # Trié chronologiquement : le déplacement de 8h précède le spectacle de 20h.
+        self.assertEqual(ligne['engagements'][0]['kind'], 'transport')
+
+    def test_technician_journey_flags_conflicts(self):
+        # Déplacement 20h-21h pendant le spectacle 20h-22h : conflit.
+        ShowTechnician.objects.create(show=self.show, technician=self.alex)
+        transport = self._livraison(20, self.entrepot, self.salle)
+        TransportTechnician.objects.create(transport=transport, technician=self.alex)
+
+        response = self.client.get(f'/api/projects/{self.project.id}/technician-journey/')
+        ligne = next(t for t in response.data['technicians'] if t['name'] == "Alex")
+        self.assertTrue(all(e['conflict'] for e in ligne['engagements']))
+
+    def test_technician_journey_filter(self):
+        autre = Technician.objects.create(project=self.project, name="Brigitte")
+        response = self.client.get(
+            f'/api/projects/{self.project.id}/technician-journey/', {'technicians': str(autre.id)},
+        )
+        noms = [t['name'] for t in response.data['technicians']]
+        self.assertEqual(noms, ["Brigitte"])
+
+
+class ShowPhasesAPITests(TestCase):
+    """Vérifie les blocs rattachés à un événement (`Show.parent_show`, 2026-07-31).
+
+    Demande de Samuel : pouvoir accrocher une plage de montage/répétition en
+    amont d'un événement et une de démontage en aval. Choix de conception : un
+    bloc est un `Show` complet rattaché par `parent_show`, plutôt qu'un modèle
+    parallèle — il profite ainsi des conflits, des transports, du parcours et
+    de la cohérence sans qu'on réécrive quoi que ce soit.
+
+    Le point délicat couvert ici : un bloc collé à son événement ne doit PAS
+    être vu comme un conflit de lieu avec lui. Leurs fenêtres effectives se
+    chevauchent dès qu'un buffer est renseigné.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.autre_salle = Venue.objects.create(project=self.project, name="Salle 2")
+        self.show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+            buffer_before_minutes=60, buffer_after_minutes=60,
+        )
+
+    def _bloc(self, event_type='setup', debut=16, fin=19, **extra):
+        payload = {
+            'project': self.project.id, 'title': "Montage Vertiges",
+            'venue': self.salle.id, 'event_type': event_type,
+            'start_datetime': _dt(debut).isoformat(), 'end_datetime': _dt(fin).isoformat(),
+            'buffer_before_minutes': 0, 'buffer_after_minutes': 0,
+            'parent_show': self.show.id,
+        }
+        payload.update(extra)
+        return self.client.post('/api/shows/', payload, format='json')
+
+    def test_create_setup_block(self):
+        response = self._bloc()
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['parent_show'], self.show.id)
+        self.assertEqual(response.data['event_type'], 'setup')
+
+    def test_block_is_adjacent_to_its_show_without_conflict(self):
+        # Le montage finit à 19h, le spectacle a un buffer avant de 60 min :
+        # sa fenêtre effective commence à 19h. Sans l'exclusion de famille, ce
+        # serait signalé comme conflit de lieu.
+        response = self._bloc(debut=16, fin=19)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertNotIn('conflicts', response.data)
+
+    def test_block_overlapping_another_show_still_conflicts(self):
+        # L'exclusion ne vaut que pour la famille : un vrai voisin reste détecté.
+        Show.objects.create(
+            project=self.project, title="Autre", venue=self.salle,
+            event_type='rehearsal', start_datetime=_dt(16), end_datetime=_dt(18),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        response = self._bloc(debut=17, fin=19)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('conflicts', response.data)
+
+    def test_phases_are_exposed_on_the_parent(self):
+        self._bloc(event_type='setup', debut=16, fin=19)
+        self._bloc(event_type='teardown', debut=22, fin=23)
+        response = self.client.get(f'/api/shows/{self.show.id}/')
+        types = [p['event_type'] for p in response.data['phases']]
+        self.assertEqual(types, ['setup', 'teardown'])
+
+    def test_a_block_has_no_phases_of_its_own(self):
+        bloc = self._bloc()
+        response = self.client.get(f"/api/shows/{bloc.data['id']}/")
+        self.assertEqual(response.data['phases'], [])
+        self.assertEqual(response.data['parent_show_title'], "Vertiges")
+
+    def test_cannot_attach_a_block_to_a_block(self):
+        bloc = self._bloc()
+        response = self.client.post('/api/shows/', {
+            'project': self.project.id, 'title': "Sous-bloc", 'venue': self.salle.id,
+            'event_type': 'setup', 'start_datetime': _dt(14).isoformat(),
+            'end_datetime': _dt(15).isoformat(), 'parent_show': bloc.data['id'],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('parent_show', response.data)
+
+    def test_block_must_share_the_venue_of_its_show(self):
+        response = self._bloc(venue=self.autre_salle.id)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('venue', response.data)
+
+    def test_block_must_share_the_project_of_its_show(self):
+        autre_projet = Project.objects.create(name="Autre projet")
+        autre_lieu = Venue.objects.create(project=autre_projet, name="Ailleurs")
+        response = self.client.post('/api/shows/', {
+            'project': autre_projet.id, 'title': "Montage", 'venue': autre_lieu.id,
+            'event_type': 'setup', 'start_datetime': _dt(16).isoformat(),
+            'end_datetime': _dt(19).isoformat(), 'parent_show': self.show.id,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('parent_show', response.data)
+
+    def test_deleting_the_show_deletes_its_blocks(self):
+        bloc = self._bloc()
+        self.client.delete(f'/api/shows/{self.show.id}/')
+        self.assertFalse(Show.objects.filter(id=bloc.data['id']).exists())
+
+    def test_assigning_directly_to_a_setup_block_is_refused(self):
+        # Depuis le 2026-07-31, un bloc de montage/démontage utilise le
+        # matériel et l'équipe de son événement : l'assignation directe est
+        # refusée pour éviter deux vérités concurrentes. (Un bloc de
+        # répétition, lui, est autonome — voir RehearsalPhaseAutonomyTests.)
+        bloc_id = self._bloc().data['id']
+        alex = Technician.objects.create(project=self.project, name="Alex")
+        response = self.client.post('/api/show-technicians/', {
+            'show': bloc_id, 'technician': alex.id,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('show', response.data)
+
+        console = Material.objects.create(
+            project=self.project, name="Console", venue=self.salle, quantity=1,
+        )
+        response = self.client.post('/api/show-materials/', {
+            'show': bloc_id, 'material': console.id, 'quantity': 1,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('show', response.data)
+
+
+class ShowPhaseInheritanceTests(TestCase):
+    """L'équipe et le matériel d'un événement couvrent ses blocs (2026-07-31).
+
+    Demande de Samuel : « pour le montage et le démontage, le matériel et le
+    technicien sont considérés comme étant les mêmes que le spectacle ».
+    Implémenté par une **fenêtre d'engagement étendue** (`Show.engagement_start`
+    /`engagement_end`) plutôt qu'en recopiant les assignations dans chaque
+    bloc : une seule vérité, qui ne peut pas diverger quand on modifie
+    l'événement après coup.
+
+    Ne vaut que pour le montage et le démontage — un bloc de RÉPÉTITION est
+    autonome (voir `RehearsalPhaseAutonomyTests`).
+
+    À distinguer de `effective_start`/`effective_end`, qui restent la fenêtre
+    du seul créneau et servent au conflit de LIEU.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.autre_salle = Venue.objects.create(project=self.project, name="Salle 2")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+
+        # Spectacle 20h-22h, sans buffer pour que les fenêtres soient lisibles.
+        self.show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        # Montage 16h-19h, rattaché.
+        self.montage = Show.objects.create(
+            project=self.project, title="Montage", venue=self.salle,
+            event_type='setup', start_datetime=_dt(16), end_datetime=_dt(19),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+            parent_show=self.show,
+        )
+        self.alex = Technician.objects.create(project=self.project, name="Alex")
+        self.console = Material.objects.create(
+            project=self.project, name="Console", venue=self.entrepot, quantity=1,
+        )
+
+    def test_engagement_window_covers_the_blocks(self):
+        self.show.refresh_from_db()
+        self.assertEqual(self.show.engagement_start, self.montage.effective_start)
+        self.assertEqual(self.show.engagement_end, self.show.effective_end)
+        # La fenêtre du créneau, elle, ne bouge pas — c'est celle du conflit de lieu.
+        self.assertEqual(self.show.effective_start, _dt(20))
+
+    def test_technician_is_busy_during_the_setup(self):
+        ShowTechnician.objects.create(show=self.show, technician=self.alex)
+        # Autre engagement pendant le MONTAGE (17h-18h), ailleurs.
+        ailleurs = Show.objects.create(
+            project=self.project, title="Ailleurs", venue=self.autre_salle,
+            event_type='rehearsal', start_datetime=_dt(17), end_datetime=_dt(18),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        response = self.client.post('/api/show-technicians/', {
+            'show': ailleurs.id, 'technician': self.alex.id,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('conflicts', response.data)
+
+    def test_material_is_reserved_during_the_setup(self):
+        ShowMaterial.objects.create(show=self.show, material=self.console, quantity=1)
+        ailleurs = Show.objects.create(
+            project=self.project, title="Ailleurs", venue=self.autre_salle,
+            event_type='rehearsal', start_datetime=_dt(17), end_datetime=_dt(18),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        response = self.client.post('/api/show-materials/', {
+            'show': ailleurs.id, 'material': self.console.id, 'quantity': 1,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('conflicts', response.data)
+
+    def test_no_conflict_outside_the_extended_window(self):
+        # Avant le montage : la ressource est libre.
+        ShowTechnician.objects.create(show=self.show, technician=self.alex)
+        avant = Show.objects.create(
+            project=self.project, title="Tôt le matin", venue=self.autre_salle,
+            event_type='rehearsal', start_datetime=_dt(9), end_datetime=_dt(10),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        response = self.client.post('/api/show-technicians/', {
+            'show': avant.id, 'technician': self.alex.id,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_a_show_without_blocks_keeps_its_own_window(self):
+        # Pas de régression pour les événements sans bloc : engagement = créneau.
+        seul = Show.objects.create(
+            project=self.project, title="Seul", venue=self.autre_salle,
+            event_type='performance', start_datetime=_dt(14), end_datetime=_dt(15),
+            buffer_before_minutes=30, buffer_after_minutes=30,
+        )
+        self.assertEqual(seul.engagement_start, seul.effective_start)
+        self.assertEqual(seul.engagement_end, seul.effective_end)
+
+
+class RehearsalPhaseAutonomyTests(TestCase):
+    """Un bloc de répétition rattaché a SES ressources (2026-07-31, Samuel).
+
+    Précision apportée après coup : « le bloc répétition n'obtient pas de
+    matériel et de technicien du spectacle parent. On va copier les infos lors
+    de la création mais on permet d'éditer par la suite ». Un montage manipule
+    forcément le matériel du spectacle avec son équipe ; une répétition est un
+    vrai temps de travail, où l'on n'utilise pas nécessairement tout, ni avec
+    les mêmes personnes.
+
+    Trois conséquences vérifiées ici :
+
+    - la copie a lieu **à la création**, et une fois seulement (ce qu'on ajoute
+      plus tard à l'événement ne redescend pas) ;
+    - les assignations du bloc s'éditent comme celles de n'importe quel
+      événement, sans toucher à celles de l'événement ;
+    - l'événement ne se met pas en conflit avec sa propre répétition, alors
+      qu'ils réclament le même matériel sur des fenêtres qui se touchent —
+      c'est l'exclusion de famille de `get_material_conflicts`.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.autre_salle = Venue.objects.create(project=self.project, name="Salle 2")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+
+        # Spectacle 20h-22h, avec un buffer avant d'une heure : la fenêtre
+        # effective de l'événement démarre donc à 19h, et mord sur la
+        # répétition ci-dessous — c'est exactement le cas qui produirait un
+        # faux conflit sans exclusion de famille.
+        self.show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+            buffer_before_minutes=60, buffer_after_minutes=0,
+        )
+        self.alex = Technician.objects.create(project=self.project, name="Alex")
+        self.console = Material.objects.create(
+            project=self.project, name="Console", venue=self.entrepot, quantity=1,
+        )
+        ShowTechnician.objects.create(show=self.show, technician=self.alex)
+        ShowMaterial.objects.create(show=self.show, material=self.console, quantity=1)
+
+    def _bloc(self, event_type='rehearsal', debut=16, fin=19):
+        return self.client.post('/api/shows/', {
+            'project': self.project.id, 'title': "Répétition Vertiges",
+            'venue': self.salle.id, 'event_type': event_type,
+            'start_datetime': _dt(debut).isoformat(), 'end_datetime': _dt(fin).isoformat(),
+            'buffer_before_minutes': 0, 'buffer_after_minutes': 0,
+            'parent_show': self.show.id,
+        }, format='json')
+
+    def test_creating_a_rehearsal_block_copies_the_assignments(self):
+        bloc_id = self._bloc().data['id']
+        self.assertEqual(
+            list(ShowMaterial.objects.filter(show_id=bloc_id).values_list('material_id', flat=True)),
+            [self.console.id],
+        )
+        self.assertEqual(
+            list(ShowTechnician.objects.filter(show_id=bloc_id).values_list('technician_id', flat=True)),
+            [self.alex.id],
+        )
+
+    def test_creating_a_setup_block_copies_nothing(self):
+        # Le montage n'a rien à recopier : il puise en permanence dans les
+        # ressources de l'événement (fenêtre d'engagement).
+        bloc_id = self._bloc(event_type='setup').data['id']
+        self.assertFalse(ShowMaterial.objects.filter(show_id=bloc_id).exists())
+        self.assertFalse(ShowTechnician.objects.filter(show_id=bloc_id).exists())
+
+    def test_later_assignments_on_the_event_do_not_reach_the_block(self):
+        # La copie est un point de départ, pas un lien permanent.
+        bloc_id = self._bloc().data['id']
+        gradateur = Material.objects.create(
+            project=self.project, name="Gradateur", venue=self.entrepot, quantity=1,
+        )
+        ShowMaterial.objects.create(show=self.show, material=gradateur, quantity=1)
+        self.assertEqual(ShowMaterial.objects.filter(show_id=bloc_id).count(), 1)
+
+    def test_the_block_accepts_its_own_assignments(self):
+        bloc_id = self._bloc().data['id']
+        sam = Technician.objects.create(project=self.project, name="Sam")
+        response = self.client.post('/api/show-technicians/', {
+            'show': bloc_id, 'technician': sam.id,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_removing_from_the_block_leaves_the_event_intact(self):
+        bloc_id = self._bloc().data['id']
+        copie = ShowMaterial.objects.get(show_id=bloc_id, material=self.console)
+        response = self.client.delete(f'/api/show-materials/{copie.id}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertTrue(ShowMaterial.objects.filter(show=self.show, material=self.console).exists())
+
+    def test_the_engagement_window_ignores_a_rehearsal_block(self):
+        # Contrairement à un montage, une répétition rattachée n'étire pas la
+        # fenêtre d'engagement de l'événement : elle répond pour elle-même.
+        self._bloc()
+        self.show.refresh_from_db()
+        self.assertEqual(self.show.engagement_start, self.show.effective_start)
+        self.assertEqual(self.show.engagement_end, self.show.effective_end)
+
+    def test_the_copy_is_not_a_conflict_with_its_own_event(self):
+        # La répétition finit à 19h30, l'événement démarre effectivement à 19h :
+        # les deux réclament la console sur une demi-heure commune. Un même
+        # événement et ses blocs forment une seule unité de travail.
+        self._bloc(debut=16, fin=19)
+        bloc = Show.objects.get(parent_show=self.show)
+        bloc.end_datetime = _dt(20)
+        bloc.save()
+        rapport = get_project_conflicts(self.project)
+        self.assertEqual(rapport['material_conflicts'], [])
+        self.assertEqual(rapport['technician_conflicts'], [])
+
+    def test_a_third_show_still_conflicts_with_the_block(self):
+        # L'exclusion ne vaut que dans la famille : une demande extérieure
+        # pendant la répétition reste bloquée.
+        self._bloc(debut=16, fin=19)
+        ailleurs = Show.objects.create(
+            project=self.project, title="Ailleurs", venue=self.autre_salle,
+            event_type='rehearsal', start_datetime=_dt(17), end_datetime=_dt(18),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        response = self.client.post('/api/show-materials/', {
+            'show': ailleurs.id, 'material': self.console.id, 'quantity': 1,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('conflicts', response.data)
+
+    def test_phases_expose_their_resource_mode(self):
+        self._bloc(event_type='rehearsal', debut=16, fin=19)
+        self._bloc(event_type='teardown', debut=22, fin=23)
+        response = self.client.get(f'/api/shows/{self.show.id}/')
+        repetition, demontage = response.data['phases']
+        self.assertFalse(repetition['inherits_resources'])
+        self.assertEqual(repetition['material_count'], 1)
+        self.assertEqual(repetition['technician_count'], 1)
+        self.assertTrue(demontage['inherits_resources'])
+        self.assertIsNone(demontage['material_count'])

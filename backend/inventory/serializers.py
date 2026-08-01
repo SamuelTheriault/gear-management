@@ -17,8 +17,8 @@ Isolation par projet (voir `Project` dans models.py) : `Venue`, `Material`,
 `Technician` et `Show` portent chacun un FK `project` obligatoire. Le helper
 `_same_project()` ci-dessous est utilisé dans les `validate()` concernés pour
 bloquer tout mélange entre deux projets (ex. assigner du matériel du Projet A
-à un spectacle du Projet B) — `Department` et `Settings` restent globaux, non
-concernés par cette vérification.
+à un spectacle du Projet B) — `Settings` reste global, non concerné par cette
+vérification.
 """
 
 from datetime import timedelta
@@ -29,15 +29,18 @@ from .conflicts import (
     get_material_conflicts,
     get_technician_conflicts,
     get_transport_conflicts,
+    get_transport_reference_shows,
     get_venue_conflicts,
     serialize_material_conflict,
+    serialize_reference_show,
     serialize_technician_conflict,
     serialize_venue_conflict,
+    validate_transport_window,
 )
 from .maps import estimate_travel_minutes
 from .models import (
-    Department,
     Material,
+    MaterialCategory,
     Project,
     Settings,
     Show,
@@ -46,6 +49,7 @@ from .models import (
     Technician,
     Transport,
     TransportMaterial,
+    TransportTechnician,
     User,
     Venue,
 )
@@ -124,34 +128,76 @@ class VenueSerializer(serializers.ModelSerializer):
         return value
 
 
-class DepartmentSerializer(serializers.ModelSerializer):
-    """Sérialise les départements responsables du matériel, couleur d'identification incluse."""
+class MaterialCategorySerializer(serializers.ModelSerializer):
+    """Sérialise les catégories de matériel, isolées par projet (voir `MaterialCategory`).
+
+    `material_count` est exposé pour que le frontend puisse prévenir avant une
+    suppression (« 12 items utilisent cette catégorie ») et pré-remplir le
+    choix de réassignation — voir `MaterialCategoryViewSet.destroy`.
+    """
+
+    project_name = serializers.CharField(source='project.name', read_only=True)
+    material_count = serializers.SerializerMethodField()
 
     class Meta:
-        model = Department
-        fields = ['id', 'name', 'contact_name', 'contact_info', 'notes', 'color']
+        model = MaterialCategory
+        fields = ['id', 'project', 'project_name', 'name', 'color', 'material_count']
+
+    def get_material_count(self, obj):
+        """Nombre de matériels rattachés à cette catégorie (matériel inactif compris)."""
+        return obj.materials.count()
+
+    def validate_name(self, value):
+        # La contrainte d'unicité est en base (project + name), mais un
+        # IntegrityError donnerait un 500 : on valide donc en amont pour
+        # renvoyer une erreur de champ exploitable par le formulaire.
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Le nom de la catégorie est requis.")
+        project = self.initial_data.get('project') or getattr(self.instance, 'project_id', None)
+        if project is None:
+            return value
+        existing = MaterialCategory.objects.filter(project_id=project, name__iexact=value)
+        if self.instance is not None:
+            existing = existing.exclude(id=self.instance.id)
+        if existing.exists():
+            raise serializers.ValidationError(
+                f'La catégorie "{value}" existe déjà dans ce projet.',
+            )
+        return value
 
 
 class MaterialSerializer(serializers.ModelSerializer):
     """Sérialise l'inventaire de matériel, isolé par projet, avec noms lisibles pour les FK
-    (parent/venue/département)."""
+    (parent/venue/catégorie)."""
 
     project_name = serializers.CharField(source='project.name', read_only=True)
     parent_material_name = serializers.CharField(source='parent_material.name', read_only=True, default=None)
     venue_name = serializers.CharField(source='venue.name', read_only=True, default=None)
-    department_name = serializers.CharField(source='department.name', read_only=True, default=None)
-    # Couleur du département, dupliquée ici en lecture seule pour que le frontend puisse
-    # colorer le matériel sans requête supplémentaire (voir `Department.color`).
-    department_color = serializers.CharField(source='department.color', read_only=True, default=None)
+    # `category` est une FK depuis le 2026-07-30 (c'était un slug figé avant) :
+    # le nom et la couleur sont dupliqués en lecture seule pour que le frontend
+    # puisse afficher et colorer une liste sans requête supplémentaire.
+    category_name = serializers.CharField(source='category.name', read_only=True, default=None)
+    category_color = serializers.CharField(source='category.color', read_only=True, default=None)
     component_ids = serializers.PrimaryKeyRelatedField(source='components', many=True, read_only=True)
+    # Lieu d'origine OBLIGATOIRE depuis le 2026-07-30 (demande de Samuel) : sans
+    # point de départ, la timeline de position (transport_coherence.py) ne peut
+    # rien vérifier — ni la disponibilité au départ d'un transport, ni le retour
+    # en fin de projet. Le champ reste nullable EN BASE pour ne pas invalider
+    # l'historique déjà saisi ; c'est l'API qui l'exige désormais.
+    venue = serializers.PrimaryKeyRelatedField(
+        queryset=Venue.objects.all(),
+        allow_null=False,
+        required=True,
+    )
 
     class Meta:
         model = Material
         fields = [
-            'id', 'project', 'project_name', 'name', 'description', 'category',
+            'id', 'project', 'project_name', 'name', 'description',
+            'category', 'category_name', 'category_color',
             'parent_material', 'parent_material_name',
             'venue', 'venue_name',
-            'department', 'department_name', 'department_color',
             'ownership_status', 'quantity', 'is_active', 'notes', 'component_ids',
         ]
 
@@ -203,12 +249,24 @@ class MaterialSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 'venue': "Le lieu d'entreposage doit appartenir au même projet.",
             })
+        category = attrs.get('category', getattr(self.instance, 'category', None))
+        if project is not None and category is not None and not _same_project(project, category):
+            raise serializers.ValidationError({
+                'category': "La catégorie doit appartenir au même projet.",
+            })
         return attrs
 
 
 class ShowSerializer(serializers.ModelSerializer):
     """Sérialise les fiches spectacles, isolées par projet, en exposant la fenêtre
     effective calculée (buffers inclus).
+
+    Blocs rattachés (2026-07-31, demande de Samuel) : `parent_show` permet
+    d'accrocher un montage/une répétition en amont et un démontage en aval de
+    l'événement principal. Un bloc est un `Show` complet — il a son lieu, ses
+    horaires, son matériel, ses techniciens, et participe aux conflits comme
+    tout le reste : c'était le but, ne rien réécrire en parallèle. Contraintes :
+    un seul niveau de hiérarchie, même projet et même lieu que le parent.
 
     Validation de conflit de lieu (voir `conflicts.get_venue_conflicts`,
     décision du 2026-07-19) : deux spectacles ne peuvent pas se chevaucher
@@ -221,6 +279,16 @@ class ShowSerializer(serializers.ModelSerializer):
     venue_name = serializers.CharField(source='venue.name', read_only=True)
     effective_start = serializers.DateTimeField(read_only=True)
     effective_end = serializers.DateTimeField(read_only=True)
+    # Décompte de ce qui disparaîtrait avec le spectacle (2026-07-30) :
+    # supprimer un `Show` supprime en cascade ses assignations ET ses
+    # déplacements (FK en CASCADE). Le frontend l'annonce dans sa
+    # confirmation plutôt que de laisser Samuel le découvrir après coup.
+    deletion_impact = serializers.SerializerMethodField()
+    # Blocs rattachés (montage/répétition en amont, démontage en aval —
+    # 2026-07-31). Lecture seule et non récursif : un bloc ne peut pas lui-même
+    # en avoir, la liste s'arrête donc à un niveau.
+    phases = serializers.SerializerMethodField()
+    parent_show_title = serializers.CharField(source='parent_show.title', read_only=True, default=None)
 
     class Meta:
         model = Show
@@ -228,11 +296,78 @@ class ShowSerializer(serializers.ModelSerializer):
             'id', 'project', 'project_name', 'title', 'venue', 'venue_name', 'event_type',
             'start_datetime', 'end_datetime',
             'buffer_before_minutes', 'buffer_after_minutes',
-            'notes', 'effective_start', 'effective_end', 'force',
+            'notes', 'effective_start', 'effective_end', 'deletion_impact',
+            'parent_show', 'parent_show_title', 'phases', 'force',
         ]
+
+    def get_phases(self, obj):
+        """Blocs rattachés à cet événement, dans l'ordre chronologique.
+
+        Renvoie une liste vide pour un bloc (pas de récursion) — la hiérarchie
+        est volontairement limitée à un niveau.
+        """
+        if obj.parent_show_id is not None:
+            return []
+        return [
+            {
+                'id': phase.id,
+                'title': phase.title,
+                'event_type': phase.event_type,
+                'start_datetime': phase.start_datetime,
+                'end_datetime': phase.end_datetime,
+                'effective_start': phase.effective_start,
+                'effective_end': phase.effective_end,
+                'venue': phase.venue_id,
+                'venue_name': phase.venue.name,
+                # Un montage/démontage utilise les ressources de l'événement et
+                # n'a donc rien à décompter. Un bloc de répétition est autonome
+                # (2026-07-31) : le frontend affiche ses propres décomptes.
+                'inherits_resources': phase.inherits_resources,
+                'material_count': (
+                    None if phase.inherits_resources else phase.show_materials.count()
+                ),
+                'technician_count': (
+                    None if phase.inherits_resources else phase.show_technicians.count()
+                ),
+            }
+            for phase in obj.phases.select_related('venue').order_by('start_datetime')
+        ]
+
+    def get_deletion_impact(self, obj):
+        """Ce qui serait supprimé en cascade avec ce spectacle."""
+        return {
+            'materials': obj.show_materials.count(),
+            'technicians': obj.show_technicians.count(),
+            'transports': obj.transports.count(),
+        }
 
     def validate(self, attrs):
         force = attrs.pop('force', False)
+
+        # Blocs rattachés (2026-07-31) : un seul niveau, même projet et même
+        # lieu que l'événement principal — un montage se fait forcément là où
+        # le spectacle a lieu.
+        parent = attrs.get('parent_show', getattr(self.instance, 'parent_show', None))
+        if parent is not None:
+            if self.instance is not None and parent.id == self.instance.id:
+                raise serializers.ValidationError({
+                    'parent_show': "Un événement ne peut pas être rattaché à lui-même.",
+                })
+            if parent.parent_show_id is not None:
+                raise serializers.ValidationError({
+                    'parent_show': (
+                        "Impossible de rattacher un bloc à un autre bloc — la "
+                        "hiérarchie est limitée à un niveau."
+                    ),
+                })
+            if self.instance is not None and self.instance.phases.exists():
+                raise serializers.ValidationError({
+                    'parent_show': (
+                        "Cet événement a déjà des blocs rattachés : il ne peut pas "
+                        "devenir lui-même un bloc."
+                    ),
+                })
+
         start = attrs.get('start_datetime', getattr(self.instance, 'start_datetime', None))
         end = attrs.get('end_datetime', getattr(self.instance, 'end_datetime', None))
         if start and end and end <= start:
@@ -244,6 +379,18 @@ class ShowSerializer(serializers.ModelSerializer):
         # doit appartenir au même projet que le spectacle lui-même.
         project = attrs.get('project', getattr(self.instance, 'project', None))
         venue = attrs.get('venue', getattr(self.instance, 'venue', None))
+        if parent is not None:
+            if not _same_project(project, parent):
+                raise serializers.ValidationError({
+                    'parent_show': "Le bloc doit appartenir au même projet que son événement.",
+                })
+            if venue is not None and venue.id != parent.venue_id:
+                raise serializers.ValidationError({
+                    'venue': (
+                        "Un bloc rattaché se déroule dans le même lieu que son "
+                        f"événement (« {parent.venue.name} »)."
+                    ),
+                })
         if not _same_project(project, venue):
             raise serializers.ValidationError({
                 'venue': "Le lieu doit appartenir au même projet que le spectacle.",
@@ -265,7 +412,16 @@ class ShowSerializer(serializers.ModelSerializer):
             effective_start = start - timedelta(minutes=buffer_before)
             effective_end = end + timedelta(minutes=buffer_after)
             exclude_id = self.instance.id if self.instance else None
-            conflicts = get_venue_conflicts(venue, effective_start, effective_end, exclude_id=exclude_id)
+            # Les blocs rattachés (montage/démontage) sont collés à leur
+            # événement : on les exclut du contrôle de lieu (2026-07-31).
+            famille = self.instance.family_ids if self.instance else None
+            parent = attrs.get('parent_show', getattr(self.instance, 'parent_show', None))
+            if famille is None and parent is not None:
+                famille = parent.family_ids
+            conflicts = get_venue_conflicts(
+                venue, effective_start, effective_end,
+                exclude_id=exclude_id, exclude_family_ids=famille,
+            )
             if conflicts:
                 raise serializers.ValidationError({
                     'conflicts': [serialize_venue_conflict(c) for c in conflicts],
@@ -278,6 +434,42 @@ class ShowSerializer(serializers.ModelSerializer):
                 })
         return attrs
 
+    def create(self, validated_data):
+        """Crée le spectacle — et amorce un bloc de répétition avec les
+        ressources de son événement.
+
+        Un montage ou un démontage n'a rien à recopier : il utilise en
+        permanence le matériel et l'équipe de l'événement (fenêtre
+        d'engagement, voir `Show.engagement_start`). Une répétition rattachée
+        est autonome, mais part rarement de zéro — d'où cette copie de
+        départ, demandée par Samuel le 2026-07-31, qu'on ajuste ensuite comme
+        n'importe quelle assignation.
+
+        La copie prend l'état des assignations à cet instant précis : ce qu'on
+        ajoute à l'événement plus tard ne redescend pas dans le bloc. C'est le
+        prix de l'autonomie — sans ça, éditer le bloc n'aurait pas de sens.
+
+        Les lignes sont créées une à une (pas de `bulk_create`) pour que les
+        signaux de `regenerate_signals.py` voient passer chaque assignation et
+        régénèrent les propositions de transport.
+        """
+        show = super().create(validated_data)
+        if show.parent_show_id is None or show.inherits_resources:
+            return show
+
+        parent = show.parent_show
+        for sm in parent.show_materials.all():
+            ShowMaterial.objects.create(
+                show=show,
+                material=sm.material,
+                quantity=sm.quantity,
+                is_rental=sm.is_rental,
+                rental_vendor=sm.rental_vendor,
+            )
+        for st in parent.show_technicians.all():
+            ShowTechnician.objects.create(show=show, technician=st.technician)
+        return show
+
 
 class ShowMaterialSerializer(serializers.ModelSerializer):
     """Sérialise l'assignation de matériel à un spectacle, avec validation de conflit bloquante (voir `force`)."""
@@ -285,16 +477,29 @@ class ShowMaterialSerializer(serializers.ModelSerializer):
     force = serializers.BooleanField(write_only=True, required=False, default=False)
     show_title = serializers.CharField(source='show.title', read_only=True)
     material_name = serializers.CharField(source='material.name', read_only=True)
-    # Reflète la couleur du département responsable du matériel (voir `Department.color`)
-    # jusque dans les assignations show/matériel, pour un code couleur cohérent dans tout
-    # le planning de production.
-    department_color = serializers.CharField(source='material.department.color', read_only=True, default=None)
+    # Catégorie du matériel, dupliquée ici en lecture seule pour que le frontend puisse
+    # colorer l'assignation sans requête supplémentaire (voir `Material.category` — a
+    # remplacé `department_color`, retiré le 2026-07-29 avec le modèle `Department`).
+    # `material_category` était le slug figé jusqu'au 2026-07-30 ; c'est
+    # maintenant l'id de la catégorie, doublé de son nom et de sa couleur —
+    # le frontend n'a plus de table de correspondance codée en dur.
+    material_category = serializers.PrimaryKeyRelatedField(
+        source='material.category', read_only=True, default=None,
+    )
+    material_category_name = serializers.CharField(
+        source='material.category.name', read_only=True, default=None,
+    )
+    material_category_color = serializers.CharField(
+        source='material.category.color', read_only=True, default=None,
+    )
 
     class Meta:
         model = ShowMaterial
         fields = [
             'id', 'show', 'material', 'quantity', 'is_rental', 'rental_vendor',
-            'show_title', 'material_name', 'department_color', 'force',
+            'show_title', 'material_name',
+            'material_category', 'material_category_name', 'material_category_color',
+            'force',
         ]
 
     def validate(self, attrs):
@@ -302,6 +507,21 @@ class ShowMaterialSerializer(serializers.ModelSerializer):
         show = attrs.get('show', getattr(self.instance, 'show', None))
         material = attrs.get('material', getattr(self.instance, 'material', None))
         quantity = attrs.get('quantity', getattr(self.instance, 'quantity', 1))
+
+        # Blocs de montage/démontage (2026-07-31) : ils utilisent le matériel
+        # et l'équipe de l'événement principal. On refuse l'assignation directe
+        # plutôt que de laisser coexister deux vérités — la fenêtre
+        # d'engagement de l'événement les couvre déjà, voir
+        # `Show.engagement_start`. Un bloc de RÉPÉTITION, lui, est autonome :
+        # il reçoit une copie à sa création et s'ajuste ensuite librement.
+        if show is not None and show.inherits_resources:
+            raise serializers.ValidationError({
+                'show': (
+                    "Ce bloc utilise le matériel et l'équipe de son événement "
+                    f"(« {show.parent_show.title} ») — fais l'assignation sur "
+                    "l'événement, elle couvrira le montage et le démontage."
+                ),
+            })
 
         # Isolation par projet (voir Project, models.py) : impossible d'assigner
         # du matériel d'un projet à un spectacle d'un autre projet.
@@ -364,6 +584,18 @@ class ShowTechnicianSerializer(serializers.ModelSerializer):
         show = attrs.get('show', getattr(self.instance, 'show', None))
         technician = attrs.get('technician', getattr(self.instance, 'technician', None))
 
+        # Blocs de montage/démontage (2026-07-31) : voir le commentaire
+        # équivalent sur `ShowMaterialSerializer`. Un bloc de répétition est
+        # autonome et accepte donc ses propres assignations.
+        if show is not None and show.inherits_resources:
+            raise serializers.ValidationError({
+                'show': (
+                    "Ce bloc utilise le matériel et l'équipe de son événement "
+                    f"(« {show.parent_show.title} ») — fais l'assignation sur "
+                    "l'événement, elle couvrira le montage et le démontage."
+                ),
+            })
+
         # Isolation par projet (voir Project, models.py) : impossible d'assigner
         # un technicien d'un projet à un spectacle d'un autre projet.
         if show and technician and not _same_project(show, technician):
@@ -400,12 +632,36 @@ class TransportMaterialSerializer(serializers.ModelSerializer):
         fields = ['id', 'material', 'material_name', 'quantity']
 
 
+class TransportTechnicianSerializer(serializers.ModelSerializer):
+    """Sérialise une affectation « technicien » d'un `Transport` (voir
+    `TransportTechnician`, models.py — ajouté le 2026-07-30).
+
+    Utilisée en écriture imbriquée dans `TransportSerializer.technicians`, sur
+    le même modèle que `materials`, et exposée en lecture avec le nom du
+    technicien pour l'affichage."""
+
+    technician_name = serializers.CharField(source='technician.name', read_only=True)
+    technician_specialty = serializers.CharField(
+        source='technician.specialty', read_only=True, default='',
+    )
+
+    class Meta:
+        model = TransportTechnician
+        fields = ['id', 'technician', 'technician_name', 'technician_specialty']
+
+
 class TransportSerializer(serializers.ModelSerializer):
     """Sérialise un déplacement (livraison/ramassage) de matériel, avec
-    validation de conflit bloquante sur le technicien assigné (voir `force`).
+    validation de conflit bloquante sur les techniciens affectés (voir `force`).
 
-    Un technicien assigné à un `Transport` est croisé avec ses engagements
-    `ShowTechnician` ET ses autres `Transport` — voir `conflicts.py`.
+    Chaque technicien affecté à un `Transport` est croisé avec ses engagements
+    `ShowTechnician` ET ses autres déplacements — voir `conflicts.py`.
+
+    Les techniciens sont gérés en écriture imbriquée via `technicians` (liste
+    de `{technician}`), même pattern que `materials` : depuis le 2026-07-30 un
+    déplacement peut en mobiliser plusieurs (l'ancien champ unique
+    `Transport.technician` a disparu). Fournir `technicians` lors d'une mise à
+    jour remplace intégralement la liste ; l'omettre la laisse inchangée.
 
     Le matériel transporté est géré en écriture imbriquée via `materials`
     (liste de `{material, quantity}`) — voir `TransportMaterial` et
@@ -416,6 +672,9 @@ class TransportSerializer(serializers.ModelSerializer):
 
     force = serializers.BooleanField(write_only=True, required=False, default=False)
     materials = TransportMaterialSerializer(many=True, source='transport_materials', required=False)
+    technicians = TransportTechnicianSerializer(
+        many=True, source='transport_technicians', required=False,
+    )
     show_title = serializers.CharField(source='show.title', read_only=True)
     origin_venue_name = serializers.CharField(source='origin_venue.name', read_only=True)
     destination_venue_name = serializers.CharField(source='destination_venue.name', read_only=True)
@@ -423,7 +682,9 @@ class TransportSerializer(serializers.ModelSerializer):
     # (ex. "CHAP -> Salle principale") — vide si le lieu n'a pas de code.
     origin_venue_code = serializers.CharField(source='origin_venue.code', read_only=True, default='')
     destination_venue_code = serializers.CharField(source='destination_venue.code', read_only=True, default='')
-    technician_name = serializers.CharField(source='technician.name', read_only=True, default=None)
+    # Noms des techniciens affectés, à plat — évite au frontend de recomposer
+    # la chaîne d'affichage à partir de `technicians` dans chaque liste.
+    technician_names = serializers.SerializerMethodField()
     effective_end = serializers.DateTimeField(read_only=True)
     # Indicateur (orange) pour le frontend : ce déplacement met-il le technicien
     # assigné en conflit d'horaire (spectacle ou autre déplacement) ? La
@@ -436,6 +697,14 @@ class TransportSerializer(serializers.ModelSerializer):
     # Sert à signaler un « camion vide » côté frontend ; le contenu détaillé
     # reste visible via `materials`.
     is_empty = serializers.SerializerMethodField()
+    # Spectacles de référence (départ/arrivée), déduits automatiquement — voir
+    # `get_transport_reference_shows` (conflicts.py) et la note de module
+    # 2026-07-30. `None` côté départ ou arrivée si ce bout est un entrepôt (ou
+    # si aucun spectacle ne s'y trouve à proximité) : pas de borne ce côté-là.
+    # Exposés pour affichage ET pour que le frontend propose par défaut
+    # `departure_show.effective_end` comme heure de déplacement suggérée.
+    departure_show = serializers.SerializerMethodField()
+    arrival_show = serializers.SerializerMethodField()
 
     class Meta:
         model = Transport
@@ -444,25 +713,46 @@ class TransportSerializer(serializers.ModelSerializer):
             'origin_venue', 'origin_venue_name', 'origin_venue_code',
             'destination_venue', 'destination_venue_name', 'destination_venue_code',
             'scheduled_datetime', 'estimated_duration_minutes', 'effective_end',
-            'technician', 'technician_name', 'has_technician_conflict',
-            'materials', 'is_empty', 'notes', 'force',
+            'technicians', 'technician_names', 'has_technician_conflict',
+            'materials', 'is_empty', 'departure_show', 'arrival_show', 'notes', 'force',
         ]
+
+    def get_technician_names(self, obj):
+        """Noms des techniciens affectés, dans l'ordre de la table de liaison."""
+        return [tt.technician.name for tt in obj.transport_technicians.all()]
 
     def get_is_empty(self, obj):
         """True si le déplacement ne transporte aucun matériel (aucune ligne
         `TransportMaterial`). Utilise le cache de prefetch quand disponible."""
         return len(obj.transport_materials.all()) == 0
 
-    def get_has_technician_conflict(self, obj):
-        """True si le technicien assigné est en conflit d'horaire sur ce
-        déplacement (pour l'indicateur orange). False si pas de technicien ou
-        pas d'heure (proposition non complétée)."""
-        if obj.technician_id is None or obj.scheduled_datetime is None:
-            return False
-        conflicts = get_transport_conflicts(
-            obj.scheduled_datetime, obj.estimated_duration_minutes, obj.technician, exclude_id=obj.id,
+    def get_departure_show(self, obj):
+        departure_show, _arrival_show = get_transport_reference_shows(
+            obj.show, obj.transport_type, obj.origin_venue, obj.destination_venue,
         )
-        return bool(conflicts)
+        return serialize_reference_show(departure_show)
+
+    def get_arrival_show(self, obj):
+        _departure_show, arrival_show = get_transport_reference_shows(
+            obj.show, obj.transport_type, obj.origin_venue, obj.destination_venue,
+        )
+        return serialize_reference_show(arrival_show)
+
+    def get_has_technician_conflict(self, obj):
+        """True si AU MOINS UN des techniciens affectés est en conflit d'horaire
+        sur ce déplacement (pour l'indicateur orange). False si aucun technicien
+        ou pas d'heure (proposition non complétée)."""
+        if obj.scheduled_datetime is None:
+            return False
+        return any(
+            get_transport_conflicts(
+                obj.scheduled_datetime,
+                obj.estimated_duration_minutes,
+                tt.technician,
+                exclude_id=obj.id,
+            )
+            for tt in obj.transport_technicians.all()
+        )
 
     def validate(self, attrs):
         origin = attrs.get('origin_venue', getattr(self.instance, 'origin_venue', None))
@@ -486,11 +776,31 @@ class TransportSerializer(serializers.ModelSerializer):
         # deux lieux et le technicien (si fourni) doivent tous appartenir au
         # même projet.
         show = attrs.get('show', getattr(self.instance, 'show', None))
-        technician_for_project_check = attrs.get('technician', getattr(self.instance, 'technician', None))
-        if not _same_project(show, origin, destination, technician_for_project_check):
+        if not _same_project(show, origin, destination):
             raise serializers.ValidationError(
-                "Le spectacle, les lieux et le technicien d'un déplacement doivent tous appartenir au même projet."
+                "Le spectacle et les lieux d'un déplacement doivent tous appartenir au même projet."
             )
+
+        # Techniciens affectés (écriture imbriquée, plusieurs possibles depuis
+        # le 2026-07-30) : même projet que le déplacement, et pas de doublon
+        # dans la même requête (cf. unique_together).
+        technician_lines = attrs.get('transport_technicians', None)
+        if technician_lines is not None:
+            seen_technician_ids = set()
+            for line in technician_lines:
+                technician = line['technician']
+                if show is not None and not _same_project(show, technician):
+                    raise serializers.ValidationError({
+                        'technicians': (
+                            f"Le technicien « {technician.name} » appartient à un autre "
+                            "projet que le déplacement."
+                        ),
+                    })
+                if technician.id in seen_technician_ids:
+                    raise serializers.ValidationError({
+                        'technicians': f"Le technicien « {technician.name} » est listé deux fois.",
+                    })
+                seen_technician_ids.add(technician.id)
 
         # Lignes de matériel transporté (écriture imbriquée) : chaque matériel
         # doit appartenir au même projet que le spectacle, ne pas apparaître en
@@ -554,25 +864,59 @@ class TransportSerializer(serializers.ModelSerializer):
                 attrs['estimated_duration_minutes'] = estimated
 
         force = attrs.pop('force', False)
-        technician = attrs.get('technician', getattr(self.instance, 'technician', None))
+        # Techniciens à vérifier : ceux fournis dans la requête si `technicians`
+        # est présent, sinon ceux déjà affectés (un PATCH qui ne touche qu'aux
+        # notes doit quand même revalider l'horaire s'il le change).
+        if technician_lines is not None:
+            technicians = [line['technician'] for line in technician_lines]
+        elif self.instance is not None:
+            technicians = [tt.technician for tt in self.instance.transport_technicians.all()]
+        else:
+            technicians = []
         scheduled_datetime = attrs.get('scheduled_datetime', getattr(self.instance, 'scheduled_datetime', None))
         duration = attrs.get(
             'estimated_duration_minutes',
             getattr(self.instance, 'estimated_duration_minutes', None),
         )
 
-        if technician and scheduled_datetime and duration and not force:
+        if technicians and scheduled_datetime and duration and not force:
             exclude_id = self.instance.id if self.instance else None
-            conflicts = get_transport_conflicts(scheduled_datetime, duration, technician, exclude_id=exclude_id)
+            # Un seul bandeau d'erreur pour tout le déplacement, listant les
+            # conflits de TOUS les techniciens affectés : côté frontend c'est
+            # un seul bouton « Forcer », pas un par personne.
+            conflicts = []
+            for technician in technicians:
+                conflicts.extend(
+                    get_transport_conflicts(
+                        scheduled_datetime, duration, technician, exclude_id=exclude_id,
+                    )
+                )
             if conflicts:
                 raise serializers.ValidationError({
                     'conflicts': [serialize_technician_conflict(c) for c in conflicts],
                     'detail': (
-                        "Chevauchement d'horaire détecté pour ce technicien (spectacle ou "
-                        "autre déplacement). "
-                        'Ajoute "force": true dans la requête pour forcer l\'assignation '
+                        "Chevauchement d'horaire détecté pour au moins un technicien "
+                        "affecté (spectacle ou autre déplacement). "
+                        'Ajoute "force": true dans la requête pour forcer l\'affectation '
                         'malgré le conflit.'
                     ),
+                })
+
+        # Fenêtre départ/arrivée (décision Samuel du 2026-07-30, voir
+        # conflicts.py) : le déplacement doit avoir lieu entre la fin
+        # effective du spectacle de départ et le début effectif du spectacle
+        # d'arrivée (déduits automatiquement — voir `get_transport_reference_shows`).
+        # Même pattern bloquant + `force` que le conflit de technicien ci-dessus.
+        transport_type = attrs.get('transport_type', getattr(self.instance, 'transport_type', None))
+        if show and origin and destination and not force:
+            violation = validate_transport_window(
+                show, transport_type, origin, destination, scheduled_datetime, duration,
+            )
+            if violation:
+                raise serializers.ValidationError({
+                    'detail': violation['detail'],
+                    'departure_show': violation['departure_show'],
+                    'arrival_show': violation['arrival_show'],
                 })
         return attrs
 
@@ -582,9 +926,12 @@ class TransportSerializer(serializers.ModelSerializer):
         `super().create()` car ce sont des lignes d'une table liée, pas des
         champs de `Transport`."""
         material_lines = validated_data.pop('transport_materials', [])
+        technician_lines = validated_data.pop('transport_technicians', [])
         transport = super().create(validated_data)
         for line in material_lines:
             TransportMaterial.objects.create(transport=transport, **line)
+        for line in technician_lines:
+            TransportTechnician.objects.create(transport=transport, **line)
         return transport
 
     def update(self, instance, validated_data):
@@ -593,11 +940,16 @@ class TransportSerializer(serializers.ModelSerializer):
         laisse inchangées (permet un PATCH qui ne touche qu'aux notes ou au
         technicien sans effacer la liste)."""
         material_lines = validated_data.pop('transport_materials', None)
+        technician_lines = validated_data.pop('transport_technicians', None)
         transport = super().update(instance, validated_data)
         if material_lines is not None:
             transport.transport_materials.all().delete()
             for line in material_lines:
                 TransportMaterial.objects.create(transport=transport, **line)
+        if technician_lines is not None:
+            transport.transport_technicians.all().delete()
+            for line in technician_lines:
+                TransportTechnician.objects.create(transport=transport, **line)
         return transport
 
 
