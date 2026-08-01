@@ -52,11 +52,35 @@ interdits de chevauchement peu importe le lieu — voir plus haut). Même
 exemption d'entreposage que pour le matériel : un lieu d'entrepôt peut
 recevoir plusieurs fiches de rangement qui se chevauchent sans que ce soit
 un vrai conflit d'occupation physique.
+
+Fenêtre départ/arrivée d'un déplacement (décision Samuel du 2026-07-30) : un
+`Transport` ne connaît qu'UN spectacle explicite (`show`, le spectacle
+« desservi ») — l'arrivée pour une livraison, le départ pour un ramassage.
+L'AUTRE bout n'est qu'un lieu (`origin_venue`/`destination_venue`), pas
+forcément lié à un spectacle précis. `find_departure_show`/`find_arrival_show`
+déduisent automatiquement ce spectacle manquant (le plus proche
+chronologiquement à ce lieu), sans champ supplémentaire à saisir — un lieu
+d'entrepôt (`is_storage=True`) n'a jamais de spectacle associé (le matériel y
+est toujours disponible), donc pas de borne de ce côté.
+`get_transport_reference_shows` combine les deux pour exposer, pour n'importe
+quel déplacement, le spectacle de départ ET d'arrivée (utilisé par
+`TransportSerializer` pour l'affichage ET la validation — voir
+`validate_transport_window`) : le déplacement doit avoir lieu ENTRE la fin
+effective du spectacle de départ et le début effectif du spectacle
+d'arrivée (buffers inclus, comme partout ailleurs). Bloquant + `force`, même
+pattern que les autres conflits.
 """
 
 from datetime import timedelta
 
-from .models import Material, Show, ShowMaterial, ShowTechnician, Transport
+from .models import (
+    Material,
+    Show,
+    ShowMaterial,
+    ShowTechnician,
+    Transport,
+    TransportTechnician,
+)
 
 
 def _collect_material_family(material, _seen=None):
@@ -123,13 +147,26 @@ def get_material_conflicts(show, material, exclude_id=None, quantity=1):
 
     family_ids = _collect_material_family(material)
     other_family_ids = family_ids - {material.id}
-    new_start, new_end = show.effective_start, show.effective_end
+    # Fenêtre d'ENGAGEMENT (2026-07-31) : le matériel d'un événement est
+    # mobilisé du montage au démontage, pas seulement sur le créneau du
+    # spectacle — voir `Show.engagement_start`.
+    new_start, new_end = show.engagement_start, show.engagement_end
+    # Un événement ne se dispute pas son propre matériel avec ses blocs
+    # rattachés (2026-07-31) : une répétition rattachée porte une copie des
+    # assignations de l'événement, et elle lui est collée — avec un buffer,
+    # les deux fenêtres se chevauchent forcément. Même raisonnement et même
+    # mécanisme que l'exclusion de famille du conflit de LIEU. Sur un
+    # spectacle sans bloc, `family_ids` se réduit à `{show.id}` : le
+    # comportement d'origine (« jamais un conflit avec soi-même », dont dépend
+    # l'assignation d'un kit ET de ses composants au même spectacle) est
+    # inchangé.
+    show_family_ids = show.family_ids
     conflicts = []
 
     if other_family_ids:
         family_candidates = (
             ShowMaterial.objects.filter(material_id__in=other_family_ids)
-            .exclude(show_id=show.id)
+            .exclude(show_id__in=show_family_ids)
             .exclude(show__venue__is_storage=True)
             .select_related('show', 'material', 'show__venue')
         )
@@ -137,12 +174,12 @@ def get_material_conflicts(show, material, exclude_id=None, quantity=1):
             family_candidates = family_candidates.exclude(id=exclude_id)
         conflicts += [
             sm for sm in family_candidates
-            if windows_overlap(new_start, new_end, sm.show.effective_start, sm.show.effective_end)
+            if windows_overlap(new_start, new_end, sm.show.engagement_start, sm.show.engagement_end)
         ]
 
     same_material_candidates = (
         ShowMaterial.objects.filter(material_id=material.id)
-        .exclude(show_id=show.id)
+        .exclude(show_id__in=show_family_ids)
         .exclude(show__venue__is_storage=True)
         .select_related('show', 'material', 'show__venue')
     )
@@ -151,7 +188,7 @@ def get_material_conflicts(show, material, exclude_id=None, quantity=1):
 
     overlapping_same_material = [
         sm for sm in same_material_candidates
-        if windows_overlap(new_start, new_end, sm.show.effective_start, sm.show.effective_end)
+        if windows_overlap(new_start, new_end, sm.show.engagement_start, sm.show.engagement_end)
     ]
     already_allocated = sum(sm.quantity for sm in overlapping_same_material)
     if already_allocated + quantity > material.quantity:
@@ -160,7 +197,7 @@ def get_material_conflicts(show, material, exclude_id=None, quantity=1):
     return conflicts
 
 
-def get_venue_conflicts(venue, effective_start, effective_end, exclude_id=None):
+def get_venue_conflicts(venue, effective_start, effective_end, exclude_id=None, exclude_family_ids=None):
     """Retourne la liste des `Show` existants qui entreraient en conflit de
     lieu si un spectacle occupait `venue` sur la fenêtre
     `[effective_start, effective_end]` (déjà bufferisée par l'appelant).
@@ -176,6 +213,14 @@ def get_venue_conflicts(venue, effective_start, effective_end, exclude_id=None):
 
     `exclude_id` : id du `Show` à exclure lors d'une mise à jour (le
     spectacle qu'on modifie ne doit pas se comparer à lui-même).
+
+    `exclude_family_ids` : ids de l'événement et de ses blocs rattachés
+    (montage/démontage, voir `Show.parent_show`, 2026-07-31). Un bloc est
+    collé à son événement : leurs fenêtres EFFECTIVES se chevauchent dès
+    qu'un buffer est renseigné, et sans cette exclusion un montage serait
+    signalé en conflit de lieu avec le spectacle qu'il prépare. C'est le
+    « pas de double comptage » décidé avec Samuel — les buffers restent, mais
+    ne se retournent pas contre les blocs explicites.
     """
     if venue.is_storage:
         return []
@@ -183,6 +228,8 @@ def get_venue_conflicts(venue, effective_start, effective_end, exclude_id=None):
     candidates = Show.objects.filter(venue_id=venue.id).select_related('venue')
     if exclude_id is not None:
         candidates = candidates.exclude(id=exclude_id)
+    if exclude_family_ids:
+        candidates = candidates.exclude(id__in=exclude_family_ids)
 
     return [
         s for s in candidates
@@ -201,30 +248,44 @@ def _technician_commitments(technician_id, exclude_show_technician_id=None, excl
     # Une proposition auto ('to_approve') sans heure n'a pas de fenêtre
     # exploitable : on exclut les transports sans `scheduled_datetime` pour
     # ne jamais comparer une fenêtre incomplète (effective_end=None).
-    transports = (
-        Transport.objects.filter(technician_id=technician_id, scheduled_datetime__isnull=False)
-        .select_related('show')
+    #
+    # Depuis le 2026-07-30, un déplacement peut mobiliser PLUSIEURS techniciens
+    # (table `TransportTechnician`) : l'engagement unitaire est donc le couple
+    # (transport, technicien), pas le transport lui-même.
+    transport_technicians = (
+        TransportTechnician.objects
+        .filter(technician_id=technician_id, transport__scheduled_datetime__isnull=False)
+        .select_related('transport', 'transport__show', 'technician')
     )
     if exclude_transport_id is not None:
-        transports = transports.exclude(id=exclude_transport_id)
+        transport_technicians = transport_technicians.exclude(transport_id=exclude_transport_id)
 
-    commitments = [(st, st.show.effective_start, st.show.effective_end) for st in show_technicians]
-    commitments += [(t, t.scheduled_datetime, t.effective_end) for t in transports]
+    # Même règle que pour le matériel : un technicien assigné à un
+    # événement est engagé pendant son montage et son démontage.
+    commitments = [(st, st.show.engagement_start, st.show.engagement_end) for st in show_technicians]
+    commitments += [
+        (tt, tt.transport.scheduled_datetime, tt.transport.effective_end)
+        for tt in transport_technicians
+    ]
     return commitments
 
 
 def get_technician_conflicts(show, technician, exclude_id=None):
     """Retourne la liste des engagements existants (`ShowTechnician` ou
-    `Transport`) qui entreraient en conflit si `technician` était assigné à
-    `show`.
+    `TransportTechnician`) qui entreraient en conflit si `technician` était
+    assigné à `show`.
 
     `exclude_id` : id du `ShowTechnician` à exclure lors d'une mise à jour.
     """
-    new_start, new_end = show.effective_start, show.effective_end
+    new_start, new_end = show.engagement_start, show.engagement_end
+    # Voir `get_material_conflicts` : un événement et ses blocs rattachés
+    # forment une seule unité de travail, ils ne se disputent pas leur propre
+    # équipe. Sans bloc, `family_ids` vaut `{show.id}` — comportement d'origine.
+    show_family_ids = show.family_ids
     conflicts = []
     for obj, start, end in _technician_commitments(technician.id, exclude_show_technician_id=exclude_id):
-        if isinstance(obj, ShowTechnician) and obj.show_id == show.id:
-            continue  # même spectacle : jamais un conflit avec soi-même
+        if isinstance(obj, ShowTechnician) and obj.show_id in show_family_ids:
+            continue  # même événement (ou l'un de ses blocs) : pas un conflit
         if windows_overlap(new_start, new_end, start, end):
             conflicts.append(obj)
     return conflicts
@@ -232,10 +293,16 @@ def get_technician_conflicts(show, technician, exclude_id=None):
 
 def get_transport_conflicts(scheduled_datetime, duration_minutes, technician, exclude_id=None):
     """Retourne la liste des engagements existants (`ShowTechnician` ou
-    `Transport`) qui entreraient en conflit si `technician` était assigné à un
-    déplacement démarrant à `scheduled_datetime` et durant `duration_minutes`.
+    `TransportTechnician`) qui entreraient en conflit si `technician` était
+    affecté à un déplacement démarrant à `scheduled_datetime` et durant
+    `duration_minutes`.
 
-    `exclude_id` : id du `Transport` à exclure lors d'une mise à jour.
+    Reste par technicien : un déplacement pouvant en mobiliser plusieurs
+    (2026-07-30), l'appelant boucle sur chacun — voir
+    `TransportSerializer.validate`.
+
+    `exclude_id` : id du `Transport` à exclure lors d'une mise à jour (toutes
+    ses affectations, pas une seule).
     """
     new_start = scheduled_datetime
     new_end = scheduled_datetime + timedelta(minutes=duration_minutes)
@@ -244,6 +311,118 @@ def get_transport_conflicts(scheduled_datetime, duration_minutes, technician, ex
         if windows_overlap(new_start, new_end, start, end):
             conflicts.append(obj)
     return conflicts
+
+
+def find_departure_show(venue, before_datetime, exclude_show_id=None):
+    """Déduit le « spectacle de départ » d'un déplacement : le spectacle le
+    plus récent à `venue` dont la fenêtre effective se termine avant
+    `before_datetime` (voir note de module 2026-07-30).
+
+    Un lieu d'entrepôt (`venue.is_storage=True`) n'a jamais de spectacle de
+    départ — le matériel y est toujours réputé disponible, retourne `None`.
+    Retourne aussi `None` si aucun spectacle ne précède `before_datetime` à ce
+    lieu (première utilisation, ou lieu jamais utilisé pour un spectacle).
+    """
+    if venue is None or venue.is_storage or before_datetime is None:
+        return None
+    candidates = Show.objects.filter(venue_id=venue.id)
+    if exclude_show_id is not None:
+        candidates = candidates.exclude(id=exclude_show_id)
+    prior = [s for s in candidates if s.effective_end <= before_datetime]
+    if not prior:
+        return None
+    return max(prior, key=lambda s: s.effective_end)
+
+
+def find_arrival_show(venue, after_datetime, exclude_show_id=None):
+    """Symétrique de `find_departure_show` : déduit le « spectacle d'arrivée »
+    — le spectacle le plus proche à `venue` dont la fenêtre effective
+    commence après `after_datetime`. Mêmes exemptions (entrepôt, aucun
+    candidat trouvé → `None`)."""
+    if venue is None or venue.is_storage or after_datetime is None:
+        return None
+    candidates = Show.objects.filter(venue_id=venue.id)
+    if exclude_show_id is not None:
+        candidates = candidates.exclude(id=exclude_show_id)
+    upcoming = [s for s in candidates if s.effective_start >= after_datetime]
+    if not upcoming:
+        return None
+    return min(upcoming, key=lambda s: s.effective_start)
+
+
+def get_transport_reference_shows(show, transport_type, origin_venue, destination_venue):
+    """Retourne `(departure_show, arrival_show)` pour un déplacement donné.
+
+    Le spectacle connu (`show`, toujours renseigné) est le point d'ancrage :
+    l'autre bout est déduit par `find_departure_show`/`find_arrival_show` en
+    cherchant à partir de la fenêtre effective de `show`, PAS à partir de
+    `scheduled_datetime` (souvent encore vide pour une proposition
+    'to_approve' — voir Transport.scheduled_datetime).
+    """
+    if transport_type == Transport.TYPE_DELIVERY:
+        arrival_show = show
+        departure_show = (
+            find_departure_show(origin_venue, before_datetime=arrival_show.effective_start, exclude_show_id=arrival_show.id)
+            if arrival_show is not None else None
+        )
+    else:
+        departure_show = show
+        arrival_show = (
+            find_arrival_show(destination_venue, after_datetime=departure_show.effective_end, exclude_show_id=departure_show.id)
+            if departure_show is not None else None
+        )
+    return departure_show, arrival_show
+
+
+def validate_transport_window(show, transport_type, origin_venue, destination_venue, scheduled_datetime, duration_minutes):
+    """Vérifie qu'un déplacement (fenêtre `[scheduled_datetime, scheduled_datetime
+    + duration_minutes]`) a bien lieu ENTRE la fin effective du spectacle de
+    départ et le début effectif du spectacle d'arrivée (décision Samuel du
+    2026-07-30 — voir note de module). Retourne `None` si la fenêtre est
+    valide (ou si aucune borne ne s'applique des deux côtés — ex. entrepôt),
+    sinon un dict `{'detail': ..., 'departure_show': ..., 'arrival_show': ...}`
+    prêt à être renvoyé par le serializer.
+    """
+    if scheduled_datetime is None or duration_minutes is None:
+        return None
+
+    departure_show, arrival_show = get_transport_reference_shows(show, transport_type, origin_venue, destination_venue)
+    transport_end = scheduled_datetime + timedelta(minutes=duration_minutes)
+
+    if departure_show is not None and scheduled_datetime < departure_show.effective_end:
+        return {
+            'detail': (
+                f"Ce déplacement est prévu avant la fin de « {departure_show.title} » "
+                f"({departure_show.effective_end:%Y-%m-%d %H:%M}, buffer inclus) — le matériel "
+                "n'est pas encore disponible à ce moment."
+            ),
+            'departure_show': serialize_reference_show(departure_show),
+            'arrival_show': serialize_reference_show(arrival_show),
+        }
+    if arrival_show is not None and transport_end > arrival_show.effective_start:
+        return {
+            'detail': (
+                f"Ce déplacement se termine après le début de « {arrival_show.title} » "
+                f"({arrival_show.effective_start:%Y-%m-%d %H:%M}, buffer inclus) — le matériel "
+                "n'arriverait pas à temps."
+            ),
+            'departure_show': serialize_reference_show(departure_show),
+            'arrival_show': serialize_reference_show(arrival_show),
+        }
+    return None
+
+
+def serialize_reference_show(show):
+    """Représentation compacte d'un spectacle de référence (départ/arrivée
+    d'un déplacement) — `None` si non applicable (ex. entrepôt)."""
+    if show is None:
+        return None
+    return {
+        'id': show.id,
+        'title': show.title,
+        'effective_start': show.effective_start,
+        'effective_end': show.effective_end,
+    }
 
 
 def serialize_material_conflict(show_material):
@@ -270,6 +449,128 @@ def serialize_venue_conflict(show):
         'show_start': show.start_datetime,
         'show_end': show.end_datetime,
         'venue_id': show.venue_id,
+        # Nom du lieu, ajouté le 2026-07-30 pour l'écran « Conflits » (vue
+        # project-wide) : les deux côtés d'un conflit de lieu partagent
+        # toujours le même lieu, utile à afficher sans requête supplémentaire.
+        'venue_name': show.venue.name,
+    }
+
+
+def _technician_conflict_object_key(obj):
+    """Clé stable pour dédupliquer une paire de conflit technicien, peu
+    importe le type d'engagement (`ShowTechnician` ou `TransportTechnician`) —
+    voir `get_project_conflicts`."""
+    if isinstance(obj, ShowTechnician):
+        return ('show_technician', obj.id)
+    # Depuis le 2026-07-30 l'engagement est le couple (transport, technicien) :
+    # deux personnes sur le même déplacement sont deux engagements distincts,
+    # et donc deux conflits distincts s'ils chevauchent chacun autre chose.
+    return ('transport_technician', obj.id)
+
+
+def get_project_conflicts(project):
+    """Agrège et déduplique tous les conflits (lieu, matériel, technicien) du
+    projet entier, pour l'écran « Conflits » (ConflitDetail.dc.html porté en
+    vue d'ensemble plutôt qu'un chevauchement précis — ajouté le 2026-07-30).
+
+    `ShowViewSet.conflicts` (ci-dessus dans views.py) répond à l'échelle d'un
+    seul spectacle et peut donc renvoyer la « même » paire deux fois (vue du
+    côté A puis du côté B) si on l'appelait pour chaque spectacle du projet.
+    Ici chaque paire n'apparaît qu'une seule fois, peu importe de quel côté
+    elle a été détectée en premier, via une clé de dédoublonnage par
+    frozenset des ids des deux objets impliqués.
+
+    Retourne un dict à trois clés (`venue_conflicts`, `material_conflicts`,
+    `technician_conflicts`), chaque entrée étant `{'a': ..., 'b': ...}` — les
+    deux côtés du conflit, sérialisés avec les fonctions `serialize_*`
+    existantes, pour que le frontend affiche la comparaison sans requête
+    supplémentaire.
+    """
+    shows = list(Show.objects.filter(project_id=project.id).select_related('venue'))
+    shows_by_id = {s.id: s for s in shows}
+
+    seen_venue_pairs = set()
+    venue_conflicts = []
+    for show in shows:
+        others = get_venue_conflicts(
+            show.venue, show.effective_start, show.effective_end,
+            exclude_id=show.id, exclude_family_ids=show.family_ids,
+        )
+        for other in others:
+            if other.id not in shows_by_id:
+                continue
+            key = frozenset({show.id, other.id})
+            if key in seen_venue_pairs:
+                continue
+            seen_venue_pairs.add(key)
+            venue_conflicts.append({
+                'a': serialize_venue_conflict(show),
+                'b': serialize_venue_conflict(other),
+            })
+
+    show_materials = list(
+        ShowMaterial.objects.filter(show__project_id=project.id)
+        .select_related('show', 'material', 'show__venue')
+    )
+    seen_material_pairs = set()
+    material_conflicts = []
+    for sm in show_materials:
+        others = get_material_conflicts(sm.show, sm.material, exclude_id=sm.id, quantity=sm.quantity)
+        for other in others:
+            key = frozenset({sm.id, other.id})
+            if key in seen_material_pairs:
+                continue
+            seen_material_pairs.add(key)
+            material_conflicts.append({
+                'a': serialize_material_conflict(sm),
+                'b': serialize_material_conflict(other),
+            })
+
+    show_technicians = list(
+        ShowTechnician.objects.filter(show__project_id=project.id).select_related('show', 'technician')
+    )
+    transport_technicians = list(
+        TransportTechnician.objects
+        .filter(transport__show__project_id=project.id, transport__scheduled_datetime__isnull=False)
+        .select_related('transport', 'transport__show', 'technician')
+    )
+    seen_tech_pairs = set()
+    technician_conflicts = []
+
+    for st in show_technicians:
+        others = get_technician_conflicts(st.show, st.technician, exclude_id=st.id)
+        for other in others:
+            key = frozenset({_technician_conflict_object_key(st), _technician_conflict_object_key(other)})
+            if key in seen_tech_pairs:
+                continue
+            seen_tech_pairs.add(key)
+            technician_conflicts.append({
+                'a': serialize_technician_conflict(st),
+                'b': serialize_technician_conflict(other),
+            })
+
+    for tt in transport_technicians:
+        transport = tt.transport
+        others = get_transport_conflicts(
+            transport.scheduled_datetime,
+            transport.estimated_duration_minutes,
+            tt.technician,
+            exclude_id=transport.id,
+        )
+        for other in others:
+            key = frozenset({_technician_conflict_object_key(tt), _technician_conflict_object_key(other)})
+            if key in seen_tech_pairs:
+                continue
+            seen_tech_pairs.add(key)
+            technician_conflicts.append({
+                'a': serialize_technician_conflict(tt),
+                'b': serialize_technician_conflict(other),
+            })
+
+    return {
+        'venue_conflicts': venue_conflicts,
+        'material_conflicts': material_conflicts,
+        'technician_conflicts': technician_conflicts,
     }
 
 
@@ -277,20 +578,25 @@ def serialize_technician_conflict(obj):
     """Représentation compacte d'un conflit technicien, pour la réponse API.
 
     `obj` peut être un `ShowTechnician` (assignation à un spectacle) ou un
-    `Transport` (livraison/ramassage) — les deux sont désormais croisés
-    ensemble par `get_technician_conflicts`/`get_transport_conflicts`.
+    `TransportTechnician` (affectation à un déplacement) — les deux sont
+    croisés ensemble par `get_technician_conflicts`/`get_transport_conflicts`.
+
+    Le type reste `'transport'` côté API malgré le passage à la table de
+    liaison le 2026-07-30 : c'est bien un déplacement que le frontend affiche,
+    la clé `transport_id` pointe toujours la fiche à ouvrir.
     """
-    if isinstance(obj, Transport):
+    if isinstance(obj, TransportTechnician):
+        transport = obj.transport
         return {
             'type': 'transport',
-            'transport_id': obj.id,
-            'show_id': obj.show_id,
-            'show_title': obj.show.title,
-            'transport_type': obj.transport_type,
-            'scheduled_datetime': obj.scheduled_datetime,
-            'estimated_duration_minutes': obj.estimated_duration_minutes,
+            'transport_id': transport.id,
+            'show_id': transport.show_id,
+            'show_title': transport.show.title,
+            'transport_type': transport.transport_type,
+            'scheduled_datetime': transport.scheduled_datetime,
+            'estimated_duration_minutes': transport.estimated_duration_minutes,
             'technician_id': obj.technician_id,
-            'technician_name': obj.technician.name if obj.technician_id else None,
+            'technician_name': obj.technician.name,
         }
 
     st = obj

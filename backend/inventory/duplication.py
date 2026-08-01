@@ -4,18 +4,16 @@ section 4quater. Ajouté le 2026-07-19 à la demande de Samuel : démarrer une
 nouvelle édition d'un mandat (même client, même matériel/lieux/techniciens de
 base) sans repartir de zéro, sans traîner l'horaire de l'édition précédente.
 
-Copie `Venue`, `Material` (hiérarchie parent/enfant préservée, remappée vers
-les nouvelles lignes) et `Technician` du projet source vers un nouveau
-projet. Exclut volontairement toute donnée d'assignation/horaire (`Show`,
-`ShowMaterial`, `ShowTechnician`, `Transport`) — une nouvelle édition a son
-propre calendrier. `Department` n'est jamais remappé : c'est un référentiel
-commun à tous les projets (voir `Department`, models.py), pas une donnée de
-projet à dupliquer.
+Copie `Venue`, `MaterialCategory`, `Material` (hiérarchie parent/enfant
+préservée, remappée vers les nouvelles lignes) et `Technician` du projet
+source vers un nouveau projet. Exclut volontairement toute donnée
+d'assignation/horaire (`Show`, `ShowMaterial`, `ShowTechnician`,
+`Transport`) — une nouvelle édition a son propre calendrier.
 """
 
 from django.db import transaction
 
-from .models import Material, Project, Technician, Venue
+from .models import Material, MaterialCategory, Project, Technician, Venue
 
 
 def duplicate_project(source_project, name, client_name=''):
@@ -55,6 +53,24 @@ def duplicate_project(source_project, name, client_name=''):
             )
             venue_id_map[venue.id] = new_venue
 
+        # Catégories de matériel (devenues une table par projet le
+        # 2026-07-30) : le signal `creer_categories_par_defaut` a déjà doté
+        # `new_project` des 9 catégories par défaut à sa création, on complète
+        # ici avec celles que Samuel a ajoutées/renommées dans le projet
+        # source. `get_or_create` sur le nom évite de dupliquer les défauts,
+        # et `update` réaligne la couleur si elle a été modifiée à la source.
+        category_id_map = {}
+        for category in source_project.material_categories.all():
+            new_category, created = MaterialCategory.objects.get_or_create(
+                project=new_project,
+                name=category.name,
+                defaults={'color': category.color},
+            )
+            if not created and new_category.color != category.color:
+                new_category.color = category.color
+                new_category.save(update_fields=['color'])
+            category_id_map[category.id] = new_category
+
         # Matériel — deux passes : la hiérarchie parent/enfant (`parent_material`,
         # self-FK) ne peut être remappée qu'une fois TOUTES les copies créées.
         material_id_map = {}
@@ -64,11 +80,8 @@ def duplicate_project(source_project, name, client_name=''):
                 project=new_project,
                 name=material.name,
                 description=material.description,
-                category=material.category,
+                category=category_id_map.get(material.category_id),
                 venue=venue_id_map.get(material.venue_id),
-                # `department` est un référentiel commun à tous les projets — on
-                # garde la même ligne, jamais remappée (voir docstring de module).
-                department=material.department,
                 ownership_status=material.ownership_status,
                 is_active=material.is_active,
                 quantity=material.quantity,
@@ -97,5 +110,6 @@ def duplicate_project(source_project, name, client_name=''):
             'venues': len(venue_id_map),
             'materials': len(material_id_map),
             'technicians': technician_count,
+            'material_categories': len(category_id_map),
         }
         return new_project, counts
