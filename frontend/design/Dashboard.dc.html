@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@600;700;800&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0b0d10 radial-gradient(rgba(255,255,255,.07) 1px,transparent 1.5px) 0 0/22px 22px;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+.gmp-nav{width:220px}
+.gmp-navlabel{display:inline}
+.gmp-tabbar{display:none}
+@media (max-width:860px){
+  .gmp-nav{display:none}
+  .gmp-tabbar{display:flex}
+  .gmp-main{padding:20px !important}
+}
+</style>
+</helmet>
+
+<div style="display:flex;min-height:100vh;background:#0b0d10 radial-gradient(rgba(255,255,255,.09) 1px,transparent 1.5px) 0 0/22px 22px">
+  <nav class="gmp-nav" style="flex:none;background:#0e1013;border-right:1px solid rgba(255,255,255,.08);padding:24px 16px;display:flex;flex-direction:column;gap:4px">
+    <div style="font:700 15px/1 'JetBrains Mono',ui-monospace,monospace;letter-spacing:.08em;text-transform:uppercase;color:#fff;padding:0 8px 24px">Régie</div>
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 8px;border-radius:8px 8px 0 0;background:rgba(155,138,239,.18);color:#d0c8f0;font:600 13px system-ui">
+      <span style="width:8px;height:8px;border-radius:2px;background:#9b8aef;flex:none"></span>Tableau de bord
+    </div>
+    <div style="padding:10px 8px;border-radius:8px;color:rgba(255,255,255,.55);font:500 13px system-ui">Matériel</div>
+    <div style="padding:10px 8px;border-radius:8px;color:rgba(255,255,255,.55);font:500 13px system-ui">Spectacles</div>
+    <div style="padding:10px 8px;border-radius:8px;color:rgba(255,255,255,.55);font:500 13px system-ui">Lieux</div>
+    <div style="padding:10px 8px;border-radius:8px;color:rgba(255,255,255,.55);font:500 13px system-ui">Départements</div>
+    <div style="padding:10px 8px;border-radius:8px;color:rgba(255,255,255,.55);font:500 13px system-ui">Techniciens</div>
+    <div style="margin-top:auto;padding:10px 8px;color:rgba(255,255,255,.3);font:500 11px system-ui">v0.1 · JD</div>
+  </nav>
+
+  <div class="gmp-main" style="flex:1;padding:32px 40px 96px;display:flex;flex-direction:column;gap:22px;min-width:0">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+      <h1 style="margin:0;font:700 27px/1.2 'JetBrains Mono',ui-monospace,monospace;letter-spacing:.06em;text-transform:uppercase;color:#fff">Tableau de bord</h1>
+      <div style="font:500 12px system-ui;color:rgba(255,255,255,.4)">Jeudi 17 juillet 2026</div>
+    </div>
+
+    <sc-if value="{{ hasConflicts }}" hint-placeholder-val="{{ true }}">
+      <div style="display:flex;gap:12px;align-items:center;padding:14px 18px;border-radius:0 12px 0 12px;background:oklch(0.27 0.07 35);border:1px solid oklch(0.5 0.15 35)">
+        <span style="width:10px;height:10px;border-radius:50%;background:oklch(0.7 0.16 35);flex:none;box-shadow:0 0 0 4px oklch(0.7 0.16 35 / .25)"></span>
+        <div style="flex:1">
+          <div style="font:700 13.5px system-ui;color:#ffe3c9">{{ conflictCount }} conflit d'horaire actif</div>
+          <div style="font:400 12px system-ui;color:rgba(255,217,207,.75)">Micro sans fil HF#2 réservé sur 2 spectacles qui se chevauchent</div>
+        </div>
+        <div style="font:600 12px system-ui;color:#ffe3c9;padding:6px 12px;border:1px solid oklch(0.6 0.15 35);border-radius:0 8px 0 8px;white-space:nowrap;cursor:pointer">Voir le conflit →</div>
+      </div>
+    </sc-if>
+
+    <div style="background:#161a1f;border:1px solid rgba(255,255,255,.07);border-radius:0 12px 0 12px;padding:20px">
+      <div style="font:700 12px 'JetBrains Mono',ui-monospace,monospace;text-transform:uppercase;letter-spacing:.12em;color:rgba(255,255,255,.65);margin-bottom:16px">Cette semaine</div>
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <sc-for list="{{ days }}" as="day" hint-placeholder-count="4">
+          <div style="display:grid;grid-template-columns:140px 1fr;gap:12px;align-items:center">
+            <div style="font:600 12px system-ui;color:rgba(255,255,255,.55)">{{ day.label }}</div>
+            <div style="position:relative;height:{{ day.rowHeight }};background:#1b1f25;border-radius:0 8px 0 8px">
+              <sc-for list="{{ day.blocks }}" as="block" hint-placeholder-count="1">
+                <div style="position:absolute;top:{{ block.top }};height:30px;border-radius:0 6px 0 6px;display:flex;flex-direction:column;justify-content:center;padding:0 10px;left:{{ block.left }};width:{{ block.width }};background:{{ block.color }};color:{{ block.textColor }};overflow:hidden">
+                  <div style="font:700 11px system-ui;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ block.name }}</div>
+                  <div style="font:600 9.5px system-ui;opacity:.8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ block.time }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:16px;font:500 11px system-ui;color:rgba(255,255,255,.45)">
+        <div style="display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:2px;background:oklch(0.7 0.16 35)"></span>Chevauchement (conflit)</div>
+        <div style="display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:2px;background:oklch(0.72 0.13 165)"></span>Aucun conflit</div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px">
+      <div style="background:#161a1f;border:1px solid rgba(255,255,255,.07);border-radius:0 12px 0 12px;padding:16px">
+        <div style="font:800 34px 'JetBrains Mono',ui-monospace,monospace;letter-spacing:.02em;color:#fff">{{ stats.shows }}</div>
+        <div style="font:500 12px system-ui;color:rgba(255,255,255,.5)">spectacles ce mois</div>
+      </div>
+      <div style="background:#161a1f;border:1px solid rgba(255,255,255,.07);border-radius:0 12px 0 12px;padding:16px">
+        <div style="font:800 34px 'JetBrains Mono',ui-monospace,monospace;letter-spacing:.02em;color:oklch(0.72 0.16 35)">{{ conflictCount }}</div>
+        <div style="font:500 12px system-ui;color:rgba(255,255,255,.5)">conflit(s) à résoudre</div>
+      </div>
+      <div style="background:#161a1f;border:1px solid rgba(255,255,255,.07);border-radius:0 12px 0 12px;padding:16px">
+        <div style="font:800 34px 'JetBrains Mono',ui-monospace,monospace;letter-spacing:.02em;color:#fff">{{ stats.items }}</div>
+        <div style="font:500 12px system-ui;color:rgba(255,255,255,.5)">items en inventaire</div>
+      </div>
+    </div>
+
+    <div style="background:#161a1f;border:1px solid rgba(255,255,255,.07);border-radius:0 12px 0 12px;padding:20px">
+      <div style="font:700 12px 'JetBrains Mono',ui-monospace,monospace;text-transform:uppercase;letter-spacing:.12em;color:rgba(255,255,255,.65);margin-bottom:12px">Spectacles à venir</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <sc-for list="{{ upcoming }}" as="show" hint-placeholder-count="3">
+          <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:0 8px 0 8px;background:{{ show.rowBg }};border:{{ show.rowBorder }}">
+            <span style="width:8px;height:8px;border-radius:50%;background:{{ show.dotColor }};flex:none"></span>
+            <div style="flex:1;min-width:0"><div style="font:600 14px 'JetBrains Mono',ui-monospace,monospace;color:#fff">{{ show.title }}</div><div style="font:400 11.5px system-ui;color:rgba(255,255,255,.5)">{{ show.venue }} · {{ show.time }}</div></div>
+            <sc-if value="{{ show.conflict }}" hint-placeholder-val="{{ false }}">
+              <div style="font:700 10.5px ui-monospace;color:oklch(0.85 0.13 35);background:oklch(0.7 0.16 35 / .18);padding:3px 8px;border-radius:0 10px 0 10px;flex:none">CONFLIT</div>
+            </sc-if>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+
+  <nav class="gmp-tabbar" style="position:fixed;left:0;right:0;bottom:0;border-top:1px solid rgba(255,255,255,.08);background:#0e1013">
+    <div style="flex:1;padding:10px 0 12px;display:flex;flex-direction:column;align-items:center;gap:4px;color:#d0c8f0"><span style="width:20px;height:20px;border-radius:5px;background:oklch(0.65 0.15 290)"></span><span style="font:600 10px system-ui">Accueil</span></div>
+    <div style="flex:1;padding:10px 0 12px;display:flex;flex-direction:column;align-items:center;gap:4px;color:rgba(255,255,255,.4)"><span style="width:20px;height:20px;border-radius:5px;background:rgba(255,255,255,.15)"></span><span style="font:500 10px system-ui">Matériel</span></div>
+    <div style="flex:1;padding:10px 0 12px;display:flex;flex-direction:column;align-items:center;gap:4px;color:rgba(255,255,255,.4)"><span style="width:20px;height:20px;border-radius:5px;background:rgba(255,255,255,.15)"></span><span style="font:500 10px system-ui">Spectacles</span></div>
+    <div style="flex:1;padding:10px 0 12px;display:flex;flex-direction:column;align-items:center;gap:4px;color:rgba(255,255,255,.4)"><span style="width:20px;height:20px;border-radius:5px;background:rgba(255,255,255,.15)"></span><span style="font:500 10px system-ui">Sorties</span></div>
+  </nav>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const WIN_START = 16 * 60, WIN_END = 24 * 60; // fenêtre affichée 16h–minuit
+    const fmt = m => { const h = Math.floor(m / 60), mm = m % 60; return h + 'h' + (mm ? String(mm).padStart(2, '0') : '00'); };
+    const layoutDay = (label, raw) => {
+      const items = raw.map(r => ({ ...r, time: fmt(r.start) + '–' + fmt(r.end) }));
+      const conflictOK = items.some((a, i) => items.some((b, j) => i !== j && a.start < b.end && b.start < a.end));
+      // greedy lane assignment (interval graph coloring)
+      const sorted = [...items].sort((a, b) => a.start - b.start);
+      const laneEnds = [];
+      sorted.forEach(it => {
+        let lane = laneEnds.findIndex(end => end <= it.start);
+        if (lane === -1) { lane = laneEnds.length; laneEnds.push(it.end); } else { laneEnds[lane] = it.end; }
+        it.lane = lane;
+      });
+      const laneCount = laneEnds.length;
+      const blocks = sorted.map(it => {
+        const conflict = items.some(o => o !== it && it.start < o.end && o.start < it.end);
+        return {
+          left: ((it.start - WIN_START) / (WIN_END - WIN_START) * 100) + '%',
+          width: ((it.end - it.start) / (WIN_END - WIN_START) * 100) + '%',
+          top: (it.lane * 34) + 'px',
+          name: it.name, time: it.time,
+          color: conflict ? 'oklch(0.7 0.16 35)' : 'oklch(0.72 0.13 165)',
+          textColor: conflict ? '#2a1400' : '#062622'
+        };
+      });
+      return { label, blocks, rowHeight: (laneCount * 34 - 4) + 'px' };
+    };
+    const rawDaysList = [
+      layoutDay('Jeu 17 juil.', [
+        { start: 18 * 60 + 30, end: 21 * 60, name: 'Vertiges' },
+        { start: 19 * 60 + 15, end: 23 * 60, name: 'Marée basse' }
+      ]),
+      layoutDay('Ven 18 juil.', [
+        { start: 19 * 60, end: 22 * 60, name: 'Rites' }
+      ]),
+      layoutDay('Sam 19 juil.', [
+        { start: 19 * 60, end: 22 * 60, name: 'Rites' }
+      ]),
+      layoutDay('Dim 20 juil.', [
+        { start: 19 * 60, end: 22 * 60, name: 'Vertiges' },
+        { start: 19 * 60, end: 22 * 60 + 30, name: 'Marée basse' },
+        { start: 19 * 60 + 30, end: 22 * 60, name: 'Rites' },
+        { start: 19 * 60, end: 21 * 60 + 30, name: 'Éclairage — montage' },
+        { start: 19 * 60 + 15, end: 22 * 60, name: 'Son — test' }
+      ])
+    ];
+    const days = rawDaysList;
+    const upcomingRaw = [
+      { title: 'Vertiges — répétition', venue: 'Théâtre Prospero', time: '18h30–21h00', conflict: true,
+        rowBg: 'oklch(0.27 0.07 35 / .5)', rowBorder: '1px solid oklch(0.5 0.15 35 / .6)', dotColor: 'oklch(0.7 0.16 35)' },
+      { title: 'Rites — représentation', venue: 'Salle Ex-Centris', time: '19h00–22h00', conflict: false,
+        rowBg: '#1b1f25', rowBorder: '1px solid transparent', dotColor: 'oklch(0.72 0.13 165)' },
+      { title: 'Marée basse — répétition', venue: 'Studio 3, Biennale', time: 'Dim 20 juil. 19h15–23h00', conflict: false,
+        rowBg: '#1b1f25', rowBorder: '1px solid transparent', dotColor: 'oklch(0.72 0.13 165)' }
+    ];
+    const upcoming = upcomingRaw;
+    const conflictCount = upcoming.filter(s => s.conflict).length;
+    return {
+      days, upcoming,
+      conflictCount,
+      hasConflicts: conflictCount > 0,
+      stats: { shows: 14, items: 121 }
+    };
+  }
+}
+
+</script>
+</body>
+</html>

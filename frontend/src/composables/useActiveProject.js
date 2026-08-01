@@ -1,0 +1,64 @@
+import { ref, computed } from 'vue'
+import { api } from '../api/client'
+
+/**
+ * Bascule entre productions (voir architecture.md, section 4quater et
+ * workflow 7) : entièrement côté frontend, sans recharger/exporter de
+ * fichier. Le projet actif est mémorisé dans localStorage et ajouté en
+ * `?project=<id>` sur les appels API qui isolent leurs données par projet
+ * (venues, materials, technicians, shows — pas settings/users, communs à
+ * tous les projets).
+ */
+
+const STORAGE_KEY = 'gmp_active_project_id'
+
+const projects = ref([])
+const activeProjectId = ref(Number(localStorage.getItem(STORAGE_KEY)) || null)
+const loaded = ref(false)
+const loading = ref(false)
+const error = ref(null)
+
+async function loadProjects() {
+  if (loaded.value || loading.value) return
+  loading.value = true
+  error.value = null
+  try {
+    // ProjectViewSet n'a pas de filtre `?status=` côté serveur (queryset brut,
+    // pas de ProjectFilteredMixin) — on filtre les projets archivés côté client.
+    const data = await api.get('/projects/')
+    const all = Array.isArray(data) ? data : (data.results ?? [])
+    projects.value = all.filter((p) => p.status === 'active')
+
+    const stillValid = projects.value.some((p) => p.id === activeProjectId.value)
+    if (!stillValid) {
+      activeProjectId.value = projects.value[0]?.id ?? null
+    }
+    loaded.value = true
+  } catch (e) {
+    error.value = e
+  } finally {
+    loading.value = false
+  }
+}
+
+function setActiveProject(id) {
+  activeProjectId.value = id
+  localStorage.setItem(STORAGE_KEY, String(id))
+}
+
+// Force un rechargement de la liste (ex. après création d'un projet depuis
+// ReglagesView.vue) — contourne le garde `loaded` qui limite normalement à un
+// seul fetch par session SPA (voir note du module ci-dessus).
+async function refreshProjects() {
+  loaded.value = false
+  await loadProjects()
+}
+
+const activeProject = computed(
+  () => projects.value.find((p) => p.id === activeProjectId.value) ?? null,
+)
+
+export function useActiveProject() {
+  loadProjects()
+  return { projects, activeProjectId, activeProject, setActiveProject, refreshProjects, loading, error }
+}

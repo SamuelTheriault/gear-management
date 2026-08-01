@@ -1,296 +1,774 @@
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --social-bg: rgba(244, 243, 236, 0.5);
-  --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
-
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
-
-  font: 18px/145% var(--sans);
-  letter-spacing: 0.18px;
-  color-scheme: light dark;
-  color: var(--text);
-  background: var(--bg);
+  color-scheme: dark;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 
-  @media (max-width: 1024px) {
-    font-size: 16px;
-  }
+  /* -------------------------------------------------------------------------
+     Tokens de base (2026-07-31, suite de l'audit ergonomie/navigation —
+     voir audit_ergonomie_navigation.md, section 5). Avant ces variables,
+     ces valeurs étaient répétées en dur dans des dizaines de blocs
+     `<style scoped>` à travers l'app (jusqu'à 54 fois pour une seule) —
+     chaque nouvel écran repartait d'une copie du dernier plutôt que d'une
+     référence commune. Ce changement est un renommage pur : les valeurs
+     n'ont pas bougé, aucune divergence déjà présente (ex. tailles des
+     `header__title`, padding des `.chip`) n'a été « corrigée » au passage —
+     ça reste à faire consciemment, écran par écran, voir le reste de
+     l'audit. `--border-card` est repris tel quel là où la même valeur
+     servait à autre chose qu'une bordure de carte (le fond pointillé de
+     `LoginView.vue`, identique au pixel près) — pas un fond de carte, mais
+     la même teinte, donc la même variable. */
+  --accent: #d0c8f0;
+  --bg-card: #161a1f;
+  --border-card: rgba(255, 255, 255, 0.07);
+  --radius-notch-lg: 0 12px 0 12px;
+  --radius-notch-sm: 0 8px 0 8px;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --social-bg: rgba(47, 48, 58, 0.5);
-    --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
-  }
-
-  #social .button-icon {
-    filter: invert(1) brightness(2);
-  }
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
 body {
   margin: 0;
 }
 
-h1,
-h2 {
-  font-family: var(--heading);
-  font-weight: 500;
-  color: var(--text-h);
-}
-
-h1 {
-  font-size: 56px;
-  letter-spacing: -1.68px;
-  margin: 32px 0;
-  @media (max-width: 1024px) {
-    font-size: 36px;
-    margin: 20px 0;
-  }
-}
-h2 {
-  font-size: 24px;
-  line-height: 118%;
-  letter-spacing: -0.24px;
-  margin: 0 0 8px;
-  @media (max-width: 1024px) {
-    font-size: 20px;
-  }
-}
-p {
-  margin: 0;
-}
-
-code,
-.counter {
-  font-family: var(--mono);
-  display: inline-flex;
-  border-radius: 4px;
-  color: var(--text-h);
-}
-
-code {
-  font-size: 15px;
-  line-height: 135%;
-  padding: 4px 8px;
-  background: var(--code-bg);
-}
-
-.counter {
-  font-size: 16px;
-  padding: 5px 10px;
-  border-radius: 5px;
-  color: var(--accent);
-  background: var(--accent-bg);
-  border: 2px solid transparent;
-  transition: border-color 0.3s;
-  margin-bottom: 24px;
-
-  &:hover {
-    border-color: var(--accent-border);
-  }
-  &:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-}
-
-.hero {
-  position: relative;
-
-  .base,
-  .framework,
-  .vite {
-    inset-inline: 0;
-    margin: 0 auto;
-  }
-
-  .base {
-    width: 170px;
-    position: relative;
-    z-index: 0;
-  }
-
-  .framework,
-  .vite {
-    position: absolute;
-  }
-
-  .framework {
-    z-index: 1;
-    top: 34px;
-    height: 28px;
-    transform: perspective(2000px) rotateZ(300deg) rotateX(44deg) rotateY(39deg)
-      scale(1.4);
-  }
-
-  .vite {
-    z-index: 0;
-    top: 107px;
-    height: 26px;
-    width: auto;
-    transform: perspective(2000px) rotateZ(300deg) rotateX(40deg) rotateY(39deg)
-      scale(0.8);
-  }
-}
-
 #app {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
-  min-height: 100svh;
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
+  min-height: 100vh;
 }
 
-#center {
+/* ---------------------------------------------------------------------------
+   Mode lecture/édition des fiches de détail (lieu, matériel, technicien,
+   spectacle) — voir composables/useFicheEdition.js pour la logique.
+
+   Ces classes sont volontairement GLOBALES et non `scoped` : les quatre
+   fiches partagent exactement le même formulaire d'édition, et dupliquer
+   ~90 lignes de CSS dans chaque `<style scoped>` garantissait qu'elles
+   divergeraient à la première retouche. Le préfixe `fiche-` les distingue
+   des classes locales de chaque vue.
+   ------------------------------------------------------------------------ */
+
+.fiche-actions {
+  margin-left: auto;
   display: flex;
-  flex-direction: column;
-  gap: 25px;
-  place-content: center;
-  place-items: center;
-  flex-grow: 1;
-
-  @media (max-width: 1024px) {
-    padding: 32px 20px 24px;
-    gap: 18px;
-  }
-}
-
-#next-steps {
-  display: flex;
-  border-top: 1px solid var(--border);
-  text-align: left;
-
-  & > div {
-    flex: 1 1 0;
-    padding: 32px;
-    @media (max-width: 1024px) {
-      padding: 24px 20px;
-    }
-  }
-
-  .icon {
-    margin-bottom: 16px;
-    width: 22px;
-    height: 22px;
-  }
-
-  @media (max-width: 1024px) {
-    flex-direction: column;
-    text-align: center;
-  }
-}
-
-#docs {
-  border-right: 1px solid var(--border);
-
-  @media (max-width: 1024px) {
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-  }
-}
-
-#next-steps ul {
-  list-style: none;
-  padding: 0;
-  display: flex;
+  align-items: center;
   gap: 8px;
-  margin: 32px 0 0;
+}
 
-  .logo {
-    height: 18px;
-  }
+.fiche-btn {
+  border: 0;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.75);
+  font: 600 11.5px system-ui;
+  padding: 8px 14px;
+  border-radius: var(--radius-notch-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
 
-  a {
-    color: var(--text-h);
-    font-size: 16px;
-    border-radius: 6px;
-    background: var(--social-bg);
-    display: flex;
-    padding: 6px 12px;
-    align-items: center;
-    gap: 8px;
-    text-decoration: none;
-    transition: box-shadow 0.3s;
+.fiche-btn--primary {
+  background: var(--accent);
+  color: #0b0d10;
+}
 
-    &:hover {
-      box-shadow: var(--shadow);
-    }
-    .button-icon {
-      height: 18px;
-      width: 18px;
-    }
-  }
+.fiche-btn--danger {
+  background: oklch(0.27 0.07 35);
+  border: 1px solid oklch(0.5 0.15 35);
+  color: oklch(0.85 0.1 35);
+}
 
-  @media (max-width: 1024px) {
-    margin-top: 20px;
-    flex-wrap: wrap;
-    justify-content: center;
+.fiche-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
-    li {
-      flex: 1 1 calc(50% - 8px);
-    }
+.fiche-edit-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-notch-lg);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
 
-    a {
-      width: 100%;
-      justify-content: center;
-      box-sizing: border-box;
-    }
+.fiche-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 640px) {
+  .fiche-grid {
+    grid-template-columns: 1fr;
   }
 }
 
-#spacer {
-  height: 88px;
-  border-top: 1px solid var(--border);
-  @media (max-width: 1024px) {
-    height: 48px;
-  }
+.fiche-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.ticks {
-  position: relative;
+.fiche-field--wide,
+.fiche-field--full {
+  grid-column: 1 / -1;
+}
+
+.fiche-label {
+  font: 700 11px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.fiche-input {
+  box-sizing: border-box;
   width: 100%;
+  padding: 9px 12px;
+  border-radius: var(--radius-notch-sm);
+  background: #1b1f25;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font: 500 13.5px system-ui;
+  color: #fff;
+}
 
-  &::before,
-  &::after {
-    content: '';
-    position: absolute;
-    top: -4.5px;
-    border: 5px solid transparent;
-  }
+.fiche-input--code {
+  font: 700 13.5px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
 
-  &::before {
-    left: 0;
-    border-left-color: var(--border);
+.fiche-input--mono {
+  font-family: var(--font-mono);
+}
+
+.fiche-input--area {
+  resize: vertical;
+  font: 500 13px system-ui;
+  line-height: 1.5;
+}
+
+.fiche-input--error {
+  border-color: oklch(0.6 0.15 35);
+}
+
+.fiche-error {
+  font: 500 11.5px system-ui;
+  color: oklch(0.78 0.16 35);
+}
+
+.fiche-hint {
+  font: 500 11.5px system-ui;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+/* Zone de suppression, en bas du formulaire d'édition et séparée du reste :
+   une suppression ne doit pas se cliquer par accident (2026-07-30). */
+.fiche-danger {
+  margin-top: 6px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-card);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.fiche-danger__hint {
+  font: 400 11.5px system-ui;
+  color: rgba(255, 255, 255, 0.35);
+  flex: 1;
+  min-width: 180px;
+}
+
+.fiche-confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 120;
+}
+
+.fiche-confirm {
+  width: 100%;
+  max-width: 440px;
+  background: var(--bg-card);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-notch-lg);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.fiche-confirm__title {
+  font: 700 15px var(--font-mono);
+  color: #fff;
+}
+
+.fiche-confirm__text {
+  margin: 0;
+  font: 400 13px/1.5 system-ui;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.fiche-confirm__list {
+  margin: 0;
+  padding-left: 18px;
+  font: 400 12.5px/1.6 system-ui;
+  color: rgba(255, 217, 207, 0.9);
+}
+
+.fiche-confirm__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ---------------------------------------------------------------------------
+   Titre de page/fiche, puces de filtre, fond de modale (2026-07-31, point 2
+   de l'audit ergonomie/navigation — voir audit_ergonomie_navigation.md).
+
+   Avant ce changement, chacun de ces trois blocs existait en 5 à 8 copies
+   scoped à travers l'app, sous des noms de classe différents et avec des
+   valeurs qui avaient dérivé (ex. `.chip` allait de 6×12px à 9×16px de
+   padding selon l'écran). Contrairement au renommage pur du 2026-07-31
+   précédent (tokens de couleur/rayon), une valeur canonique a dû être
+   choisie ici — la valeur déjà majoritaire dans le code, validée avec
+   Samuel : `.page-title` gagne 3px sur les fiches Lieu/Matériel/Transport,
+   `.chip` grandit légèrement sur Cohérence/Réglages/Transport. Le fond de
+   modale n'avait pas de dérive visible (juste des noms différents), donc
+   pas de question posée sur ce point-là.
+
+   `.page-title` sert aux écrans de liste et au Dashboard (libellé de
+   section statique, ex. « Matériel », « Tableau de bord ») — en
+   majuscules. `.header__title` sert aux fiches de détail et aux rapports
+   (Cohérence/Conflits) où le titre est un nom d'entité ou une phrase, pas
+   un simple libellé — jamais en majuscules. Ce sont deux rôles distincts,
+   pas une troisième dérive à corriger : ne pas les fusionner en une seule
+   classe. La fiche Technicien n'utilise ni l'un ni l'autre (en-tête à
+   avatar, `header__name`/`header__role`, restés locaux à
+   TechnicienDetailView.vue) — c'est le point 7 de l'audit, pas celui-ci. */
+
+.page-title {
+  margin: 0;
+  font: 700 27px/1.2 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #fff;
+}
+
+.header__title {
+  margin: 0;
+  font: 700 27px/1.2 var(--font-mono);
+  letter-spacing: 0.04em;
+  color: #fff;
+}
+
+.chip {
+  padding: 7px 14px;
+  border-radius: var(--radius-notch-sm);
+  font: 600 12px system-ui;
+  cursor: pointer;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.chip--active {
+  background: rgba(155, 138, 239, 0.18);
+  color: var(--accent);
+  border-color: rgba(155, 138, 239, 0.4);
+}
+
+/* Fond assombri commun à toutes les modales d'assignation/suppression de
+   catalogue (Assigner Matériel/Technicien, Catégories, Transport →
+   « Ajouter du matériel », Utilisateurs). Distinct de
+   `.fiche-confirm-backdrop` ci-dessus (z-index 120) : une modale
+   d'assignation peut rester ouverte derrière une confirmation de
+   suppression, jamais l'inverse — z-index 100 la garde toujours sous la
+   confirmation, mais au-dessus du reste de la page. */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 100;
+}
+
+/* ---------------------------------------------------------------------------
+   Formulaire d'ajout rapide en bas des listes (lieux, matériel, spectacles,
+   techniciens, transports).
+
+   Globales pour la même raison que les classes `fiche-` ci-dessus : les cinq
+   écrans de liste portaient jusqu'au 2026-07-30 cinq copies identiques de ce
+   bloc dans leur `<style scoped>`.
+
+   Structure attendue :
+     .add-form > .add-form__title
+              > .add-form__row > label.add-form__field
+                                   > span.add-form__label
+                                   > input/select.add-form__input
+                               > .add-form__submit
+   Le dimensionnement flex est porté par le `<label>` (`__field`), pas par
+   l'input — celui-ci prend simplement toute la largeur disponible.
+   ------------------------------------------------------------------------ */
+
+.add-form {
+  background: var(--bg-card);
+  border: 1px dashed rgba(255, 255, 255, 0.15);
+  border-radius: var(--radius-notch-lg);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.add-form__title {
+  font: 700 10.5px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.add-form__row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  /* `flex-end` et non `center` : depuis l'ajout des libellés, les champs
+     n'ont plus tous la même hauteur (un libellé long passe sur deux lignes
+     en fenêtre étroite) — l'alignement sur le bas garde les champs et le
+     bouton sur la même ligne de base. */
+  align-items: flex-end;
+}
+
+.add-form__field {
+  flex: 1;
+  min-width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.add-form__field--wide {
+  flex: 2;
+}
+
+.add-form__field--narrow {
+  flex: 0 0 90px;
+  min-width: 90px;
+}
+
+/* Un `datetime-local` affiche date ET heure : en dessous de ~215px, les
+   navigateurs tronquent le contenu. On lui donne une largeur plancher. */
+.add-form__field--date {
+  flex: 0 0 230px;
+  min-width: 230px;
+}
+
+/* Saut de ligne forcé dans une rangée flex : élément vide de largeur pleine
+   et de hauteur nulle. Placé avant le premier champ de date, il garantit que
+   les dates commencent toujours une nouvelle ligne, au lieu de dépendre de
+   la largeur de la fenêtre. `margin: 0` neutralise le `gap` du parent, qui
+   sinon ajouterait un espace vertical visible. */
+.add-form__break {
+  flex: 1 0 100%;
+  height: 0;
+  margin: -10px 0 0;
+}
+
+.add-form__field--code {
+  flex: 0 0 110px;
+  min-width: 110px;
+}
+
+.add-form__label {
+  font: 700 9.5px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.add-form__input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: var(--radius-notch-sm);
+  background: #1b1f25;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font: 500 13px system-ui;
+  color: #fff;
+}
+
+.add-form__input--code {
+  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.add-form__input--error {
+  border-color: oklch(0.6 0.15 35);
+}
+
+.add-form__submit {
+  font: 600 12px system-ui;
+  color: #0b0d10;
+  background: var(--accent);
+  padding: 10px 18px;
+  border-radius: var(--radius-notch-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.add-form__submit--disabled {
+  color: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.08);
+  cursor: not-allowed;
+}
+
+.add-form__submit--force {
+  background: oklch(0.7 0.16 35);
+  color: #2a1400;
+}
+
+.add-form__error {
+  font: 500 11.5px system-ui;
+  color: oklch(0.78 0.16 35);
+}
+
+.add-form__conflict {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px;
+  border-radius: var(--radius-notch-sm);
+  background: oklch(0.27 0.07 35);
+  border: 1px solid oklch(0.5 0.15 35);
+}
+
+.add-form__conflict-text {
+  font: 400 12px system-ui;
+  color: rgba(255, 217, 207, 0.9);
+}
+
+/* ---------------------------------------------------------------------------
+   Écrans « Parcours » (matériel et techniciens) — voir
+   composables/useParcours.js. Globales parce que les deux pages partagent
+   exactement la même charpente : panneau de sélection à gauche, axe de jours
+   et pistes horizontales à droite. Seul le contenu des barres diffère.
+   ------------------------------------------------------------------------ */
+
+.parcours {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 860px) {
+  .parcours {
+    grid-template-columns: 1fr;
   }
-  &::after {
-    right: 0;
-    border-right-color: var(--border);
-  }
+}
+
+.parcours-picker {
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-notch-lg);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.parcours-picker__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.parcours-picker__title {
+  flex: 1;
+  font: 700 10.5px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.parcours-picker__link {
+  font: 600 10.5px system-ui;
+  color: #a5b4fc;
+  cursor: pointer;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+
+.parcours-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px;
+  cursor: pointer;
+  border-radius: 0 6px 0 6px;
+}
+
+.parcours-option__check {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border-radius: 0 4px 0 4px;
+  border: 1.5px solid rgba(255, 255, 255, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 700 10px system-ui;
+  color: #0b0d10;
+}
+
+.parcours-option__check--on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.parcours-option__name {
+  flex: 1;
+  min-width: 0;
+  font: 500 12.5px system-ui;
+  color: rgba(255, 255, 255, 0.8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.parcours-board {
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-notch-lg);
+  padding: 16px 16px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-x: auto;
+  /* Le défilement horizontal (`overflow-x`) force `overflow-y` à `auto` même
+     sans le déclarer (règle CSS standard) : l'info-bulle qui déborde en bas
+     du dernier événement pourrait donc se faire couper. Le padding-bottom
+     agrandi ci-dessus lui laisse de la place — voir `.parcours-tooltip`,
+     qui s'ouvre volontairement VERS LE BAS (pas au-dessus comme sur le
+     Dashboard) pour la même raison : au-dessus, la seule marge disponible
+     est le padding-top du panneau + la hauteur de l'axe, insuffisant pour
+     la première ligne. */
+}
+
+.parcours-axis {
+  position: relative;
+  height: 18px;
+  margin-left: 150px;
+  min-width: 420px;
+}
+
+/* Lignes de référence verticales dans chaque piste, alignées sur l'axe
+   horaire (2026-07-31) — même convention que `.dash-timeline__gridline` sur
+   le Dashboard. */
+.parcours-gridline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.parcours-axis__tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font: 500 10px var(--font-mono);
+  color: rgba(255, 255, 255, 0.35);
+  white-space: nowrap;
+}
+
+.parcours-row {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  min-width: 570px;
+}
+
+.parcours-row__label {
+  width: 150px;
+  flex: none;
+  padding-right: 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.parcours-row__name {
+  font: 600 12px system-ui;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.parcours-row__meta {
+  font: 400 10.5px system-ui;
+  color: rgba(255, 255, 255, 0.35);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.parcours-track {
+  position: relative;
+  flex: 1;
+  min-height: 46px;
+  background: #1b1f25;
+  border-radius: 0 6px 0 6px;
+}
+
+.parcours-seg {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  border-radius: 0 5px 0 5px;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  font: 500 10.5px system-ui;
+  color: rgba(255, 255, 255, 0.85);
+  white-space: nowrap;
+  cursor: default;
+  /* Pas d'overflow:hidden ici (2026-07-31) : l'info-bulle au survol (enfant,
+     position absolue) doit pouvoir déborder du segment. Le libellé porte son
+     propre ellipsis (`.parcours-seg__label`) donc rien n'est perdu
+     visuellement à l'intérieur de la barre — même pattern que
+     `.dash-timeline__block` sur le Dashboard. */
+}
+
+.parcours-seg__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Info-bulle au survol d'un segment (2026-07-31, demande de Samuel : « comme
+   sur le dashboard principal »). Contrairement au Dashboard, elle s'ouvre
+   VERS LE BAS — voir la note sur `.parcours-board`. */
+.parcours-tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 170px;
+  max-width: 240px;
+  padding: 10px 12px;
+  border-radius: var(--radius-notch-sm);
+  background: #0e1013;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+  white-space: normal;
+  z-index: 30;
+}
+
+.parcours-seg:hover .parcours-tooltip {
+  opacity: 1;
+  visibility: visible;
+}
+
+.parcours-tooltip__title {
+  font: 700 12px system-ui;
+  color: #fff;
+  margin-bottom: 4px;
+}
+
+.parcours-tooltip__time {
+  font: 600 11px system-ui;
+  color: rgba(255, 255, 255, 0.55);
+  margin-bottom: 6px;
+}
+
+.parcours-tooltip__line {
+  font: 500 11.5px system-ui;
+  color: rgba(255, 255, 255, 0.75);
+  line-height: 1.4;
+}
+
+/* Marqueur d'assignation posé PAR-DESSUS le séjour : un liseré en bas de la
+   piste, pour voir « il est à la Chapelle, et c'est là qu'il sert ». Agrandi
+   le 2026-07-31 (demande de Samuel : « plus visible », puis 15px) — remonte
+   maintenant sur une bonne partie du segment de séjour, chevauchement
+   volontaire (« posé PAR-DESSUS »). Son info-bulle réutilise
+   `.parcours-tooltip`, ancrée sur le marqueur lui-même plutôt que sur le
+   séjour. */
+.parcours-mark {
+  position: absolute;
+  bottom: 2px;
+  height: 15px;
+  border-radius: 3px;
+  background: var(--accent);
+  cursor: default;
+}
+
+.parcours-mark:hover {
+  background: #e4defa;
+}
+
+.parcours-mark:hover .parcours-tooltip {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Marqueur de transport confirmé (2026-07-31, demande de Samuel : « on
+   ajoute les transports confirmés » sur le Parcours Matériel) — symétrique
+   au marqueur d'assignation : posé au-DESSUS du segment de séjour plutôt
+   qu'en dessous, pour distinguer d'un coup d'œil « requis par un spectacle »
+   (bas, lavande clair) de « en cours de déplacement » (haut, bleu). Couvre
+   la fenêtre du transport lui-même (`scheduled_datetime` → `effective_end`),
+   pas seulement son arrivée — voir `get_material_transports`. Même couleur
+   que « Déplacement » sur le Parcours Technicien, pour la cohérence entre
+   les deux écrans. */
+.parcours-transport {
+  position: absolute;
+  top: 2px;
+  height: 6px;
+  border-radius: 3px;
+  background: oklch(0.5 0.1 250);
+  cursor: default;
+}
+
+.parcours-transport:hover {
+  background: oklch(0.58 0.1 250);
+}
+
+.parcours-transport:hover .parcours-tooltip {
+  opacity: 1;
+  visibility: visible;
+}
+
+.parcours-empty {
+  padding: 28px 8px;
+  text-align: center;
+  font: 500 12.5px system-ui;
+  color: rgba(255, 255, 255, 0.35);
 }
