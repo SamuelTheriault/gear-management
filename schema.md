@@ -29,7 +29,7 @@ Lieux (salles, théâtres, sites de représentation, entrepôts). Isolés par pr
 | id | INT, PK | Identifiant unique |
 | project_id | INT, FK → projects.id | Production à laquelle ce lieu appartient |
 | name | VARCHAR | Nom du lieu |
-| code | VARCHAR(4), nullable/vide | Code court saisi à la création (ex. `CHAP` pour Chapelle) — voir note ci-dessous |
+| code | VARCHAR(4), nullable/vide | Code court (ex. `CHAP` pour Chapelle), saisi à la création ou ajouté après coup — voir note ci-dessous |
 | address | VARCHAR | Adresse |
 | contact_name | VARCHAR | Contact sur place |
 | contact_info | VARCHAR | Téléphone / email du contact |
@@ -38,28 +38,13 @@ Lieux (salles, théâtres, sites de représentation, entrepôts). Isolés par pr
 | latitude | DECIMAL(9,6), nullable | Coordonnée GPS (ex. copiée depuis Google Maps) — voir section 10, calcul de trajet |
 | longitude | DECIMAL(9,6), nullable | Coordonnée GPS — voir latitude |
 
-**Code court** (décision du 2026-07-19) : `code` (jusqu'à 4 caractères, normalisé en majuscules à l'enregistrement) sert d'identifiant rapide pour un lieu — ex. `CHAP` pour la Chapelle. Optionnel, unique par projet si renseigné (validé par `VenueSerializer`, pas une contrainte en base — plusieurs lieux sans code coexistent normalement dans un même projet). Réutilisé sur `TransportSerializer` (`origin_venue_code`/`destination_venue_code`) pour un affichage compact du départ/arrivée d'un déplacement.
+**Suppression d'un lieu** (décision du 2026-07-30) : **refusée** tant que le lieu est référencé par un spectacle, un déplacement ou du matériel qui en fait son origine. `Show.venue` et les deux FK de `Transport` sont en `PROTECT` (Django lèverait un `ProtectedError`, rendu en 500 par DRF sans traitement) ; `Material.venue` est en `SET_NULL`, mais le laisser vider silencieusement l'origine contredirait la règle du lieu obligatoire — il bloque donc aussi. `VenueViewSet.destroy` renvoie un 400 avec le décompte de chaque catégorie (`shows`, `transports`, `materials`).
+
+**Code court** (décision du 2026-07-19) : `code` (jusqu'à 4 caractères, normalisé en majuscules à l'enregistrement) sert d'identifiant rapide pour un lieu — ex. `CHAP` pour la Chapelle. Optionnel, unique par projet si renseigné (validé par `VenueSerializer`, pas une contrainte en base — plusieurs lieux sans code coexistent normalement dans un même projet). Réutilisé sur `TransportSerializer` (`origin_venue_code`/`destination_venue_code`) pour un affichage compact du départ/arrivée d'un déplacement. Côté frontend (depuis le 2026-07-30) : saisi dans le formulaire d'ajout de `LieuxView.vue`, et modifiable après coup sur la fiche du lieu (`LieuDetailView.vue`, `PATCH` du seul champ `code`).
 
 ---
 
-## 3. `departments`
-
-Départements responsables du matériel (ex. son, éclairage, décor, costumes). Permet de savoir qui doit apporter quoi sur le lieu du spectacle.
-
-| Champ | Type | Description |
-|---|---|---|
-| id | INT, PK | Identifiant unique |
-| name | VARCHAR | Nom du département |
-| contact_name | VARCHAR | Nom du responsable |
-| contact_info | VARCHAR | Téléphone / email du responsable |
-| notes | TEXT | Notes diverses |
-| color | VARCHAR(7) | Code couleur hexadécimal (#RRGGBB, ex. #64748B par défaut) — identifie visuellement le département ; reflétée dans les sous-sections où il apparaît (voir note ci-dessous) |
-
-**Couleur reflétée dans les sous-sections** : `color` n'est stockée que sur `departments`, mais l'API expose un champ dérivé en lecture seule `department_color` sur `MaterialSerializer` et `ShowMaterialSerializer` (source : `department.color`), pour que le frontend puisse colorer le matériel et les assignations show/matériel de façon cohérente sans requête supplémentaire.
-
----
-
-## 4. `materials`
+## 3. `materials`
 
 Inventaire de matériel. Supporte une hiérarchie parent/enfant (kits contenant des composants) et une catégorisation par type d'usage. Isolé par projet — voir section 11 (`projects`).
 
@@ -69,10 +54,9 @@ Inventaire de matériel. Supporte une hiérarchie parent/enfant (kits contenant 
 | project_id | INT, FK → projects.id | Production à laquelle ce matériel appartient |
 | name | VARCHAR | Nom du matériel |
 | description | TEXT | Description / détails techniques |
-| category | VARCHAR/ENUM | Type d'usage (ex. audio, éclairage, rigging, mobilier) |
+| category_id | INT, FK → material_categories.id (nullable) | Catégorie de matériel — était un ENUM figé jusqu'au 2026-07-30, voir section 13 |
 | parent_material_id | INT, FK → materials.id (nullable) | Matériel parent (ex. "Kit Audio" est parent de "Micro sans fil") |
-| venue_id | INT, FK → venues.id (nullable) | Lieu physique où le matériel est entreposé |
-| department_id | INT, FK → departments.id (nullable) | Département responsable d'apporter ce matériel sur le lieu du spectacle |
+| venue_id | INT, FK → venues.id (nullable en base, **obligatoire via l'API**) | Lieu d'**origine** du matériel — son point de départ et l'endroit où il doit revenir en fin de projet |
 | ownership_status | ENUM('owned','rental') | Propriété ou location générale |
 | quantity | INT (default 1) | Quantité totale possédée de ce matériel identique (ex. 20 rallonges électriques) — voir note quantité ci-dessous |
 | is_active | BOOLEAN (default true) | Permet de désactiver un matériel qu'on n'utilise plus (ex. un vieux rideau) sans le supprimer — voir note ci-dessous |
@@ -84,11 +68,17 @@ Inventaire de matériel. Supporte une hiérarchie parent/enfant (kits contenant 
 
 **Matériel désactivé** (décision du 2026-07-19) : `is_active = false` retire un matériel qu'on n'utilise plus (ex. un vieux rideau) des listes d'inventaire courantes sans le supprimer — l'historique des assignations existantes (`show_materials`) reste intact. `GET /api/materials/` ne retourne que `is_active = true` par défaut ; ajouter `?include_inactive=true` pour tout revoir. La consultation par id reste toujours accessible peu importe le statut.
 
-**Isolation par projet** (décision du 2026-07-19) : `parent_material` et `venue` (si renseignés) doivent obligatoirement appartenir au même `project` que le matériel lui-même — validé par `MaterialSerializer.validate()`, pas en base. `department`, lui, n'est PAS soumis à cette contrainte : les départements restent communs à tous les projets (voir section 3).
+**Isolation par projet** (décision du 2026-07-19, étendue à `category` le 2026-07-30) : `parent_material`, `venue` et `category` (si renseignés) doivent obligatoirement appartenir au même `project` que le matériel lui-même — validé par `MaterialSerializer.validate()`, pas en base.
+
+**Lieu d'origine obligatoire** (décision du 2026-07-30) : `venue` était optionnel ; il est désormais **exigé par `MaterialSerializer`** à la création comme à la mise à jour, et ne peut plus être vidé. Sans point de départ, la timeline de position (`transport_coherence.py`) ne peut rien vérifier — ni la disponibilité au départ d'un transport, ni le retour en fin de projet. Le champ reste **nullable en base** pour ne pas invalider l'historique déjà saisi et pour garder l'issue `origine_inconnue` significative ; c'est l'API qui impose la règle, pas une contrainte DB.
+
+**Catégorie devenue une table** (décision du 2026-07-30) : `category` était un `VARCHAR` restreint à 9 slugs codés en dur dans le modèle Django (`CATEGORY_CHOICES`), avec leurs couleurs codées en dur côté Vue — donc impossible d'ajouter « Machinerie » sans redéployer. C'est maintenant une FK vers `material_categories` (section 13). Migration `0014_material_category` : création de la table, seed des 9 catégories historiques pour chaque projet existant, remappage du matériel, puis remplacement du champ texte. Ce n'est **pas** un retour du modèle `Department` retiré la veille — une catégorie ne porte ni responsable ni contact, seulement un nom et une couleur.
+
+**Département retiré** (décision du 2026-07-29) : le matériel portait auparavant un `department_id` (FK vers une table `departments` — responsable/contact par type de matériel), retiré à la demande de Samuel : `category` suffisait déjà à classer le matériel, et faisait doublon en pratique avec les noms de département (Son/Éclairage/etc. des deux côtés). Voir migration `0013_remove_department`.
 
 ---
 
-## 5. `shows`
+## 4. `shows`
 
 Fiches spectacles — regroupe répétitions et représentations avec leurs horaires et le lieu. Isolées par projet — voir section 11 (`projects`).
 
@@ -98,22 +88,38 @@ Fiches spectacles — regroupe répétitions et représentations avec leurs hora
 | project_id | INT, FK → projects.id | Production à laquelle ce spectacle appartient — doit correspondre au projet de `venue_id` |
 | title | VARCHAR | Titre du spectacle |
 | venue_id | INT, FK → venues.id | Lieu de l'événement |
-| event_type | ENUM('rehearsal','performance','storage') | Répétition, représentation, ou entreposage (voir note ci-dessous) |
+| event_type | ENUM('rehearsal','performance','storage','setup','teardown') | Répétition, représentation, entreposage, montage ou démontage (voir notes ci-dessous) |
 | start_datetime | DATETIME | Début (heure réelle) |
 | end_datetime | DATETIME | Fin (heure réelle) |
 | buffer_before_minutes | INT (default : voir `settings.default_buffer_before_minutes`) | Marge avant (déplacement/installation) |
 | buffer_after_minutes | INT (default : voir `settings.default_buffer_after_minutes`) | Marge après (déplacement/désinstallation) |
 | notes | TEXT | Notes générales |
 
+**Blocs rattachés** (décision du 2026-07-31) : `parent_show_id` accroche à un événement une plage de **montage** ou de **répétition** en amont et une de **démontage** en aval — trois blocs consécutifs au plus, dans le même lieu. Choix de conception : un bloc est un `shows` **complet**, pas une table parallèle. Il a donc son horaire, son matériel (`show_materials`), ses techniciens (`show_technicians`), ses transports, et participe à la détection de conflits comme n'importe quel événement — un montage occupe la salle et mobilise une équipe, exactement comme un spectacle. Contraintes validées par `ShowSerializer` : un seul niveau de hiérarchie (un bloc ne peut pas en avoir), même projet et même lieu que l'événement principal. `CASCADE` : supprimer l'événement supprime ses blocs, qui n'ont pas de sens seuls.
+
+**Ressources — deux régimes** (décision du 2026-07-31, précisée le même jour). Un bloc de **répétition** rattaché est **autonome** : il porte ses propres `show_materials`/`show_technicians`, recopiés de l'événement à sa création (`ShowSerializer.create`) puis modifiables sans que rien ne redescende ensuite. Une répétition est un vrai temps de travail, où l'on n'utilise pas nécessairement tout le matériel du spectacle ni la même équipe. Elle n'étire donc pas la fenêtre d'engagement de son événement — l'y inclure mettrait celui-ci en conflit avec sa propre répétition. Le champ dérivé `inherits_resources` (voir `Show.INHERITING_PHASE_TYPES`) distingue les deux cas, et `ShowSerializer.get_phases` l'expose avec les décomptes du bloc.
+
+Pour le **montage** et le **démontage**, en revanche, le matériel et les techniciens sont **ceux de son événement** — un montage mobilise l'équipe et l'équipement du spectacle qu'il prépare. Implémenté par une **fenêtre d'engagement étendue** (`Show.engagement_start`/`engagement_end` : de l'ouverture du premier bloc à la fermeture du dernier) plutôt qu'en recopiant les assignations dans chaque bloc — une seule vérité, qui ne peut pas diverger quand on modifie l'événement après coup. Conséquences : un technicien pris ailleurs **pendant le montage** est bien détecté en conflit, le matériel est réservé sur toute la période, et `ShowMaterialSerializer`/`ShowTechnicianSerializer` **refusent** une assignation directe sur ces deux types de bloc en renvoyant vers l'événement.
+
+**Exclusion de famille sur le matériel et les techniciens** : `get_material_conflicts` et `get_technician_conflicts` ignorent tous les membres de la famille (`Show.family_ids`), et plus seulement le spectacle courant. Un événement et ses blocs forment une seule unité de travail : la copie portée par une répétition rattachée entrerait sinon en conflit avec l'événement dès qu'un buffer fait toucher les deux fenêtres — le cas par défaut. Pour un spectacle sans bloc, `family_ids` se réduit à `{show.id}` : comportement d'origine inchangé.
+
+À ne pas confondre avec `effective_start`/`effective_end`, qui restent la fenêtre du seul créneau et servent au conflit de **lieu** — un bloc occupe la salle pour son propre compte.
+
+**Blocs et buffers — pas de double comptage** : un bloc est collé à son événement, donc leurs fenêtres *effectives* se chevauchent dès qu'un buffer est renseigné. `Show.family_ids` (l'événement + tous ses blocs) est passé à `get_venue_conflicts` en `exclude_family_ids` pour éviter qu'un montage soit signalé en conflit de lieu avec le spectacle qu'il prépare. Les buffers restent pour les événements sans bloc explicite ; l'exclusion ne vaut qu'entre membres d'une même famille — un vrai voisin dans la même salle est toujours détecté.
+
+**Répétitions indépendantes** : elles n'ont jamais eu besoin de ce mécanisme — un `shows` de type `rehearsal` avec ses propres horaires, sans `parent_show_id`, suffit (ex. une répétition la veille dans une autre salle).
+
+**Suppression d'un spectacle** (décision du 2026-07-30) : **autorisée**, mais elle emporte en cascade ses assignations (`show_materials`, `show_technicians`) ET ses déplacements (`transports.show_id` est en `CASCADE`). Le matériel et les techniciens eux-mêmes survivent — seules les assignations disparaissent. `ShowSerializer.deletion_impact` expose les trois décomptes pour que la confirmation du frontend annonce précisément ce qui va disparaître, proposition auto-générée comprise.
+
 **Fenêtre effective d'utilisation** = `start_datetime - buffer_before` à `end_datetime + buffer_after`. C'est cette fenêtre qui est utilisée pour la détection de conflits.
 
 **Entreposage** : un `show` dont le `venue_id` pointe vers un lieu avec `is_storage = true` représente une période où le matériel est simplement rangé — voir la règle d'exemption dans `show_materials` ci-dessous. `event_type = 'storage'` est la convention pour étiqueter ce genre de fiche (mais c'est bien `venue.is_storage` qui déclenche l'exemption, pas `event_type`).
 
-**Conflit de lieu** (décision du 2026-07-19) : deux `shows` ne peuvent pas se chevaucher dans le **même** `venue_id` — occupation physique exclusive, indépendante de tout matériel ou technicien partagé (ceux-là restent en conflit peu importe le lieu, voir sections 6 et 8). Bloquant + `force: true`, même exemption d'entreposage que le matériel (une même `venue` d'entrepôt peut recevoir plusieurs fiches de rangement qui se chevauchent). Voir `conflicts.get_venue_conflicts` et `architecture.md`, section 4d.
+**Conflit de lieu** (décision du 2026-07-19) : deux `shows` ne peuvent pas se chevaucher dans le **même** `venue_id` — occupation physique exclusive, indépendante de tout matériel ou technicien partagé (ceux-là restent en conflit peu importe le lieu, voir sections 5 et 7). Bloquant + `force: true`, même exemption d'entreposage que le matériel (une même `venue` d'entrepôt peut recevoir plusieurs fiches de rangement qui se chevauchent). Voir `conflicts.get_venue_conflicts` et `architecture.md`, section 4d.
 
 ---
 
-## 6. `show_materials`
+## 5. `show_materials`
 
 Table d'association — assigne du matériel à un spectacle/répétition. Contient aussi l'information de location ponctuelle (louée à un fournisseur externe pour ce spectacle précis).
 
@@ -134,7 +140,7 @@ Table d'association — assigne du matériel à un spectacle/répétition. Conti
 
 ---
 
-## 7. `technicians`
+## 6. `technicians`
 
 Isolés par projet — voir section 11 (`projects`).
 
@@ -149,7 +155,7 @@ Isolés par projet — voir section 11 (`projects`).
 
 ---
 
-## 8. `show_technicians`
+## 7. `show_technicians`
 
 Table d'association — assigne des techniciens à un spectacle/répétition.
 
@@ -159,11 +165,11 @@ Table d'association — assigne des techniciens à un spectacle/répétition.
 | show_id | INT, FK → shows.id | Spectacle concerné |
 | technician_id | INT, FK → technicians.id | Technicien assigné |
 
-**Règle de conflit** : même logique que pour le matériel — un technicien ne peut pas être assigné à deux spectacles dont les fenêtres effectives (horaire + buffers) se chevauchent. Depuis l'ajout de `transports` (section 9), cette règle croise aussi les déplacements du technicien : il ne peut pas non plus être sur un spectacle en même temps qu'il fait une livraison/ramassage.
+**Règle de conflit** : même logique que pour le matériel — un technicien ne peut pas être assigné à deux spectacles dont les fenêtres effectives (horaire + buffers) se chevauchent. Depuis l'ajout de `transports` (section 8), cette règle croise aussi les déplacements du technicien : il ne peut pas non plus être sur un spectacle en même temps qu'il fait une livraison/ramassage.
 
 ---
 
-## 9. `transports`
+## 8. `transports`
 
 Table ajoutée le 2026-07-18 (hors des 8 tables initiales) — trace la livraison/ramassage de matériel entre deux lieux pour un spectacle donné, et quel technicien s'en charge.
 
@@ -178,20 +184,21 @@ Table ajoutée le 2026-07-18 (hors des 8 tables initiales) — trace la livraiso
 | scheduled_datetime | DATETIME, **nullable** | Heure prévue du déplacement — nullable depuis le 2026-07-24 (une proposition `to_approve` n'a pas encore d'heure). Obligatoire pour un `status='confirmed'` (validé par `TransportSerializer`) |
 | *(dérivé)* origin_venue_code / destination_venue_code | VARCHAR(4) | Code court des lieux (voir `venues.code`), exposé en lecture seule pour un affichage compact départ/arrivée — vide si le lieu n'a pas de code |
 | estimated_duration_minutes | INT (default : voir `settings.default_transport_duration_minutes`) | Durée estimée (trajet + chargement/déchargement) — pré-remplie automatiquement via l'API Google Routes si les deux venues ont des coordonnées GPS (voir section 10) |
-| technician_id | INT, FK → technicians.id (nullable) | Technicien assigné (peut être vide tant que non confirmé) |
 | notes | TEXT | Notes diverses |
 
 **Fenêtre effective** = `scheduled_datetime` à `scheduled_datetime + estimated_duration_minutes` (pas de buffers séparés — la durée estimée couvre déjà trajet + chargement).
 
-**Règle de conflit** : le technicien assigné à un `transport` ne peut pas non plus être engagé (spectacle OU autre déplacement) sur une fenêtre qui chevauche celle-ci — bloquant, avec possibilité de forcer via `force: true`, comme pour `show_materials`/`show_technicians`. Cette table ne participe PAS à l'exemption d'entreposage (section 6) : un déplacement est toujours un vrai engagement de temps pour le technicien qui le fait.
+**Techniciens affectés** (décision du 2026-07-30) : *qui* fait le déplacement est décrit par la table de liaison `transport_technicians` (section 13bis), pas directement ici. Le champ `technician_id` (FK unique) a été retiré : un déplacement peut mobiliser plusieurs personnes, comme un spectacle. Voir migration `0015_transport_technicians`.
 
-**Matériel transporté** (décision du 2026-07-24) : *quel* matériel monte dans un déplacement est décrit par la table de liaison `transport_materials` (section 12), pas directement ici. Ce lien alimente le module de cohérence des emplacements (voir section 12 et `transport_coherence.py`).
+**Règle de conflit** : **chaque** technicien affecté à un `transport` ne peut pas être engagé par ailleurs (spectacle OU autre déplacement) sur une fenêtre qui chevauche celle-ci — bloquant, avec possibilité de forcer via `force: true`, comme pour `show_materials`/`show_technicians`. Un seul bandeau d'erreur regroupe les conflits de toutes les personnes affectées, donc un seul « Forcer » côté frontend. Cette table ne participe PAS à l'exemption d'entreposage (section 5) : un déplacement est toujours un vrai engagement de temps pour les techniciens qui le font.
+
+**Matériel transporté** (décision du 2026-07-24) : *quel* matériel monte dans un déplacement est décrit par la table de liaison `transport_materials` (section 9), pas directement ici. Ce lien alimente le module de cohérence des emplacements (voir section 9 et `transport_coherence.py`).
 
 **Statut `to_approve` / `confirmed`** (décision du 2026-07-24) : un déplacement `confirmed` est créé/complété par l'utilisateur — il a une heure, participe à la timeline de position (cohérence) et à la détection de conflit du technicien. Un déplacement `to_approve` est une **proposition générée automatiquement** (voir `transport_autogen.py`) quand du matériel est requis à un lieu où rien ne l'amène : lieux + matériel préremplis, mais heure/technicien à saisir. Une proposition est affichée en orange et ne « livre » rien tant qu'elle n'est pas confirmée (elle n'entre pas dans la timeline de position). Deux façons de créer un transport : manuellement (`confirmed` d'emblée) ou automatiquement (`to_approve`, à compléter puis confirmer).
 
 ---
 
-## 12. `transport_materials`
+## 9. `transport_materials`
 
 Table de liaison ajoutée le 2026-07-24 (module transport) — relie un `transport` au matériel (et à la quantité) qu'il transporte. Sans elle, un `transport` savait *quand* et *où* le matériel bougeait, mais pas *lequel* montait dans le camion.
 
@@ -212,11 +219,15 @@ Table de liaison ajoutée le 2026-07-24 (module transport) — relie un `transpo
 
 **Portée assumée — aller seulement** (décision du 2026-07-24) : le module vérifie la *présence* du matériel là où il est requis (livraisons). Il n'exige PAS qu'un ramassage (`pickup`) ramène le matériel à son entrepôt d'origine (pas de boucle de retour fermée) — un `pickup` est tout de même pris en compte dans la timeline comme tout déplacement.
 
-**Exemption d'entreposage** : un `show_material` rattaché à un `show` d'entrepôt (`venue.is_storage=True`) n'exige aucune livraison — cohérent avec l'exemption de la section 6.
+**Retour à l'origine en fin de projet** (ajout du 2026-07-30) : quatrième type d'incohérence, `retour_manquant`. À l'**horizon du projet** — `projects.end_date` si renseignée (fin de journée), sinon la fin effective du dernier événement du projet — chaque matériel doit se retrouver en totalité à son `venue` d'origine. Sinon l'issue liste la quantité manquante et les lieux où le reliquat se trouve encore. Non bloquant comme le reste du rapport. Cela **révise la portée « aller seulement »** décidée le 2026-07-24 : on ne vérifie toujours pas qu'un `pickup` précis existe pour chaque livraison, mais on contrôle le résultat net à la fin.
+
+**Disponibilité au lieu de départ** (ajout du 2026-07-30) : la même timeline sert aussi *avant* la saisie, via `get_venue_material_availability()` et `GET /api/transports/{id}/material-availability/` — « quel matériel est présent au lieu de départ à l'heure du départ, en quelle quantité ». Le frontend grise et rend non sélectionnable ce qui n'est pas sur place. Le blocage est **côté interface seulement** : l'API accepte toujours un chargement incohérent (créé par l'API brute, ou devenu faux après un changement d'horaire), que le rapport ci-dessus continue de signaler en `origine_incoherente`. Le transport est exclu de son propre calcul ; sans `scheduled_datetime`, l'endpoint renvoie `at: null` et tout le stock comme disponible.
+
+**Exemption d'entreposage** : un `show_material` rattaché à un `show` d'entrepôt (`venue.is_storage=True`) n'exige aucune livraison — cohérent avec l'exemption de la section 5.
 
 **Génération automatique des propositions** (`transport_autogen.py`, décision du 2026-07-24) : plutôt que d'attendre que l'utilisateur crée chaque transport, l'app **génère automatiquement** un `transports` en `status='to_approve'` pour chaque déplacement manquant détecté. Déclenchement par signaux (`regenerate_signals.py`), à chaque changement pertinent : assignation de matériel (`show_materials`), transport confirmé, ligne `transport_materials` d'un transport confirmé, ou horaire/lieu d'un `shows`. La proposition est préremplie avec le lieu de départ (dernière position connue du matériel — origines chaînées entrepôt→A puis A→B), le lieu d'arrivée (le lieu du spectacle) et le matériel (groupé : une proposition par couple origine/spectacle peut porter plusieurs matériels). Régénération = *resync* idempotent des seules propositions `to_approve` (pas de mémoire de rejet — décision Samuel : on recalcule à chaque fois ; les transports confirmés ne sont jamais touchés). L'utilisateur complète (heure, technicien) puis confirme, ce qui fait passer la proposition de l'orange au vert.
 
-**Conflit de technicien sur un transport** (rappel) : reste **bloquant + `force`** comme avant (section 9 / `architecture.md` section 4). Le champ dérivé `has_technician_conflict` sur `TransportSerializer` expose l'info en lecture seule pour l'indicateur orange du frontend, y compris pour une assignation créée avec `force: true`.
+**Conflit de technicien sur un transport** (rappel) : reste **bloquant + `force`** comme avant (section 8 / `architecture.md` section 4). Le champ dérivé `has_technician_conflict` sur `TransportSerializer` expose l'info en lecture seule pour l'indicateur orange du frontend, y compris pour une affectation créée avec `force: true` — il vaut `true` dès qu'**au moins une** des personnes affectées est en conflit (2026-07-30).
 
 **Déplacement vide** : le champ dérivé `is_empty` sur `TransportSerializer` (lecture seule) vaut `true` si le déplacement ne transporte aucun matériel — pour un indicateur « camion vide » côté frontend (le contenu détaillé reste visible via `materials`).
 
@@ -249,14 +260,57 @@ Table ajoutée le 2026-07-19 (hors des 8 tables initiales) à la demande de Samu
 | name | VARCHAR | Nom de la production |
 | client_name | VARCHAR (nullable) | Compagnie ou organisation cliente, si pertinent |
 | status | ENUM('active','archived') (default 'active') | Une production terminée s'archive plutôt que de se supprimer — voir note ci-dessous |
-| start_date | DATE, nullable | Date de début |
-| end_date | DATE, nullable | Date de fin |
+| start_date | DATE, nullable | Date de début de la production — saisie dans Réglages |
+| end_date | DATE, nullable | Date de fin — sert d'**horizon** au contrôle de retour du matériel (section 9). Sans elle, l'app retombe sur la fin du dernier événement du projet |
 | notes | TEXT | Notes diverses |
 | created_at | DATETIME | Date de création |
 
-**Isolation par projet** : `venues`, `materials`, `technicians` et `shows` portent chacun un `project_id` obligatoire (FK `on_delete=PROTECT` — impossible de supprimer une `project` tant qu'il lui reste des données rattachées ; archiver via `status` est la voie normale pour retirer une production terminée sans rien perdre). `departments` et `settings` restent **communs à tous les projets** (décision explicite de Samuel) — voir sections 3 et 10.
+**Isolation par projet** : `venues`, `materials`, `technicians` et `shows` portent chacun un `project_id` obligatoire (FK `on_delete=PROTECT` — impossible de supprimer une `project` tant qu'il lui reste des données rattachées ; archiver via `status` est la voie normale pour retirer une production terminée sans rien perdre). `settings` reste **commun à tous les projets** (décision explicite de Samuel) — voir section 10.
 
 **Pas de vue « tous projets confondus »** (décision validée) : chaque liste de l'API se filtre par `?project=<id>` (optionnel — voir `inventory/views.py`, `ProjectFilteredMixin`), et bascule d'un projet à l'autre se fait entièrement côté frontend, sans recharger/exporter de fichier. Conséquence assumée : aucune détection de conflit entre deux projets différents (un même technicien réel entré dans deux projets isolés n'est jamais reconnu comme la même personne — voir `architecture.md`).
+
+---
+
+## 13. `material_categories`
+
+Catégories de matériel (Audio, Éclairage, Décor…) — remplacent depuis le 2026-07-30 la liste de choix figée qui vivait dans `Material.CATEGORY_CHOICES`. Isolées par projet.
+
+| Champ | Type | Description |
+|---|---|---|
+| id | INT, PK | Identifiant unique |
+| project_id | INT, FK → projects.id | Production à laquelle cette catégorie appartient |
+| name | VARCHAR(100) | Nom affiché (ex. `Audio`, `Machinerie`) |
+| color | VARCHAR(64) | Couleur d'affichage (pastille dans les listes, point de couleur sur les assignations). Chaîne CSS libre, `oklch()` par convention |
+
+**Unicité** : contrainte en base sur `(project_id, name)` — contrairement à `venues.code` (validé côté serializer seulement), une catégorie a toujours un nom, il n'y a donc pas de cas « plusieurs lignes vides » à ménager. `MaterialCategorySerializer.validate_name` double la contrainte pour renvoyer une erreur de champ exploitable plutôt qu'un 500.
+
+**Catégories par défaut** : les 9 catégories historiques (Audio, Éclairage, Vidéo, Réseau, Rigging, Mobilier, Décor, Costumes, Autre) sont créées automatiquement à la création de chaque `Project` (signal `creer_categories_par_defaut`, voir `signals.py`) — une nouvelle production ne démarre pas sur une liste vide. Elles restent librement modifiables et supprimables.
+
+**Suppression** (décision de Samuel du 2026-07-30) : `materials.category_id` est en `PROTECT`. Supprimer une catégorie encore utilisée passe donc par une **réassignation explicite** du matériel concerné : `DELETE /api/material-categories/{id}/?reassign_to=<id>`. Sans le paramètre, l'API renvoie un 400 contenant `material_count` — le frontend s'en sert pour demander vers quelle catégorie basculer. `?reassign_to=` (vide) laisse le matériel **sans catégorie** (la FK est nullable) plutôt que de le forcer dans un fourre-tout. Une catégorie inutilisée se supprime directement.
+
+**Duplication de projet** : `duplicate_project` (voir `duplication.py`) recopie les catégories du projet source et remappe le matériel copié vers les copies — sinon une nouvelle édition pointerait vers les catégories de l'édition précédente, en travers de l'isolation par projet.
+
+**Exposition API** : `MaterialSerializer` expose `category` (id, en écriture) plus `category_name`/`category_color` en lecture seule ; `ShowMaterialSerializer` fait de même avec `material_category`/`material_category_name`/`material_category_color`. Le frontend n'a donc plus aucune table de correspondance codée en dur.
+
+---
+
+## 13bis. `transport_technicians`
+
+Table de liaison ajoutée le 2026-07-30 — relie un `transport` aux techniciens qui l'effectuent. Remplace l'ancien champ `transports.technician_id` (FK unique) : Samuel a demandé de pouvoir affecter plusieurs personnes à un même déplacement, exactement comme `show_technicians` le permet déjà pour un spectacle.
+
+| Champ | Type | Description |
+|---|---|---|
+| id | INT, PK | Identifiant unique |
+| transport_id | INT, FK → transports.id (CASCADE) | Déplacement concerné |
+| technician_id | INT, FK → technicians.id (CASCADE) | Technicien affecté — une seule ligne par couple (`unique_together`) |
+
+**Volontairement sans rôle ni hiérarchie** (décision de Samuel du 2026-07-30) : pas de chauffeur/responsable distingué des renforts, et pas de champ de rôle par affectation — le rôle reste `technicians.specialty`, exactement comme pour `show_technicians`.
+
+**Écriture** : gérée en écriture imbriquée sur `TransportSerializer` via le champ `technicians` (liste de `{technician}`), même pattern que `materials`. Fournir `technicians` lors d'un PATCH remplace intégralement la liste ; l'omettre la laisse inchangée. Validations non overridables (erreurs de données) : même projet que le déplacement, pas de doublon dans la même requête.
+
+**Détection de conflit** : l'engagement unitaire est le couple (transport, technicien), plus le transport lui-même — deux personnes sur le même déplacement sont deux engagements distincts, et donc deux conflits distincts dans le rapport project-wide. Voir `conflicts.py` (`_technician_commitments`, `serialize_technician_conflict`).
+
+**Lecture** : `TransportSerializer` expose `technicians` (liste détaillée) et `technician_names` (noms à plat, pour les listes et les info-bulles). Le filtre `GET /api/transports/?technician=<id>` traverse désormais cette table (avec `distinct()`).
 
 ---
 
@@ -268,19 +322,20 @@ Décision du 2026-07-18 : `venues.latitude`/`longitude` (section 2) permettent d
 
 ```
 projects 1───N venues
+projects 1───N material_categories
 projects 1───N materials
+materials N───1 material_categories (nullable, PROTECT)
 projects 1───N technicians
 projects 1───N shows
 venues 1───N shows
 materials N───1 materials (self, parent/enfant)
 materials N───1 venues (entreposage)
-materials N───1 departments (responsable, COMMUN à tous les projets)
 shows 1───N show_materials N───1 materials
 shows 1───N show_technicians N───1 technicians
 shows 1───N transports
 transports N───1 venues (origin_venue_id)
 transports N───1 venues (destination_venue_id)
-transports N───1 technicians (nullable)
+transports 1───N transport_technicians N───1 technicians
 transports 1───N transport_materials N───1 materials
 materials N───1 venues (entreposage = point de départ des timelines de cohérence)
 settings (singleton, COMMUN à tous les projets — lu par shows/transports comme source de leurs valeurs par défaut)
