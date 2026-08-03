@@ -31,6 +31,20 @@ ALLOWED_HOSTS = env.list('DJANGO_ALLOWED_HOSTS', default=['localhost', '127.0.0.
 # dans CSRF_TRUSTED_ORIGINS pour accepter les requêtes POST (ex. admin) en HTTPS.
 CSRF_TRUSTED_ORIGINS = env.list('DJANGO_CSRF_TRUSTED_ORIGINS', default=[])
 
+# Railway termine le TLS à sa frontière et transmet les requêtes en HTTP en
+# clair au conteneur, avec l'en-tête `X-Forwarded-Proto` pour indiquer le
+# protocole d'origine — sans cette ligne, Django considère TOUTE requête
+# comme non sécurisée (`request.is_secure()` renvoie toujours `False`).
+# Découvert le 2026-08-03 : ça cassait le callback OAuth Google, qui se
+# construit avec `request.build_absolute_uri()` (django-allauth) — l'URI de
+# redirection envoyée à Google était donc en `http://` au lieu de `https://`,
+# et ne correspondait jamais à l'URI enregistrée dans Google Cloud Console
+# (erreur `redirect_uri_mismatch`). Sûr uniquement parce que Railway (comme
+# Heroku) est le seul point d'entrée réseau du conteneur — ne jamais ajouter
+# ce réglage sur un serveur exposé directement, où l'en-tête pourrait être
+# falsifié par n'importe quel client.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
 
 # Application definition
 
