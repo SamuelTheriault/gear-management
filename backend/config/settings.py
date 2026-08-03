@@ -144,6 +144,27 @@ STORAGES = {
     },
 }
 
+# --- Frontend Vue servi par ce même service (déploiement "option B",
+# 2026-08-xx — voir CLAUDE.md et Dockerfile à la racine du repo) ---
+# `npm run build` (frontend/, base='/static/' — voir vite.config.js) produit
+# frontend/dist/ : index.html + assets/ hashés. Seul assets/ passe par le
+# pipeline STATICFILES_DIRS/collectstatic/WhiteNoise (sous le préfixe
+# 'assets', donc servi à /static/assets/... — exactement ce que le HTML
+# construit référence). index.html est servi tel quel par une vue dédiée
+# (inventory.frontend_views.spa_index), PAS par collectstatic : le faire
+# passer par ManifestStaticFilesStorage le renommerait avec un hash, cassant
+# l'URL stable dont ce catch-all a besoin.
+FRONTEND_DIST_DIR = BASE_DIR.parent / 'frontend' / 'dist'
+
+STATICFILES_DIRS = []
+_frontend_assets_dir = FRONTEND_DIST_DIR / 'assets'
+if _frontend_assets_dir.is_dir():
+    # Répertoire absent tant que `npm run build` n'a pas tourné (dev local
+    # sans frontend construit, ou avant la première étape du Dockerfile) —
+    # STATICFILES_DIRS lève ImproperlyConfigured sur un chemin inexistant,
+    # d'où la garde plutôt qu'une déclaration inconditionnelle.
+    STATICFILES_DIRS.append(('assets', _frontend_assets_dir))
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # CORS — le frontend Vue (dev server Vite) doit pouvoir appeler l'API.
