@@ -15,7 +15,9 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
-from django.urls import include, path
+from django.urls import include, path, re_path
+
+from inventory.frontend_views import spa_index
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -32,4 +34,12 @@ urlpatterns = [
     # session Django établie (utilisateur courant, logout) — voir
     # config/settings.py pour le détail du flux.
     path('api/auth/', include('dj_rest_auth.urls')),
+    # Catch-all SPA (déploiement "option B", voir CLAUDE.md et
+    # inventory/frontend_views.py) — DOIT rester en dernier : toute route
+    # non capturée par les motifs ci-dessus tombe ici et reçoit le
+    # `index.html` du build Vue, à charge de vue-router (mode history) de
+    # prendre le relais côté client. `static/` est exclu par défense en
+    # profondeur (WhiteNoiseMiddleware intercepte déjà ces requêtes plus tôt
+    # dans la pile, avant même la résolution d'URL).
+    re_path(r'^(?!api/|admin/|accounts/|static/).*$', spa_index, name='spa-index'),
 ]

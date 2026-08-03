@@ -2501,3 +2501,87 @@ points en carré » à droite de chaque ligne.
 
 Suite de tests : 340 (8 ajoutés, `EventTypeOrderTests`), flake8 propre,
 migration `0024` **à appliquer** (`python manage.py migrate`).
+
+## Mise à jour (2026-08-03) — Frontend en ligne : Django sert le build Vue
+
+Le frontend n'était déployé nulle part (Railway ne servait que `backend/`,
+`rootDirectory: backend`). Décidé avec Samuel (`AskUserQuestion`, tableau
+comparatif de 3 options) : **« option B » — Django sert le build Vue via
+WhiteNoise, même service** — plutôt qu'un 2e service Railway (cross-origin
+sans bénéfice net ici, nécessiterait en plus un proxy pour partager le
+domaine) ou un hébergeur statique séparé type Vercel (retenu comme
+migration future possible, voir plus bas — pas pour ce premier déploiement).
+
+- **`Dockerfile` à la racine du repo** (nouveau — remplace Railpack pour ce
+  service) : build multi-étapes, `node:22-slim` pour `npm run build` du
+  frontend puis `python:3.12-slim` pour le backend, qui copie le build Vue
+  déjà prêt. **Root Directory du service Railway doit passer de `backend`
+  à `/`** (racine du repo) pour que ce Dockerfile ait accès aux deux
+  dossiers — Railway détecte un `Dockerfile` à la racine du répertoire
+  source automatiquement, pas de builder à choisir manuellement. `migrate`/
+  `collectstatic` restent dans la commande de démarrage du conteneur (`CMD`
+  du Dockerfile), pas dans le build — même piège que documenté plus haut
+  (Railway sans phase `release:`), juste déplacé du `Procfile` (devenu
+  inutilisé par Railway une fois le Dockerfile détecté, mais laissé tel
+  quel pour référence locale) vers le `Dockerfile`.
+- **`frontend/vite.config.js`** : `base` devient conditionnel au mode —
+  `/` en dev (`npm run dev`, inchangé), `/static/` en build
+  (`npm run build`), pour que les assets construits correspondent au
+  préfixe `STATIC_URL` de Django.
+- **`backend/config/settings.py`** : `FRONTEND_DIST_DIR` (nouveau) pointe
+  vers `frontend/dist`. `STATICFILES_DIRS` inclut `frontend/dist/assets`
+  sous le préfixe `'assets'` (donc servi à `/static/assets/...`, exactement
+  ce que le HTML construit référence) — **avec garde d'existence du
+  dossier** : `STATICFILES_DIRS` sur un chemin absent lève
+  `ImproperlyConfigured`, et ce dossier n'existe qu'après un
+  `npm run build` (absent en dev local sans build, ou avant la première
+  étape du Dockerfile). Ne pas retirer cette garde.
+- **`backend/inventory/frontend_views.py`** (nouveau) : `spa_index` sert
+  `frontend/dist/index.html` tel quel (lecture disque directe, PAS via
+  `STATICFILES_DIRS`/`ManifestStaticFilesStorage` — qui renommerait le
+  fichier avec un hash et casserait l'URL stable dont ce catch-all a
+  besoin). Répond 501 avec un message explicite si le frontend n'est pas
+  construit, plutôt qu'un 404/500 opaque.
+- **`config/urls.py`** : catch-all `re_path(r'^(?!api/|admin/|accounts/|static/).*$', ...)`
+  **en dernier** dans `urlpatterns` — sert `spa_index` pour toute route non
+  capturée par l'API/l'admin/allauth, à charge de `vue-router` (mode
+  `history`, voir `frontend/src/router/index.js`) de prendre le relais
+  côté client sur une route profonde (ex. `/spectacles/5`, qui n'a pas de
+  fichier correspondant sur disque). `static/` exclu par défense en
+  profondeur — `WhiteNoiseMiddleware` intercepte déjà ces requêtes plus tôt
+  dans la pile.
+- **Pas de changement CORS/CSRF** : même origine que l'API désormais, ces
+  réglages (pensés pour le serveur de dev Vite en local) restent
+  inchangés et non pertinents en prod avec cette option.
+- **Chemin de migration vers un hébergeur statique séparé (option C),
+  gardé ouvert** : `frontend/src/api/client.js` lit déjà
+  `import.meta.env.VITE_API_BASE_URL` (repli sur `/api` en même origine) et
+  utilise déjà `credentials: 'include'` — migrer plus tard ne demanderait
+  qu'une variable d'environnement au build (pas de changement de code
+  frontend) plus, côté Django, `SESSION_COOKIE_SAMESITE = 'None'` et
+  l'ajout du nouveau domaine à `CORS_ALLOWED_ORIGINS`/
+  `CSRF_TRUSTED_ORIGINS`/`FRONTEND_URL`.
+- **Variable Railway à ajouter** : `FRONTEND_URL` n'existait pas encore
+  parmi les variables du service (vérifié via l'API Railway) — son défaut
+  de dev (`http://127.0.0.1:5173`) ferait rediriger un login Google réussi
+  vers `localhost` en prod. À fixer sur le domaine Railway du service
+  avant/au moment du changement de Root Directory.
+
+Vérifié dans ce bac à sable (venv reconstruit, Node 22 disponible) :
+`npm run build` produit `dist/index.html` référençant
+`/static/assets/index-HASH.js`/`.css` comme attendu ; `collectstatic`
+copie ces fichiers sans erreur sous `staticfiles/assets/` ; test via le
+client de test Django — route SPA profonde (`/spectacles/5`) → 200 avec le
+HTML du build, `/api/venues/` → 403 (pas swallowed par le catch-all,
+atteint bien la vue DRF), `/admin/login/` → 200, asset statique construit
+→ 200. `flake8` propre, `makemigrations --check --dry-run` propre (aucun
+changement de modèle), `inventory.test_project_access` (26 tests, la
+suite la plus susceptible d'interagir avec le routing/permissions) au
+vert. Suite complète non rejouée en entier ici (limite de temps du bac à
+sable, comme les fois précédentes).
+
+**Restait à faire au moment d'écrire cette note** : appliquer le
+changement de Root Directory + Dockerfile côté service Railway (fait
+depuis l'API par Claude avec confirmation de Samuel, ou par Samuel
+lui-même dans le dashboard) et ajouter la variable `FRONTEND_URL` — voir
+`suivi_projet.md` pour le statut à jour de cette étape.
