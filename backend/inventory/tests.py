@@ -19,6 +19,7 @@ from datetime import timedelta
 from django.contrib.auth.models import User as DjangoUser
 from django.test import TestCase
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -322,6 +323,165 @@ class MaterialQuantityHierarchyValidationTests(TestCase):
         }, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['quantity'], 20)
+
+
+class MaterialKitParentEligibilityTests(TestCase):
+    """Vérifie `Material.is_kit_parent` (ajouté le 2026-08-02, demande de
+    Samuel) : un matériel doit être explicitement activé comme parent avant
+    qu'un autre puisse le choisir — décision actée avec lui : pas de bascule
+    automatique sur les kits existants, à réactiver manuellement au cas par
+    cas (voir la migration 0022, purement additive)."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+
+    def test_cannot_set_parent_that_is_not_flagged_as_kit_parent(self):
+        # Défaut : is_kit_parent=False, même pour un matériel qui a déjà des
+        # composants créés directement en base (hors API) — voir schema.md.
+        kit = Material.objects.create(project=self.project, name="Kit Audio", quantity=1, venue=self.entrepot)
+        response = self.client.post('/api/materials/', {
+            'project': self.project.id,
+            'name': "Micro sans fil", 'category': _cat(self.project, "Audio").id,
+            'venue': self.entrepot.id, 'parent_material': kit.id,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('parent_material', response.data)
+
+    def test_can_set_parent_once_flagged_as_kit_parent(self):
+        kit = Material.objects.create(
+            project=self.project, name="Kit Audio", quantity=1, venue=self.entrepot, is_kit_parent=True,
+        )
+        response = self.client.post('/api/materials/', {
+            'project': self.project.id,
+            'name': "Micro sans fil", 'category': _cat(self.project, "Audio").id,
+            'venue': self.entrepot.id, 'parent_material': kit.id,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['parent_material'], kit.id)
+
+    def test_cannot_flag_material_as_kit_parent_with_quantity_above_one(self):
+        response = self.client.post('/api/materials/', {
+            'project': self.project.id,
+            'name': "Rallonges", 'category': _cat(self.project, "Autre").id,
+            'venue': self.entrepot.id, 'quantity': 20, 'is_kit_parent': True,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('is_kit_parent', response.data)
+
+    def test_is_kit_parent_defaults_to_false_and_is_exposed(self):
+        response = self.client.post('/api/materials/', {
+            'project': self.project.id,
+            'name': "Console", 'category': _cat(self.project, "Audio").id,
+            'venue': self.entrepot.id,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertFalse(response.data['is_kit_parent'])
+
+
+class MaterialKitParentAssignmentInheritanceTests(TestCase):
+    """Vérifie l'héritage d'assignations spectacle (ajouté le 2026-08-02,
+    demande de Samuel) : un composant qui vient de se faire rattacher à un kit
+    déjà assigné à un ou plusieurs spectacles hérite automatiquement des mêmes
+    assignations (ShowMaterial, quantity=1), qu'il vienne d'être créé ou
+    qu'on l'y rattache plus tard — voir
+    `_mirror_parent_show_material_assignments` dans serializers.py."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.kit = Material.objects.create(
+            project=self.project, name="Kit son", quantity=1, venue=self.entrepot, is_kit_parent=True,
+        )
+        self.show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+        )
+        self.autre_show = Show.objects.create(
+            project=self.project, title="Vertiges (relâche)", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20, day=2), end_datetime=_dt(22, day=2),
+        )
+
+    def test_new_component_inherits_parent_assignments_on_create(self):
+        ShowMaterial.objects.create(show=self.show, material=self.kit, quantity=1, is_rental=True, rental_vendor="Solotech")
+        response = self.client.post('/api/materials/', {
+            'project': self.project.id,
+            'name': "Micro sans fil", 'category': _cat(self.project, "Audio").id,
+            'venue': self.entrepot.id, 'parent_material': self.kit.id,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        micro = Material.objects.get(id=response.data['id'])
+        assignment = ShowMaterial.objects.get(show=self.show, material=micro)
+        self.assertEqual(assignment.quantity, 1)
+        self.assertTrue(assignment.is_rental)
+        self.assertEqual(assignment.rental_vendor, "Solotech")
+
+    def test_new_component_inherits_all_parent_shows(self):
+        ShowMaterial.objects.create(show=self.show, material=self.kit)
+        ShowMaterial.objects.create(show=self.autre_show, material=self.kit)
+        response = self.client.post('/api/materials/', {
+            'project': self.project.id,
+            'name': "Micro sans fil", 'category': _cat(self.project, "Audio").id,
+            'venue': self.entrepot.id, 'parent_material': self.kit.id,
+        }, format='json')
+        micro = Material.objects.get(id=response.data['id'])
+        self.assertEqual(
+            set(ShowMaterial.objects.filter(material=micro).values_list('show_id', flat=True)),
+            {self.show.id, self.autre_show.id},
+        )
+
+    def test_component_without_prior_assignment_inherits_nothing(self):
+        # Le kit n'est encore assigné nulle part : aucune ligne à copier.
+        response = self.client.post('/api/materials/', {
+            'project': self.project.id,
+            'name': "Micro sans fil", 'category': _cat(self.project, "Audio").id,
+            'venue': self.entrepot.id, 'parent_material': self.kit.id,
+        }, format='json')
+        micro = Material.objects.get(id=response.data['id'])
+        self.assertEqual(ShowMaterial.objects.filter(material=micro).count(), 0)
+
+    def test_attaching_existing_material_to_kit_later_also_inherits(self):
+        ShowMaterial.objects.create(show=self.show, material=self.kit)
+        libre = Material.objects.create(project=self.project, name="Micro", quantity=1, venue=self.entrepot)
+        response = self.client.patch(f'/api/materials/{libre.id}/', {
+            'parent_material': self.kit.id,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(ShowMaterial.objects.filter(show=self.show, material=libre).exists())
+
+    def test_patch_without_changing_parent_does_not_duplicate_or_reinherit(self):
+        # Retirer une assignation copiée puis re-sauvegarder la fiche (sans
+        # toucher au parent) ne doit pas la faire réapparaître.
+        ShowMaterial.objects.create(show=self.show, material=self.kit)
+        micro = Material.objects.create(
+            project=self.project, name="Micro", quantity=1, venue=self.entrepot, parent_material=self.kit,
+        )
+        ShowMaterial.objects.create(show=self.show, material=micro)
+        ShowMaterial.objects.get(show=self.show, material=micro).delete()
+
+        response = self.client.patch(f'/api/materials/{micro.id}/', {'notes': "RAS"}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(ShowMaterial.objects.filter(show=self.show, material=micro).exists())
+
+    def test_does_not_duplicate_if_component_already_assigned_to_same_show(self):
+        ShowMaterial.objects.create(show=self.show, material=self.kit)
+        libre = Material.objects.create(project=self.project, name="Micro", quantity=1, venue=self.entrepot)
+        ShowMaterial.objects.create(show=self.show, material=libre, quantity=1, is_rental=True)
+
+        response = self.client.patch(f'/api/materials/{libre.id}/', {
+            'parent_material': self.kit.id,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        assignment = ShowMaterial.objects.get(show=self.show, material=libre)
+        # L'assignation déjà existante n'est pas écrasée par la copie.
+        self.assertTrue(assignment.is_rental)
 
 
 class VenueCodeTests(TestCase):
@@ -2887,6 +3047,157 @@ class ParcoursAPITests(TestCase):
         lieux = [s['venue_name'] for s in ligne['stays']]
         self.assertEqual(lieux, ["Entrepôt", "Chapelle"])
 
+    def test_material_journey_simple_relocation_has_no_fork_fields(self):
+        # Déplacement complet (sans division) vers un lieu encore inoccupé :
+        # même ligne renommée, ni bifurcation ni fusion à signaler.
+        self._livraison(8, self.entrepot, self.salle, material=self.console)
+        response = self.client.get(f'/api/projects/{self.project.id}/material-journey/')
+        ligne = next(m for m in response.data['materials'] if m['name'] == "Console")
+        stays = ligne['stays']
+        self.assertEqual(len(stays), 2)
+        self.assertEqual(stays[0]['lane'], stays[1]['lane'])
+        self.assertIsNone(stays[0]['parent_lane'])
+        self.assertIsNone(stays[0]['merge_from_lane'])
+        self.assertIsNone(stays[1]['parent_lane'])
+        self.assertIsNone(stays[1]['merge_from_lane'])
+
+    def test_material_journey_forks_into_two_venues(self):
+        # Demande de Samuel (2026-08-01) : un matériel à quantité multiple
+        # scindé entre deux lieux à la fois doit créer une bifurcation, pas
+        # s'aplatir sur le lieu majoritaire.
+        caisse = Material.objects.create(
+            project=self.project, name="Caisse", venue=self.entrepot, quantity=3,
+        )
+        transport = Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=self.entrepot, destination_venue=self.salle,
+            scheduled_datetime=_dt(8), estimated_duration_minutes=60,
+            status=Transport.STATUS_CONFIRMED,
+        )
+        TransportMaterial.objects.create(transport=transport, material=caisse, quantity=2)
+
+        response = self.client.get(f'/api/projects/{self.project.id}/material-journey/')
+        ligne = next(m for m in response.data['materials'] if m['name'] == "Caisse")
+        stays = ligne['stays']
+
+        entrepot_stays = sorted((s for s in stays if s['venue_name'] == "Entrepôt"), key=lambda s: s['start'])
+        chapelle_stays = [s for s in stays if s['venue_name'] == "Chapelle"]
+        self.assertEqual(len(entrepot_stays), 2)
+        self.assertEqual(len(chapelle_stays), 1)
+
+        # L'origine garde la même ligne avant/après la bifurcation.
+        self.assertEqual(entrepot_stays[0]['lane'], entrepot_stays[1]['lane'])
+        self.assertEqual(entrepot_stays[0]['quantity'], 3)
+        self.assertEqual(entrepot_stays[1]['quantity'], 1)
+
+        # La partie qui part occupe une NOUVELLE ligne, distincte de l'origine.
+        self.assertNotEqual(chapelle_stays[0]['lane'], entrepot_stays[0]['lane'])
+        self.assertEqual(chapelle_stays[0]['quantity'], 2)
+        self.assertEqual(chapelle_stays[0]['parent_lane'], entrepot_stays[0]['lane'])
+        self.assertIsNone(chapelle_stays[0]['merge_from_lane'])
+
+    def test_material_journey_cascading_fork(self):
+        # Prévu explicitement par Samuel : une ligne née d'une bifurcation
+        # doit pouvoir elle-même se scinder plus loin, sans limite de niveau.
+        studio = Venue.objects.create(project=self.project, name="Studio")
+        caisse = Material.objects.create(
+            project=self.project, name="Caisse", venue=self.entrepot, quantity=5,
+        )
+        premier = Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=self.entrepot, destination_venue=self.salle,
+            scheduled_datetime=_dt(8), estimated_duration_minutes=60,
+            status=Transport.STATUS_CONFIRMED,
+        )
+        TransportMaterial.objects.create(transport=premier, material=caisse, quantity=3)
+        second = Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=self.salle, destination_venue=studio,
+            scheduled_datetime=_dt(10), estimated_duration_minutes=30,
+            status=Transport.STATUS_CONFIRMED,
+        )
+        TransportMaterial.objects.create(transport=second, material=caisse, quantity=1)
+
+        response = self.client.get(f'/api/projects/{self.project.id}/material-journey/')
+        ligne = next(m for m in response.data['materials'] if m['name'] == "Caisse")
+        stays = ligne['stays']
+        lanes = {s['lane'] for s in stays}
+        self.assertEqual(len(lanes), 3)
+
+        entrepot_stays = sorted((s for s in stays if s['venue_name'] == "Entrepôt"), key=lambda s: s['start'])
+        chapelle_stays = sorted((s for s in stays if s['venue_name'] == "Chapelle"), key=lambda s: s['start'])
+        studio_stays = [s for s in stays if s['venue_name'] == "Studio"]
+        self.assertEqual(len(entrepot_stays), 2)
+        self.assertEqual(len(chapelle_stays), 2)
+        self.assertEqual(len(studio_stays), 1)
+
+        lane_entrepot = entrepot_stays[0]['lane']
+        lane_chapelle = chapelle_stays[0]['lane']
+        lane_studio = studio_stays[0]['lane']
+        self.assertEqual({lane_entrepot, lane_chapelle, lane_studio}, lanes)
+
+        # Bifurcation n°1 : Entrepôt (5) → Entrepôt continue (2) + Chapelle naît (3).
+        self.assertEqual(entrepot_stays[0]['quantity'], 5)
+        self.assertEqual(entrepot_stays[1]['quantity'], 2)
+        self.assertEqual(chapelle_stays[0]['quantity'], 3)
+        self.assertEqual(chapelle_stays[0]['parent_lane'], lane_entrepot)
+
+        # Bifurcation n°2 : Chapelle (3) → Chapelle continue (2) + Studio naît (1).
+        self.assertEqual(chapelle_stays[1]['quantity'], 2)
+        self.assertEqual(studio_stays[0]['quantity'], 1)
+        self.assertEqual(studio_stays[0]['parent_lane'], lane_chapelle)
+
+        # L'Entrepôt n'est jamais reconcerné par la seconde bifurcation.
+        self.assertNotEqual(lane_entrepot, lane_chapelle)
+        self.assertNotEqual(lane_chapelle, lane_studio)
+
+    def test_material_journey_merges_back_into_existing_lane(self):
+        # Symétrique du test de bifurcation : une ligne qui revient vers un
+        # lieu déjà occupé par une autre ligne doit fusionner dedans, pas
+        # ouvrir une troisième ligne indépendante.
+        caisse = Material.objects.create(
+            project=self.project, name="Caisse", venue=self.entrepot, quantity=3,
+        )
+        depart = Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=self.entrepot, destination_venue=self.salle,
+            scheduled_datetime=_dt(8), estimated_duration_minutes=60,
+            status=Transport.STATUS_CONFIRMED,
+        )
+        TransportMaterial.objects.create(transport=depart, material=caisse, quantity=2)
+        retour = Transport.objects.create(
+            show=self.show, transport_type='pickup',
+            origin_venue=self.salle, destination_venue=self.entrepot,
+            scheduled_datetime=_dt(10), estimated_duration_minutes=30,
+            status=Transport.STATUS_CONFIRMED,
+        )
+        TransportMaterial.objects.create(transport=retour, material=caisse, quantity=2)
+
+        response = self.client.get(f'/api/projects/{self.project.id}/material-journey/')
+        ligne = next(m for m in response.data['materials'] if m['name'] == "Caisse")
+        stays = ligne['stays']
+        self.assertEqual(len(stays), 4)
+
+        entrepot_stays = sorted((s for s in stays if s['venue_name'] == "Entrepôt"), key=lambda s: s['start'])
+        chapelle_stays = [s for s in stays if s['venue_name'] == "Chapelle"]
+        self.assertEqual(len(entrepot_stays), 3)
+        self.assertEqual(len(chapelle_stays), 1)
+
+        lane_entrepot = entrepot_stays[0]['lane']
+        lane_chapelle = chapelle_stays[0]['lane']
+        self.assertTrue(all(s['lane'] == lane_entrepot for s in entrepot_stays))
+
+        self.assertEqual(entrepot_stays[0]['quantity'], 3)
+        self.assertEqual(entrepot_stays[1]['quantity'], 1)
+        self.assertEqual(entrepot_stays[2]['quantity'], 3)
+        self.assertEqual(chapelle_stays[0]['quantity'], 2)
+        self.assertEqual(chapelle_stays[0]['parent_lane'], lane_entrepot)
+
+        # La fusion est annotée sur le tronçon d'arrivée, pas ailleurs.
+        self.assertEqual(entrepot_stays[2]['merge_from_lane'], lane_chapelle)
+        self.assertIsNone(entrepot_stays[0]['merge_from_lane'])
+        self.assertIsNone(entrepot_stays[1]['merge_from_lane'])
+
     def test_material_journey_includes_confirmed_transports(self):
         self._livraison(8, self.entrepot, self.salle, material=self.console)
         response = self.client.get(f'/api/projects/{self.project.id}/material-journey/')
@@ -3197,6 +3508,77 @@ class ShowPhaseInheritanceTests(TestCase):
         self.assertEqual(seul.engagement_start, seul.effective_start)
         self.assertEqual(seul.engagement_end, seul.effective_end)
 
+    def test_api_exposes_engagement_window(self):
+        # La fiche a besoin de la fenêtre RÉELLEMENT mobilisée (montage
+        # compris) pour l'afficher — distincte de `effective_start`/`_end`,
+        # qui reste le créneau seul et sert au conflit de lieu (2026-08-01,
+        # demande de Samuel : corriger l'affichage de la fenêtre effective
+        # sur la fiche spectacle pour inclure montage/démontage + buffer).
+        response = self.client.get(f'/api/shows/{self.show.id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            parse_datetime(response.data['engagement_start']), self.montage.effective_start,
+        )
+        self.assertEqual(
+            parse_datetime(response.data['engagement_end']), self.show.effective_end,
+        )
+        # Sur ce spectacle, le montage recule bien le début par rapport au
+        # seul créneau — sinon le test ne prouverait rien.
+        self.assertNotEqual(
+            response.data['engagement_start'], response.data['effective_start'],
+        )
+
+    def test_display_title_reflects_current_parent_name(self):
+        # Signalé par Samuel (2026-08-02) : le titre d'un bloc était généré
+        # UNE FOIS à sa création et ne bougeait plus si l'événement était
+        # renommé ensuite. `display_title` recalcule à chaque lecture depuis
+        # `parent_show.title` — rien n'est jamais recopié.
+        bloc = Show.objects.create(
+            project=self.project, venue=self.salle, event_type='teardown',
+            start_datetime=_dt(22), end_datetime=_dt(23),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+            parent_show=self.show,
+        )
+        self.assertEqual(bloc.display_title, "Démontage — Vertiges")
+        self.show.title = "Vertiges (reprise)"
+        self.show.save()
+        bloc.refresh_from_db()
+        self.assertEqual(bloc.display_title, "Démontage — Vertiges (reprise)")
+
+    def test_display_title_with_optional_suffix(self):
+        # `title`, pour un bloc, n'est plus le nom complet mais une précision
+        # optionnelle ajoutée après le type.
+        bloc = Show.objects.create(
+            project=self.project, venue=self.salle, event_type='rehearsal',
+            title="technique", start_datetime=_dt(10), end_datetime=_dt(12),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+            parent_show=self.show,
+        )
+        self.assertEqual(bloc.display_title, "Répétition technique — Vertiges")
+
+    def test_title_optional_for_a_block_but_required_for_a_top_level_show(self):
+        # Un bloc peut être créé sans titre (2026-08-02, cas par défaut côté
+        # frontend depuis cette même demande de Samuel).
+        response = self.client.post('/api/shows/', {
+            'project': self.project.id, 'venue': self.salle.id,
+            'event_type': 'teardown', 'title': '',
+            'start_datetime': _dt(22).isoformat(), 'end_datetime': _dt(23).isoformat(),
+            'buffer_before_minutes': 0, 'buffer_after_minutes': 0,
+            'parent_show': self.show.id,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['display_title'], "Démontage — Vertiges")
+
+        # Un événement top-level, lui, exige toujours un titre — `blank=True`
+        # côté modèle ne devait rendre `title` optionnel QUE pour un bloc.
+        response = self.client.post('/api/shows/', {
+            'project': self.project.id, 'venue': self.autre_salle.id,
+            'event_type': 'performance', 'title': '',
+            'start_datetime': _dt(9).isoformat(), 'end_datetime': _dt(10).isoformat(),
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('title', response.data)
+
 
 class RehearsalPhaseAutonomyTests(TestCase):
     """Un bloc de répétition rattaché a SES ressources (2026-07-31, Samuel).
@@ -3340,3 +3722,291 @@ class RehearsalPhaseAutonomyTests(TestCase):
         self.assertEqual(repetition['technician_count'], 1)
         self.assertTrue(demontage['inherits_resources'])
         self.assertIsNone(demontage['material_count'])
+
+
+class MaterialScheduleAPITests(TestCase):
+    """Agenda d'un matériel — `GET /api/materials/{id}/schedule/` (2026-08-01).
+
+    Demande de Samuel : la fiche matériel doit montrer, en plus des
+    assignations à des spectacles, les montages, démontages, répétitions et
+    déplacements, dans l'ordre chronologique.
+
+    Le point qui justifie de calculer ça côté backend : un montage n'a AUCUNE
+    assignation propre — il utilise le matériel de son événement (voir
+    `Show.inherits_resources`). Le déduire côté Vue reviendrait à y recopier
+    une règle métier.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.autre_salle = Venue.objects.create(project=self.project, name="Salle 2")
+        self.console = Material.objects.create(
+            project=self.project, name="Console", venue=self.salle, quantity=2,
+        )
+        self.show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+
+    def _agenda(self):
+        response = self.client.get(f'/api/materials/{self.console.id}/schedule/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return response.data['entries']
+
+    def test_an_assignment_appears_with_its_schedule(self):
+        ShowMaterial.objects.create(show=self.show, material=self.console, quantity=2)
+        entree = next(e for e in self._agenda() if e['id'] == self.show.id)
+        self.assertEqual(entree['kind'], 'show')
+        self.assertEqual(entree['event_type'], 'performance')
+        self.assertEqual(entree['quantity'], 2)
+        self.assertEqual(entree['venue_name'], "Chapelle")
+        self.assertFalse(entree['inherited'])
+
+    def test_setup_and_teardown_appear_without_being_assigned(self):
+        ShowMaterial.objects.create(show=self.show, material=self.console, quantity=1)
+        montage = Show.objects.create(
+            project=self.project, title="Montage", venue=self.salle,
+            event_type='setup', start_datetime=_dt(16), end_datetime=_dt(19),
+            buffer_before_minutes=0, buffer_after_minutes=0, parent_show=self.show,
+        )
+        demontage = Show.objects.create(
+            project=self.project, title="Démontage", venue=self.salle,
+            event_type='teardown', start_datetime=_dt(22), end_datetime=_dt(23),
+            buffer_before_minutes=0, buffer_after_minutes=0, parent_show=self.show,
+        )
+        # Aucun de ces blocs ne porte de ShowMaterial : c'est bien la règle
+        # d'héritage qui les fait apparaître.
+        self.assertFalse(ShowMaterial.objects.filter(show_id=montage.id).exists())
+        agenda = {e['id']: e for e in self._agenda() if e['kind'] == 'show'}
+        self.assertTrue(agenda[montage.id]['inherited'])
+        self.assertEqual(agenda[montage.id]['parent_title'], "Vertiges")
+        self.assertTrue(agenda[demontage.id]['inherited'])
+
+    def test_an_attached_rehearsal_appears_once_and_is_not_inherited(self):
+        # Le bloc de répétition porte SA copie (2026-07-31) : il doit compter
+        # comme une assignation à part entière, pas comme un bloc hérité.
+        ShowMaterial.objects.create(show=self.show, material=self.console, quantity=1)
+        repetition = Show.objects.create(
+            project=self.project, title="Répétition", venue=self.salle,
+            event_type='rehearsal', start_datetime=_dt(14), end_datetime=_dt(16),
+            buffer_before_minutes=0, buffer_after_minutes=0, parent_show=self.show,
+        )
+        ShowMaterial.objects.create(show=repetition, material=self.console, quantity=1)
+        lignes = [e for e in self._agenda() if e['id'] == repetition.id and e['kind'] == 'show']
+        self.assertEqual(len(lignes), 1)
+        self.assertFalse(lignes[0]['inherited'])
+
+    def test_entries_are_sorted_chronologically(self):
+        # Titre du bloc laissé vide à dessein (2026-08-02) : sur un bloc,
+        # `title` n'est plus qu'une précision optionnelle — voir
+        # `Show.display_title`, qui calcule "Montage — Vertiges" tout seul.
+        ShowMaterial.objects.create(show=self.show, material=self.console, quantity=1)
+        Show.objects.create(
+            project=self.project, venue=self.salle,
+            event_type='setup', start_datetime=_dt(16), end_datetime=_dt(19),
+            buffer_before_minutes=0, buffer_after_minutes=0, parent_show=self.show,
+        )
+        titres = [e['title'] for e in self._agenda() if e['kind'] == 'show']
+        self.assertEqual(titres, ["Montage — Vertiges", "Vertiges"])
+
+    def test_a_transport_appears_in_the_timeline(self):
+        transport = Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=self.autre_salle, destination_venue=self.salle,
+            scheduled_datetime=_dt(12), estimated_duration_minutes=60,
+            status='confirmed',
+        )
+        TransportMaterial.objects.create(transport=transport, material=self.console, quantity=2)
+        entree = next(e for e in self._agenda() if e['kind'] == 'transport')
+        self.assertEqual(entree['id'], transport.id)
+        self.assertEqual(entree['quantity'], 2)
+        self.assertIn("Salle 2", entree['title'])
+
+    def test_an_unscheduled_proposal_is_listed_last_without_a_date(self):
+        # Une proposition à approuver n'a pas d'heure : la masquer cacherait
+        # justement ce qu'il reste à compléter.
+        ShowMaterial.objects.create(show=self.show, material=self.console, quantity=1)
+        proposition = Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=self.autre_salle, destination_venue=self.salle,
+            scheduled_datetime=None, estimated_duration_minutes=60,
+            status='to_approve',
+        )
+        TransportMaterial.objects.create(transport=proposition, material=self.console, quantity=1)
+        agenda = self._agenda()
+        sans_heure = [e for e in agenda if e['start'] is None]
+        self.assertTrue(sans_heure)
+        self.assertEqual(agenda[-1]['start'], None)
+
+    def test_the_window_follows_the_project_dates(self):
+        # Fenêtre bornée aux dates du projet (2026-08-01) — la même que les
+        # écrans « Parcours », pour que les deux racontent la même période.
+        self.project.start_date = _dt(0).date()
+        self.project.end_date = _dt(0).date()
+        self.project.save()
+        response = self.client.get(f'/api/materials/{self.console.id}/schedule/')
+        self.assertIsNotNone(response.data['window']['start'])
+        self.assertIsNotNone(response.data['window']['end'])
+
+    def test_an_entry_outside_the_project_dates_is_set_aside(self):
+        # Écartée, mais comptée : une assignation qui disparaîtrait sans un mot
+        # ferait douter de l'écran plutôt que des dates du projet.
+        ShowMaterial.objects.create(show=self.show, material=self.console, quantity=1)
+        hors_projet = Show.objects.create(
+            project=self.project, title="L'an prochain", venue=self.salle,
+            event_type='performance',
+            start_datetime=_dt(20, day=28), end_datetime=_dt(22, day=28),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        ShowMaterial.objects.create(show=hors_projet, material=self.console, quantity=1)
+        self.project.start_date = _dt(0).date()
+        self.project.end_date = _dt(0).date()
+        self.project.save()
+
+        response = self.client.get(f'/api/materials/{self.console.id}/schedule/')
+        ids = {e['id'] for e in response.data['entries'] if e['kind'] == 'show'}
+        self.assertIn(self.show.id, ids)
+        self.assertNotIn(hors_projet.id, ids)
+        self.assertEqual(response.data['outside_window'], 1)
+
+    def test_an_unscheduled_proposal_survives_the_window(self):
+        # Sans heure, rien à comparer à la fenêtre — et c'est justement ce
+        # qu'il reste à planifier, donc on la garde.
+        self.project.start_date = _dt(0).date()
+        self.project.end_date = _dt(0).date()
+        self.project.save()
+        proposition = Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=self.autre_salle, destination_venue=self.salle,
+            scheduled_datetime=None, estimated_duration_minutes=60,
+            status='to_approve',
+        )
+        TransportMaterial.objects.create(transport=proposition, material=self.console, quantity=1)
+        response = self.client.get(f'/api/materials/{self.console.id}/schedule/')
+        self.assertIn(
+            proposition.id,
+            {e['id'] for e in response.data['entries'] if e['kind'] == 'transport'},
+        )
+
+    def test_a_conflict_is_reported_on_the_assignment(self):
+        ShowMaterial.objects.create(show=self.show, material=self.console, quantity=2)
+        ailleurs = Show.objects.create(
+            project=self.project, title="Ailleurs", venue=self.autre_salle,
+            event_type='rehearsal', start_datetime=_dt(21), end_datetime=_dt(23),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        ShowMaterial.objects.create(show=ailleurs, material=self.console, quantity=1)
+        conflits = [e for e in self._agenda() if e.get('conflict')]
+        self.assertEqual({e['id'] for e in conflits}, {self.show.id, ailleurs.id})
+
+
+class MaterialDistributionAPITests(TestCase):
+    """Répartition d'un matériel entre les lieux — `GET /api/materials/{id}/distribution/`.
+
+    Ajoutée le 2026-08-01 à la demande de Samuel : un matériel possédé en
+    plusieurs exemplaires peut se séparer entre plusieurs lieux, et la fiche
+    n'affichait que son lieu d'ORIGINE — faux dès qu'un transport en a bougé
+    une partie. Affiché sur toute la durée du projet (deuxième précision de
+    Samuel, même jour), une barre par lieu, plutôt qu'une photo à un instant.
+
+    L'endpoint réutilise `get_material_journey`/`get_material_transports` : les
+    tests portent donc sur le contrat de la réponse et sur la fenêtre, pas sur
+    l'algorithme des séjours, déjà couvert par `ParcoursAPITests`.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(
+            project=self.project, name="Entrepôt", code="ENTR", is_storage=True,
+        )
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle", code="CHAP")
+        self.rallonges = Material.objects.create(
+            project=self.project, name="Rallonges", venue=self.entrepot, quantity=20,
+        )
+        self.show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+
+    def _transport(self, quantity, depart, duree=60, statut='confirmed'):
+        transport = Transport.objects.create(
+            show=self.show, transport_type='delivery',
+            origin_venue=self.entrepot, destination_venue=self.salle,
+            scheduled_datetime=depart, estimated_duration_minutes=duree,
+            status=statut,
+        )
+        TransportMaterial.objects.create(
+            transport=transport, material=self.rallonges, quantity=quantity,
+        )
+        return transport
+
+    def _repartition(self):
+        response = self.client.get(f'/api/materials/{self.rallonges.id}/distribution/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return response.data
+
+    def test_the_window_covers_the_whole_project(self):
+        data = self._repartition()
+        self.assertEqual(data['total'], 20)
+        self.assertIsNotNone(data['window']['start'])
+        self.assertIsNotNone(data['window']['end'])
+
+    def test_everything_sits_at_its_origin_before_any_transport(self):
+        data = self._repartition()
+        lieux = {s['venue_id'] for s in data['stays']}
+        self.assertEqual(lieux, {self.entrepot.id})
+        self.assertEqual(data['stays'][0]['quantity'], 20)
+
+    def test_a_partial_transport_splits_the_stock_between_two_venues(self):
+        self._transport(quantity=8, depart=_dt(10))
+        data = self._repartition()
+        # Les deux lieux détiennent une part du stock après le déplacement.
+        apres = [s for s in data['stays'] if s['venue_id'] == self.salle.id]
+        self.assertTrue(apres)
+        self.assertEqual(apres[0]['quantity'], 8)
+        reste = [
+            s for s in data['stays']
+            if s['venue_id'] == self.entrepot.id and s['quantity'] == 12
+        ]
+        self.assertTrue(reste)
+
+    def test_a_confirmed_transport_is_returned_alongside_the_stays(self):
+        transport = self._transport(quantity=8, depart=_dt(10))
+        data = self._repartition()
+        self.assertEqual([t['transport_id'] for t in data['transports']], [transport.id])
+
+    def test_an_unconfirmed_proposal_moves_nothing(self):
+        # Même règle que le reste du module : seule une confirmation déplace.
+        self._transport(quantity=8, depart=_dt(10), statut='to_approve')
+        data = self._repartition()
+        self.assertEqual({s['venue_id'] for s in data['stays']}, {self.entrepot.id})
+        self.assertEqual(data['transports'], [])
+
+    def test_a_project_without_dates_or_events_has_no_window(self):
+        vide = Project.objects.create(name="Projet vide")
+        lieu = Venue.objects.create(project=vide, name="Ailleurs")
+        materiel = Material.objects.create(
+            project=vide, name="Câbles", venue=lieu, quantity=5,
+        )
+        response = self.client.get(f'/api/materials/{materiel.id}/distribution/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data['window'])
+        self.assertEqual(response.data['stays'], [])
+
+    def test_an_inactive_material_still_answers(self):
+        # On arrive ici depuis la fiche, qui reste consultable pour un matériel
+        # désactivé — contrairement à la liste du parcours, filtrée sur actif.
+        self.rallonges.is_active = False
+        self.rallonges.save()
+        response = self.client.get(f'/api/materials/{self.rallonges.id}/distribution/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['stays'])

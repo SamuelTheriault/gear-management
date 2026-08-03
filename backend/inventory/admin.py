@@ -192,6 +192,10 @@ class SettingsAdmin(admin.ModelAdmin):
         'default_buffer_before_minutes', 'default_buffer_after_minutes',
         'default_transport_duration_minutes', 'date_format', 'time_format',
     )
+    # Les 6 champs de couleur (transport + types de spectacle, 2026-08-02)
+    # sont éditables via le formulaire de changement par défaut (tous les
+    # champs du modèle y apparaissent sans `fields`/`fieldsets` explicite) —
+    # pas ajoutés à `list_display`, cette page n'affiche qu'une seule ligne.
 
     def has_add_permission(self, request):
         return not Settings.objects.exists()

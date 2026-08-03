@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import AppShell from '../components/AppShell.vue'
 import { api } from '../api/client'
 import { useActiveProject } from '../composables/useActiveProject'
+import { useChipFilter } from '../composables/useChipFilter'
 
 /**
  * Liste des transports — port de Transports.dc.html, branché sur l'API réelle
@@ -22,6 +23,11 @@ import { useActiveProject } from '../composables/useActiveProject'
  * `shows`/`venues` déjà chargés pour le formulaire — même logique, mêmes
  * exemptions (lieu d'entrepôt = pas de borne), pour proposer une heure par
  * défaut et afficher les heures de référence avant même de soumettre.
+ *
+ * Filtre « Jour » (2026-08-02, demande de Samuel) : réutilise `t.day` (déjà
+ * calculé) comme clé, trié chronologiquement avec « À planifier » (pas de
+ * `scheduled_datetime`) toujours en dernier — voir la note dédiée dans
+ * CLAUDE.md.
  */
 
 const { activeProjectId } = useActiveProject()
@@ -93,16 +99,43 @@ const decorated = computed(() =>
       hasTech: (t.technician_names ?? []).length > 0,
       techInitials: (t.technician_names ?? []).map(initials).join(' '),
       techLabel: (t.technician_names ?? []).join(', ') || 'Non assigné',
-      techColor: (t.technician_names ?? []).length > 0 ? 'rgba(255,255,255,.75)' : 'rgba(255,255,255,.35)',
+      techColor: (t.technician_names ?? []).length > 0 ? 'rgba(var(--fg-rgb),.75)' : 'rgba(var(--fg-rgb),.35)',
       materielLabel: itemCount > 0 ? `${itemCount} item(s) · ${unitCount} unité(s)` : 'Camion vide',
     }
   }),
 )
 
-const selectedShow = ref('Tous')
-const selectedStatus = ref('Tous')
-const selectedTech = ref('Tous')
+// ⌘+clic pour combiner plusieurs valeurs (2026-08-01, à la demande de
+// Samuel — même comportement que toutes les puces de filtre de l'app, voir
+// useChipFilter.js). Quatre groupes indépendants (jour, spectacle, statut,
+// technicien), combinés en ET.
+const dayFilter = useChipFilter()
+const showFilter = useChipFilter()
+const statusFilter = useChipFilter()
+const techFilter = useChipFilter()
 const groupBy = ref('jour')
+
+// Options de jour (2026-08-02, demande de Samuel) : la liste n'est PAS
+// bornée à une semaine comme le Dashboard — elle peut couvrir tout le
+// projet — donc triée chronologiquement plutôt que dans l'ordre de l'API,
+// avec « À planifier » (pas de `scheduled_datetime`) toujours en dernier
+// plutôt que mélangé aux vraies dates.
+const dayOptions = computed(() => {
+  const byLabel = new Map()
+  decorated.value.forEach((t) => {
+    if (!byLabel.has(t.day)) {
+      byLabel.set(t.day, t.scheduled_datetime ? new Date(t.scheduled_datetime) : null)
+    }
+  })
+  return [...byLabel.entries()]
+    .sort(([, a], [, b]) => {
+      if (!a && !b) return 0
+      if (!a) return 1
+      if (!b) return -1
+      return a - b
+    })
+    .map(([label]) => label)
+})
 
 const showOptions = computed(() => [...new Set(decorated.value.map((t) => t.show_title))])
 const techOptions = computed(() => {
@@ -112,31 +145,44 @@ const techOptions = computed(() => {
   return [...names, 'Non assigné']
 })
 
-function mkChip(label, selectedRef) {
-  return {
-    label,
-    active: selectedRef.value === label,
-    select: () => (selectedRef.value = label),
-  }
+function mkAllChip(chipFilter, label = 'Tous') {
+  return { label, active: chipFilter.selected.value.size === 0, select: () => chipFilter.selectAll() }
 }
 
-const showFilters = computed(() => ['Tous', ...showOptions.value].map((s) => mkChip(s, selectedShow)))
-const statusFilters = computed(() => [
-  mkChip('Tous', selectedStatus),
-  { label: 'Confirmé', active: selectedStatus.value === 'confirmed', select: () => (selectedStatus.value = 'confirmed') },
-  { label: 'À approuver', active: selectedStatus.value === 'to_approve', select: () => (selectedStatus.value = 'to_approve') },
+function mkChip(chipFilter, value, label = value) {
+  return { label, active: chipFilter.isSelected(value), select: (event) => chipFilter.toggle(value, event) }
+}
+
+const dayFilters = computed(() => [
+  mkAllChip(dayFilter, 'Tous les jours'),
+  ...dayOptions.value.map((d) => mkChip(dayFilter, d)),
 ])
-const techFilters = computed(() => ['Tous', ...techOptions.value].map((t) => mkChip(t, selectedTech)))
+const showFilters = computed(() => [mkAllChip(showFilter), ...showOptions.value.map((s) => mkChip(showFilter, s))])
+const statusFilters = computed(() => [
+  mkAllChip(statusFilter),
+  mkChip(statusFilter, 'confirmed', 'Confirmé'),
+  mkChip(statusFilter, 'to_approve', 'À approuver'),
+])
+const techFilters = computed(() => [mkAllChip(techFilter), ...techOptions.value.map((t) => mkChip(techFilter, t))])
+
+// Le filtre technicien a une sémantique un peu différente des deux autres :
+// un déplacement peut avoir plusieurs personnes assignées, il correspond
+// dès qu'UNE d'entre elles est dans la sélection (OU au sein du groupe,
+// comme les autres champs, mais sur un tableau plutôt qu'une valeur seule).
+function techMatches(t) {
+  if (techFilter.selected.value.size === 0) return true
+  const names = t.technician_names ?? []
+  if (names.length === 0) return techFilter.isSelected('Non assigné')
+  return names.some((n) => techFilter.isSelected(n))
+}
 
 const filtered = computed(() =>
   decorated.value.filter(
     (t) =>
-      (selectedShow.value === 'Tous' || t.show_title === selectedShow.value) &&
-      (selectedStatus.value === 'Tous' || t.status === selectedStatus.value) &&
-      (selectedTech.value === 'Tous' ||
-        (selectedTech.value === 'Non assigné'
-          ? (t.technician_names ?? []).length === 0
-          : (t.technician_names ?? []).includes(selectedTech.value))),
+      dayFilter.passes(t.day) &&
+      showFilter.passes(t.show_title) &&
+      statusFilter.passes(t.status) &&
+      techMatches(t),
   ),
 )
 
@@ -311,13 +357,25 @@ async function submitTransport(force = false) {
 
       <div class="filters">
         <div class="filters__row">
+          <div class="filters__label">Jour</div>
+          <div
+            v-for="f in dayFilters"
+            :key="f.label"
+            class="chip"
+            :class="{ 'chip--active': f.active }"
+            @click="f.select($event)"
+          >
+            {{ f.label }}
+          </div>
+        </div>
+        <div class="filters__row">
           <div class="filters__label">Spectacle</div>
           <div
             v-for="f in showFilters"
             :key="f.label"
             class="chip"
             :class="{ 'chip--active': f.active }"
-            @click="f.select"
+            @click="f.select($event)"
           >
             {{ f.label }}
           </div>
@@ -329,7 +387,7 @@ async function submitTransport(force = false) {
             :key="f.label"
             class="chip"
             :class="{ 'chip--active': f.active }"
-            @click="f.select"
+            @click="f.select($event)"
           >
             {{ f.label }}
           </div>
@@ -342,7 +400,7 @@ async function submitTransport(force = false) {
               :key="f.label"
               class="chip"
               :class="{ 'chip--active': f.active }"
-              @click="f.select"
+              @click="f.select($event)"
             >
               {{ f.label }}
             </div>
@@ -411,11 +469,11 @@ async function submitTransport(force = false) {
         <div v-if="referenceShows.departureShow || referenceShows.arrivalShow" class="reference-times">
           <div v-if="referenceShows.departureShow" class="reference-times__item">
             <span class="reference-times__label">Fin du départ</span>
-            <span class="reference-times__value">{{ referenceShows.departureShow.title }} · {{ fmtReference(referenceShows.departureShow.effective_end) }}</span>
+            <span class="reference-times__value">{{ referenceShows.departureShow.display_title }} · {{ fmtReference(referenceShows.departureShow.effective_end) }}</span>
           </div>
           <div v-if="referenceShows.arrivalShow" class="reference-times__item">
             <span class="reference-times__label">Début de l'arrivée</span>
-            <span class="reference-times__value">{{ referenceShows.arrivalShow.title }} · {{ fmtReference(referenceShows.arrivalShow.effective_start) }}</span>
+            <span class="reference-times__value">{{ referenceShows.arrivalShow.display_title }} · {{ fmtReference(referenceShows.arrivalShow.effective_start) }}</span>
           </div>
         </div>
         <div class="add-form__row">
@@ -428,7 +486,7 @@ async function submitTransport(force = false) {
               @change="fieldErrors.show = false"
             >
               <option value="" disabled>Spectacle…</option>
-              <option v-for="s in shows" :key="s.id" :value="s.id">{{ s.title }}</option>
+              <option v-for="s in shows" :key="s.id" :value="s.id">{{ s.display_title }}</option>
             </select>
           </label>
           <label class="add-form__field">
@@ -519,7 +577,7 @@ async function submitTransport(force = false) {
 
 .page-count {
   font: 500 12px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .filters {
@@ -543,14 +601,14 @@ async function submitTransport(force = false) {
   font: 700 10.5px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(var(--fg-rgb), 0.35);
   margin-right: 2px;
 }
 
 .group-toggle {
   display: flex;
   gap: 4px;
-  background: #1b1f25;
+  background: var(--bg-row);
   border-radius: var(--radius-notch-sm);
   padding: 3px;
   flex: none;
@@ -561,17 +619,17 @@ async function submitTransport(force = false) {
   border-radius: 0 6px 0 6px;
   font: 600 11.5px system-ui;
   cursor: pointer;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .group-toggle__item--active {
-  background: rgba(155, 138, 239, 0.18);
+  background: rgba(var(--accent-rgb), 0.18);
   color: var(--accent);
 }
 
 .hint {
   font: 500 13px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .hint--error {
@@ -594,7 +652,7 @@ async function submitTransport(force = false) {
   font: 700 11px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .transport-row {
@@ -626,19 +684,19 @@ async function submitTransport(force = false) {
 
 .transport-row__codes {
   font: 700 14px var(--font-mono);
-  color: #fff;
+  color: rgb(var(--fg-rgb));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .transport-row__arrow {
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(var(--fg-rgb), 0.35);
 }
 
 .transport-row__show {
   font: 400 11px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -650,12 +708,12 @@ async function submitTransport(force = false) {
 
 .transport-row__time-main {
   font: 600 13px system-ui;
-  color: rgba(255, 255, 255, 0.8);
+  color: rgba(var(--fg-rgb), 0.8);
 }
 
 .transport-row__time-sub {
   font: 400 11px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .transport-row__tech {
@@ -694,7 +752,7 @@ async function submitTransport(force = false) {
 
 .transport-row__materiel {
   font: 600 11px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
   min-width: 110px;
 }
 
@@ -709,7 +767,7 @@ async function submitTransport(force = false) {
 
 .transport-row__link {
   font: 600 11px system-ui;
-  color: #a5b4fc;
+  color: var(--link);
   cursor: pointer;
   white-space: nowrap;
   margin-left: auto;
@@ -724,7 +782,7 @@ async function submitTransport(force = false) {
   gap: 10px;
   padding: 64px 20px;
   background: var(--bg-card);
-  border: 1px dashed rgba(255, 255, 255, 0.15);
+  border: 1px dashed rgba(var(--fg-rgb), 0.15);
   border-radius: var(--radius-notch-lg);
 }
 
@@ -732,12 +790,12 @@ async function submitTransport(force = false) {
   width: 40px;
   height: 40px;
   border-radius: 0 10px 0 10px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--fg-rgb), 0.06);
 }
 
 .empty__title {
   font: 600 13px system-ui;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--fg-rgb), 0.6);
 }
 
 .reference-times {
@@ -746,7 +804,7 @@ async function submitTransport(force = false) {
   gap: 8px 24px;
   padding: 10px 12px;
   border-radius: var(--radius-notch-sm);
-  background: #1b1f25;
+  background: var(--bg-row);
   border: 1px solid var(--border-card);
 }
 
@@ -760,12 +818,12 @@ async function submitTransport(force = false) {
   font: 700 10px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .reference-times__value {
   font: 500 12.5px system-ui;
-  color: rgba(255, 255, 255, 0.8);
+  color: rgba(var(--fg-rgb), 0.8);
 }
 
 </style>

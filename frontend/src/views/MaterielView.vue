@@ -3,6 +3,8 @@ import { ref, computed, watch } from 'vue'
 import AppShell from '../components/AppShell.vue'
 import { api } from '../api/client'
 import { useActiveProject } from '../composables/useActiveProject'
+import { useChipFilter } from '../composables/useChipFilter'
+import { normalizeText } from '../utils/text'
 
 /**
  * Liste du matériel — port de Materiel.dc.html, branché sur l'API réelle
@@ -36,7 +38,7 @@ const loadError = ref(null)
 // modèle Django. Gérées dans /materiel/categories.
 const categories = ref([])
 
-const NO_CATEGORY = { label: 'Sans catégorie', color: 'rgba(255,255,255,.3)' }
+const NO_CATEGORY = { label: 'Sans catégorie', color: 'rgba(var(--fg-rgb),.3)' }
 
 const ownershipMeta = {
   owned: { label: 'Propriété', color: 'oklch(0.72 0.13 165)', bg: 'oklch(0.72 0.13 165 / .16)' },
@@ -108,7 +110,10 @@ const decorated = computed(() =>
   }),
 )
 
-const selectedCategory = ref('Tous')
+// ⌘+clic pour combiner plusieurs catégories (2026-08-01, à la demande de
+// Samuel — même comportement que toutes les autres puces de filtre de
+// l'app, voir useChipFilter.js).
+const categoryFilter = useChipFilter()
 
 const categoryFilters = computed(() => {
   // Seules les catégories réellement présentes dans l'inventaire deviennent
@@ -116,19 +121,64 @@ const categoryFilters = computed(() => {
   // remplissait la barre de puces qui ne mènent nulle part. Le référentiel
   // complet se consulte dans /materiel/categories.
   const present = new Set(topLevel.value.map((m) => m.category).filter(Boolean))
-  const chips = ['Tous', ...categories.value.filter((c) => present.has(c.id)).map((c) => c.name)]
-  return chips.map((label) => ({
-    label,
-    active: selectedCategory.value === label,
-    select: () => (selectedCategory.value = label),
-  }))
+  const names = categories.value.filter((c) => present.has(c.id)).map((c) => c.name)
+  return [
+    { label: 'Tous', active: categoryFilter.selected.value.size === 0, select: () => categoryFilter.selectAll() },
+    ...names.map((label) => ({
+      label,
+      active: categoryFilter.isSelected(label),
+      select: (event) => categoryFilter.toggle(label, event),
+    })),
+  ]
 })
 
+// --- Recherche texte (2026-07-31, point 3 de l'audit ergonomie/navigation)
+// ---
+// Insensible à la casse et aux accents, même approche que le tri des
+// catégories côté backend (NFKD + casefold) : « cable » doit trouver
+// « Câble XLR ». Se combine avec le filtre de catégorie (ET logique), pas
+// à la place.
+const search = ref('')
+
+const searchNormalized = computed(() => normalizeText(search.value.trim()))
+
+function matchesSearch(name) {
+  return !searchNormalized.value || normalizeText(name).includes(searchNormalized.value)
+}
+
+// A-t-on déjà touché ce chevron manuellement ? Sert à ne pas écraser un
+// repli volontaire pendant qu'une recherche est active (voir plus bas).
+function isManuallyToggled(id) {
+  return Object.prototype.hasOwnProperty.call(expanded.value, id)
+}
+
 const filtered = computed(() =>
-  decorated.value.filter(
-    (m) => selectedCategory.value === 'Tous' || m.catLabel === selectedCategory.value,
-  ),
+  decorated.value
+    .filter((m) => categoryFilter.passes(m.catLabel))
+    .filter((m) => {
+      if (!searchNormalized.value) return true
+      // Un kit reste dans les résultats si son propre nom correspond, OU si
+      // un de ses composants correspond — sinon chercher « XLR » ferait
+      // disparaître le flightcase qui en contient un.
+      return matchesSearch(m.name) || m.children.some((c) => matchesSearch(c.name))
+    })
+    .map((m) => {
+      if (!searchNormalized.value || matchesSearch(m.name) || !m.hasChildren) return m
+      // Le nom du kit lui-même ne correspond pas — seul un composant a
+      // matché. On le déplie automatiquement pour que ce composant reste
+      // visible sans clic de plus, sauf si l'utilisateur a déjà replié ce
+      // kit lui-même pendant cette session.
+      if (isManuallyToggled(m.id)) return m
+      return { ...m, isExpanded: true }
+    }),
 )
+
+const emptyMessage = computed(() => {
+  if (search.value.trim()) {
+    return `Aucun matériel ne correspond à « ${search.value.trim()} »`
+  }
+  return 'Aucun matériel dans cette catégorie'
+})
 
 // --- Ajout rapide de matériel ---
 
@@ -191,13 +241,22 @@ async function addMaterial() {
         <div class="page-count">{{ filtered.length }} item(s)</div>
       </div>
 
+      <div class="toolbar">
+        <input
+          v-model="search"
+          type="search"
+          class="fiche-input search-input"
+          placeholder="Rechercher du matériel…"
+        />
+      </div>
+
       <div class="filters">
         <div
           v-for="f in categoryFilters"
           :key="f.label"
           class="chip"
           :class="{ 'chip--active': f.active }"
-          @click="f.select"
+          @click="f.select($event)"
         >
           {{ f.label }}
         </div>
@@ -216,7 +275,7 @@ async function addMaterial() {
                 v-if="kit.hasChildren"
                 class="kit-chevron"
                 :class="{ 'kit-chevron--open': kit.isExpanded }"
-                :style="{ '--chevron-color': kit.isExpanded ? 'rgba(255,255,255,.4)' : kit.catColor }"
+                :style="{ '--chevron-color': kit.isExpanded ? 'rgba(var(--fg-rgb),.4)' : kit.catColor }"
               />
               <span v-else class="kit-chevron-spacer" />
               <span class="kit-dot" :style="{ background: kit.catColor }" />
@@ -251,7 +310,7 @@ async function addMaterial() {
         </div>
         <div v-else class="empty">
           <div class="empty__icon" />
-          <div class="empty__title">Aucun matériel dans cette catégorie</div>
+          <div class="empty__title">{{ emptyMessage }}</div>
         </div>
       </template>
 
@@ -338,7 +397,15 @@ async function addMaterial() {
 
 .page-count {
   font: 500 12px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
+}
+
+.toolbar {
+  display: flex;
+}
+
+.search-input {
+  max-width: 320px;
 }
 
 .filters {
@@ -349,7 +416,7 @@ async function addMaterial() {
 
 .hint {
   font: 500 13px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .hint--error {
@@ -390,7 +457,7 @@ async function addMaterial() {
   height: 0;
   border-style: solid;
   border-width: 5px 0 5px 7px;
-  border-color: transparent transparent transparent var(--chevron-color, rgba(255, 255, 255, 0.4));
+  border-color: transparent transparent transparent var(--chevron-color, rgba(var(--fg-rgb), 0.4));
 }
 
 .kit-chevron--open {
@@ -416,12 +483,12 @@ async function addMaterial() {
 
 .kit-name {
   font: 600 14px var(--font-mono);
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .kit-meta {
   font: 400 11.5px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .kit-badge {
@@ -440,7 +507,7 @@ async function addMaterial() {
 
 .kit-link {
   font: 600 11px system-ui;
-  color: #a5b4fc;
+  color: var(--link);
   cursor: pointer;
   white-space: nowrap;
   flex: none;
@@ -466,7 +533,7 @@ async function addMaterial() {
   gap: 8px;
   padding: 6px 10px;
   border-radius: 0 6px 0 6px;
-  background: #1b1f25;
+  background: var(--bg-row);
 }
 
 .kit-child::before {
@@ -476,7 +543,7 @@ async function addMaterial() {
   top: 50%;
   width: 14px;
   height: 2px;
-  background: rgba(155, 138, 239, 0.25);
+  background: rgba(var(--accent-rgb), 0.25);
 }
 
 .kit-child::after {
@@ -490,7 +557,7 @@ async function addMaterial() {
   top: -2px;
   bottom: -2px;
   width: 2px;
-  background: rgba(155, 138, 239, 0.25);
+  background: rgba(var(--accent-rgb), 0.25);
 }
 
 .kit-child:first-child::after {
@@ -508,12 +575,12 @@ async function addMaterial() {
 
 .kit-child-name {
   font: 500 12.5px system-ui;
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(var(--fg-rgb), 0.85);
 }
 
 .kit-child-meta {
   font: 400 11px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .empty {
@@ -524,7 +591,7 @@ async function addMaterial() {
   gap: 10px;
   padding: 64px 20px;
   background: var(--bg-card);
-  border: 1px dashed rgba(255, 255, 255, 0.15);
+  border: 1px dashed rgba(var(--fg-rgb), 0.15);
   border-radius: var(--radius-notch-lg);
 }
 
@@ -532,12 +599,12 @@ async function addMaterial() {
   width: 40px;
   height: 40px;
   border-radius: 0 10px 0 10px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--fg-rgb), 0.06);
 }
 
 .empty__title {
   font: 600 13px system-ui;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--fg-rgb), 0.6);
 }
 
 /* Chaque champ est maintenant un <label> qui porte le dimensionnement flex,

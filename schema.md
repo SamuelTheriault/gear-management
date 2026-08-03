@@ -14,7 +14,8 @@ Comptes ayant accès à l'outil (login via Google OAuth).
 | id | INT, PK | Identifiant unique |
 | email | VARCHAR | Email Google (identifiant de connexion) |
 | name | VARCHAR | Nom complet |
-| role | ENUM('admin','viewer') | Niveau d'accès |
+| role | ENUM('admin','viewer') | Niveau d'accès — **purement d'affichage côté frontend** (`UtilisateursView.vue`) depuis le 2026-08-02, ne gate plus rien côté API (voir `is_staff_global` ci-dessous et `architecture.md` section 3) |
+| is_staff_global | BOOLEAN (default false) | Ajouté le 2026-08-02 : accès de dépannage/support réservé à l'exploitant de la plateforme (Samuel), qui **court-circuite entièrement** le contrôle d'accès par projet (`HasProjectAccess`, voir section 14 et `architecture.md` section 3). Distinct d'un rôle `owner` de `project_memberships`, qui ne donne accès qu'à SES projets |
 | created_at | DATETIME | Date de création du compte |
 | django_user_id | INT, FK → auth_user.id (nullable) | Lien vers le compte `django.contrib.auth.User` créé automatiquement par django-allauth au premier login Google réussi. Sert à retrouver ce profil applicatif depuis la session Django authentifiée (voir `architecture.md` section 3). Nullable : distinct du superutilisateur Django (`/admin/`), qui n'a pas besoin de ce lien. |
 
@@ -86,7 +87,7 @@ Fiches spectacles — regroupe répétitions et représentations avec leurs hora
 |---|---|---|
 | id | INT, PK | Identifiant unique |
 | project_id | INT, FK → projects.id | Production à laquelle ce spectacle appartient — doit correspondre au projet de `venue_id` |
-| title | VARCHAR | Titre du spectacle |
+| title | VARCHAR, **nullable** (`blank=True`) | Titre de l'événement — obligatoire pour un événement top-level (validé par `ShowSerializer`, pas en base). Sur un bloc rattaché (voir plus bas), c'est une **précision optionnelle** seulement (ex. « technique »), plus le nom complet — voir *(dérivé)* `display_title` |
 | venue_id | INT, FK → venues.id | Lieu de l'événement |
 | event_type | ENUM('rehearsal','performance','storage','setup','teardown') | Répétition, représentation, entreposage, montage ou démontage (voir notes ci-dessous) |
 | start_datetime | DATETIME | Début (heure réelle) |
@@ -96,6 +97,8 @@ Fiches spectacles — regroupe répétitions et représentations avec leurs hora
 | notes | TEXT | Notes générales |
 
 **Blocs rattachés** (décision du 2026-07-31) : `parent_show_id` accroche à un événement une plage de **montage** ou de **répétition** en amont et une de **démontage** en aval — trois blocs consécutifs au plus, dans le même lieu. Choix de conception : un bloc est un `shows` **complet**, pas une table parallèle. Il a donc son horaire, son matériel (`show_materials`), ses techniciens (`show_technicians`), ses transports, et participe à la détection de conflits comme n'importe quel événement — un montage occupe la salle et mobilise une équipe, exactement comme un spectacle. Contraintes validées par `ShowSerializer` : un seul niveau de hiérarchie (un bloc ne peut pas en avoir), même projet et même lieu que l'événement principal. `CASCADE` : supprimer l'événement supprime ses blocs, qui n'ont pas de sens seuls.
+
+**Titre dynamique d'un bloc** (décision du 2026-08-02, révise le comportement d'origine du 2026-07-31) : le titre d'un bloc était généré une fois à sa création (« Répétition — Nom du spectacle », recopié dans `title`) et ne se répercutait plus si l'événement était renommé ensuite. La property *(dérivée, non stockée)* `display_title` recalcule ce titre à CHAQUE lecture à partir de `parent_show.title` courant — aucune copie à garder synchronisée. Sur un événement top-level, `display_title` est simplement égal à `title`. Exposée en lecture seule par `ShowSerializer` en plus de `title`, qui reste éditable (nom complet pour un événement, précision optionnelle pour un bloc).
 
 **Ressources — deux régimes** (décision du 2026-07-31, précisée le même jour). Un bloc de **répétition** rattaché est **autonome** : il porte ses propres `show_materials`/`show_technicians`, recopiés de l'événement à sa création (`ShowSerializer.create`) puis modifiables sans que rien ne redescende ensuite. Une répétition est un vrai temps de travail, où l'on n'utilise pas nécessairement tout le matériel du spectacle ni la même équipe. Elle n'étire donc pas la fenêtre d'engagement de son événement — l'y inclure mettrait celui-ci en conflit avec sa propre répétition. Le champ dérivé `inherits_resources` (voir `Show.INHERITING_PHASE_TYPES`) distingue les deux cas, et `ShowSerializer.get_phases` l'expose avec les décomptes du bloc.
 
@@ -245,8 +248,26 @@ Table ajoutée le 2026-07-18 (hors des 8 tables initiales) — **singleton** : u
 | default_transport_duration_minutes | INT (default 60) | Valeur proposée par défaut pour `transports.estimated_duration_minutes` à la création |
 | date_format | ENUM('DMY','MDY') | Format d'affichage des dates côté frontend (JJ/MM/AAAA vs MM/DD/YYYY) |
 | time_format | ENUM('24h','12h') | Format d'affichage des heures côté frontend |
+| transport_color | VARCHAR(64) (default `oklch(0.64 0.21 340)`) | Couleur des déplacements confirmés (Dashboard, Parcours Matériel) — ajouté le 2026-08-02 |
+| event_color_rehearsal | VARCHAR(64) (default `oklch(0.8 0.13 85)`) | Couleur du type de spectacle Répétition |
+| event_color_performance | VARCHAR(64) (default `oklch(0.75 0.13 320)`) | Couleur du type de spectacle Représentation |
+| event_color_storage | VARCHAR(64) (default `rgba(var(--fg-rgb),.6)`) | Couleur du type de spectacle Entreposage |
+| event_color_setup | VARCHAR(64) (default `oklch(0.75 0.13 165)`) | Couleur du type de bloc Montage |
+| event_color_teardown | VARCHAR(64) (default `oklch(0.7 0.11 255)`) | Couleur du type de bloc Démontage |
 
 **Note technique** : les valeurs par défaut de `shows`/`transports` ci-dessus ne sont pas de simples constantes — elles sont lues dynamiquement depuis cette table à chaque création (voir `inventory/models.py`, callables `_default_buffer_before_minutes` etc.), pour que changer un réglage ici s'applique immédiatement aux nouvelles fiches, sans redéploiement.
+
+**Couleurs (2026-08-02)** : les 6 champs `*_color` couvrent les bandes qui ne
+sont rattachées à aucune fiche éditable (contrairement à `venues.color` et
+`material_categories.color`) — transport confirmé + les 5 types de
+`shows.event_type`, jusqu'ici dupliqués en dur dans 4 fichiers Vue distincts.
+Chaîne CSS libre, même convention que `venues.color`
+(`frontend/src/composables/useEventColors.js` les pose comme CSS custom
+properties `--transport`/`--event-*` sur `<html>`, consommées via
+`frontend/src/constants/eventTypeMeta.js` — un seul chargement pour toute
+l'app). Volontairement exclues : les couleurs sémantiques (conflit rouge,
+à-approuver orange, statut OK vert du Dashboard) — non stockées ici, pas de
+risque de les rendre illisibles par erreur.
 
 ---
 
@@ -268,6 +289,8 @@ Table ajoutée le 2026-07-19 (hors des 8 tables initiales) à la demande de Samu
 **Isolation par projet** : `venues`, `materials`, `technicians` et `shows` portent chacun un `project_id` obligatoire (FK `on_delete=PROTECT` — impossible de supprimer une `project` tant qu'il lui reste des données rattachées ; archiver via `status` est la voie normale pour retirer une production terminée sans rien perdre). `settings` reste **commun à tous les projets** (décision explicite de Samuel) — voir section 10.
 
 **Pas de vue « tous projets confondus »** (décision validée) : chaque liste de l'API se filtre par `?project=<id>` (optionnel — voir `inventory/views.py`, `ProjectFilteredMixin`), et bascule d'un projet à l'autre se fait entièrement côté frontend, sans recharger/exporter de fichier. Conséquence assumée : aucune détection de conflit entre deux projets différents (un même technicien réel entré dans deux projets isolés n'est jamais reconnu comme la même personne — voir `architecture.md`).
+
+**Accès** (2026-08-02, révise l'affirmation « pas de propriétaire » qui vivait ici avant cette date) : un `project` n'a plus de FK owner direct, mais chaque `User` ayant accès à un projet donné a une ligne dans `project_memberships` (section 13ter) avec un rôle. `HasProjectAccess` (`inventory/permissions.py`) applique ce contrôle sur toutes les ressources isolées par projet — voir `architecture.md`, section 3, pour le détail. `?project=<id>` reste le mécanisme de FILTRAGE (quel projet regarder) ; le membership est le mécanisme d'AUTORISATION (a-t-on le droit de le regarder/modifier), les deux sont désormais nécessaires ensemble.
 
 ---
 
@@ -314,6 +337,32 @@ Table de liaison ajoutée le 2026-07-30 — relie un `transport` aux techniciens
 
 ---
 
+## 13ter. `project_memberships`
+
+Table ajoutée le 2026-08-02, quand Samuel a décidé de vendre des abonnements à l'outil à d'autres directeurs techniques/compagnies. Jusque-là, aucune isolation multi-tenant réelle n'existait côté API : `IsAuthenticated` seul suffisait à lire/modifier TOUS les projets de TOUS les comptes. Relie un `user` à un `project` avec un rôle.
+
+| Champ | Type | Description |
+|---|---|---|
+| id | INT, PK | Identifiant unique |
+| project_id | INT, FK → projects.id (CASCADE) | Projet concerné |
+| user_id | INT, FK → users.id (CASCADE) | Compte qui reçoit l'accès — jamais nul, voir le flux d'invitation ci-dessous |
+| role | ENUM('owner','editor','viewer') (default 'viewer') | `owner` : gère les accès du projet (cette table) + édite tout le reste. `editor` : édite tout SAUF la gestion des accès. `viewer` : lecture seule |
+| invited_by_id | INT, FK → users.id (nullable, SET_NULL) | Qui a envoyé l'invitation — nul pour un accès créé automatiquement (ex. le créateur d'un projet devient son propre owner) |
+| status | ENUM('pending','active') (default 'pending') | Voir le flux d'invitation ci-dessous — `pending` NE COMPTE PAS comme un accès actif |
+| created_at | DATETIME | Date de création |
+
+**Unicité** : contrainte en base sur `(project_id, user_id)` — un compte n'a qu'une seule ligne par projet.
+
+**Flux d'invitation** (décision de Samuel : pas d'envoi de courriel automatique pour l'instant, aucune infra SMTP configurée) : `POST /api/project-memberships/` (réservé owner/staff) prend `{project, email, role}`. Réutilise le pattern `get_or_create` par email déjà en place dans `signals.py` (`provisionner_utilisateur_inventory`) pour résoudre ou créer le `User` cible. `status` part à `'active'` d'emblée si cette personne a déjà un compte Google lié (`users.django_user_id` renseigné), sinon `'pending'` jusqu'à son premier login — `signals.py` active alors automatiquement tous ses memberships `pending`, exactement comme le pré-provisioning global de `User` lui-même.
+
+**Garde du dernier owner** : `PATCH`/`DELETE` sur le dernier `ProjectMembership` `role='owner'` `status='active'` d'un projet renvoie un 400 explicite plutôt que de laisser le projet sans owner.
+
+**`users.is_staff_global`** (voir section 1) contourne entièrement ce contrôle — un accès de dépannage plateforme, distinct d'un `owner` qui reste limité à SES projets.
+
+**Exposition API** : `GET /api/project-memberships/?project=<id>` — lecture accessible à tout membre actif (pas seulement l'owner) ; `POST`/`PATCH`/`DELETE` réservés owner/staff. `ProjectMembershipSerializer` expose `user_email`/`user_name`/`invited_by_email` en lecture en plus des champs bruts.
+
+---
+
 ## Calcul du temps de trajet (Google Routes API)
 
 Décision du 2026-07-18 : `venues.latitude`/`longitude` (section 2) permettent de calculer automatiquement `transports.estimated_duration_minutes` via l'API Google Routes ("Compute Routes", un trajet simple = un lieu de départ, un lieu d'arrivée), plutôt que de saisir cette durée à la main à chaque fois. Voir `inventory/maps.py` et `security.md` pour la gestion de la clé API (`GOOGLE_MAPS_API_KEY`). Si la clé n'est pas configurée, ou si l'appel échoue, le calcul se rabat silencieusement sur `settings.default_transport_duration_minutes` — aucune dépendance dure à ce service externe.
@@ -339,6 +388,8 @@ transports 1───N transport_technicians N───1 technicians
 transports 1───N transport_materials N───1 materials
 materials N───1 venues (entreposage = point de départ des timelines de cohérence)
 settings (singleton, COMMUN à tous les projets — lu par shows/transports comme source de leurs valeurs par défaut)
+projects 1───N project_memberships N───1 users (accès par projet, rôle owner/editor/viewer)
+users 1───N project_memberships (invited_by, nullable — qui a envoyé l'invitation)
 ```
 
 ## Ce qui est explicitement HORS scope (par décision)

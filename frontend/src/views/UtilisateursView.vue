@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import AppShell from '../components/AppShell.vue'
 import { api } from '../api/client'
+import { useEscapeKey } from '../composables/useEscapeKey'
 
 /**
  * Écran « Utilisateurs » — port de Utilisateurs.dc.html.
@@ -25,7 +26,7 @@ const users = ref([])
 
 const roleMeta = {
   admin: { label: 'Admin', color: 'oklch(0.65 0.15 290)', bg: 'oklch(0.65 0.15 290 / .2)' },
-  viewer: { label: 'Lecture seule', color: 'rgba(255,255,255,.6)', bg: 'rgba(255,255,255,.08)' },
+  viewer: { label: 'Lecture seule', color: 'rgba(var(--fg-rgb),.6)', bg: 'rgba(var(--fg-rgb),.08)' },
 }
 
 async function loadUsers() {
@@ -60,8 +61,8 @@ const decoratedUsers = computed(() =>
     initials: initials(u.name),
     createdAtLabel: u.created_at ? dateFmt.format(new Date(u.created_at)) : '—',
     roleLabel: roleMeta[u.role]?.label ?? u.role,
-    roleColor: roleMeta[u.role]?.color ?? 'rgba(255,255,255,.6)',
-    roleBg: roleMeta[u.role]?.bg ?? 'rgba(255,255,255,.08)',
+    roleColor: roleMeta[u.role]?.color ?? 'rgba(var(--fg-rgb),.6)',
+    roleBg: roleMeta[u.role]?.bg ?? 'rgba(var(--fg-rgb),.08)',
   })),
 )
 
@@ -88,6 +89,11 @@ function askRemove(user) {
 function cancelRemove() {
   confirmTarget.value = null
 }
+
+// Échap ferme la confirmation, même geste que le clic sur le fond.
+useEscapeKey(() => {
+  if (confirmTarget.value) cancelRemove()
+})
 
 async function confirmRemove() {
   if (!confirmTarget.value) return
@@ -237,23 +243,23 @@ async function addUser() {
 
 .count {
   font: 500 12px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .banner {
-  background: rgba(155, 138, 239, 0.1);
-  border: 1px solid rgba(155, 138, 239, 0.25);
+  background: rgba(var(--accent-rgb), 0.1);
+  border: 1px solid rgba(var(--accent-rgb), 0.25);
   border-radius: 0 10px 0 10px;
   padding: 12px 16px;
   font: 400 12.5px system-ui;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--fg-rgb), 0.6);
   line-height: 1.5;
 }
 
 .hint {
   padding: 32px 40px;
   font: 500 13px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .hint--error {
@@ -272,7 +278,7 @@ async function addUser() {
   align-items: center;
   gap: 16px;
   padding: 14px 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(var(--fg-rgb), 0.05);
   flex-wrap: wrap;
 }
 
@@ -300,7 +306,7 @@ async function addUser() {
 
 .name {
   font: 600 13.5px system-ui;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -308,7 +314,7 @@ async function addUser() {
 
 .email {
   font: 400 11.5px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -316,7 +322,7 @@ async function addUser() {
 
 .since {
   font: 400 11.5px system-ui;
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(var(--fg-rgb), 0.35);
   white-space: nowrap;
   flex: none;
 }
@@ -332,7 +338,7 @@ async function addUser() {
 
 .role-toggle {
   display: flex;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(var(--fg-rgb), 0.1);
   border-radius: var(--radius-notch-sm);
   overflow: hidden;
   flex: none;
@@ -342,18 +348,18 @@ async function addUser() {
   padding: 7px 12px;
   font: 600 11.5px system-ui;
   cursor: pointer;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--fg-rgb), 0.45);
   background: transparent;
 }
 
 .role-toggle__opt--active-admin {
-  background: rgba(155, 138, 239, 0.22);
+  background: rgba(var(--accent-rgb), 0.22);
   color: var(--accent);
 }
 
 .role-toggle__opt--active-viewer {
-  background: rgba(255, 255, 255, 0.14);
-  color: #fff;
+  background: rgba(var(--fg-rgb), 0.14);
+  color: rgb(var(--fg-rgb));
 }
 
 .remove {
@@ -366,7 +372,7 @@ async function addUser() {
 
 .empty-card {
   background: var(--bg-card);
-  border: 1px dashed rgba(255, 255, 255, 0.15);
+  border: 1px dashed rgba(var(--fg-rgb), 0.15);
   border-radius: var(--radius-notch-lg);
   padding: 40px 20px;
   display: flex;
@@ -378,18 +384,18 @@ async function addUser() {
 
 .empty-title {
   font: 600 14px system-ui;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--fg-rgb), 0.6);
 }
 
 .empty-subtitle {
   font: 400 12.5px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
   max-width: 340px;
 }
 
 .create-card {
   background: var(--bg-card);
-  border: 1px dashed rgba(255, 255, 255, 0.15);
+  border: 1px dashed rgba(var(--fg-rgb), 0.15);
   border-radius: var(--radius-notch-lg);
   padding: 14px 16px;
   display: flex;
@@ -401,7 +407,7 @@ async function addUser() {
   font: 700 10.5px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .create-row {
@@ -415,9 +421,9 @@ async function addUser() {
   box-sizing: border-box;
   padding: 10px 12px;
   border-radius: var(--radius-notch-sm);
-  background: #1b1f25;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #fff;
+  background: var(--bg-row);
+  border: 1px solid rgba(var(--fg-rgb), 0.1);
+  color: rgb(var(--fg-rgb));
   font: 500 13px system-ui;
 }
 
@@ -440,13 +446,13 @@ async function addUser() {
 }
 
 .btn--enabled {
-  color: #fff;
+  color: rgb(var(--fg-rgb));
   background: oklch(0.65 0.15 290 / 0.3);
 }
 
 .btn--disabled {
-  color: rgba(255, 255, 255, 0.3);
-  background: rgba(255, 255, 255, 0.06);
+  color: rgba(var(--fg-rgb), 0.3);
+  background: rgba(var(--fg-rgb), 0.06);
   cursor: default;
 }
 
@@ -459,7 +465,7 @@ async function addUser() {
   width: 380px;
   max-width: 100%;
   background: var(--bg-card);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(var(--fg-rgb), 0.1);
   border-radius: 0 14px 0 14px;
   padding: 22px;
   display: flex;
@@ -469,12 +475,12 @@ async function addUser() {
 
 .modal__title {
   font: 700 15px system-ui;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .modal__body {
   font: 400 13px system-ui;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--fg-rgb), 0.55);
   line-height: 1.5;
 }
 
@@ -486,7 +492,7 @@ async function addUser() {
 
 .modal__cancel {
   font: 600 12.5px system-ui;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--fg-rgb), 0.6);
   padding: 10px 16px;
   border-radius: var(--radius-notch-sm);
   cursor: pointer;
@@ -494,7 +500,7 @@ async function addUser() {
 
 .modal__confirm {
   font: 600 12.5px system-ui;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
   background: oklch(0.6 0.18 30);
   padding: 10px 16px;
   border-radius: var(--radius-notch-sm);

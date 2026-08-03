@@ -1,8 +1,10 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import AppShell from '../components/AppShell.vue'
 import ParcoursDayPicker from '../components/ParcoursDayPicker.vue'
+import ZoomControls from '../components/ZoomControls.vue'
 import { useParcours } from '../composables/useParcours'
+import { useZoomScroll } from '../composables/useZoomScroll'
 
 /**
  * Parcours des techniciens (`/parcours/techniciens`, sous-menu du Tableau de
@@ -25,18 +27,41 @@ import { useParcours } from '../composables/useParcours'
  * `ParcoursDayPicker` — même composable/composant que `ParcoursMaterielView`.
  * Un engagement à cheval sur deux jours n'apparaît que pour sa portion dans
  * le jour affiché (`overlapsDay`).
+ *
+ * Zoom (2026-08-02, demande de Samuel) : `ZoomControls.vue` + l'état
+ * correspondant vivent entièrement dans `useParcours.js` (partagé avec
+ * `ParcoursMaterielView`) — cet écran n'a qu'à afficher les boutons et leur
+ * passer les callbacks. « Réinitialiser » revient à la journée complète
+ * (0h-24h), pas à un sous-ensemble — c'est `dayBounds`, pas `autoWindow`
+ * façon Tableau de bord, qui n'a pas d'équivalent ici.
+ *
+ * Défilement horizontal sous zoom (2026-08-02, suite, demande de Samuel :
+ * « se déplacer dans la vue ») : `pct`/`segmentStyle`/`hourMarks` restent
+ * relatifs à la journée entière (voir `useParcours.js`) — c'est
+ * `.parcours-scroll__content` qui s'élargit à `zoomLevel * 100 %` dans
+ * `.parcours-scroll` (`overflow-x: auto`), rendant le déplacement natif
+ * (molette/trackpad/barre) plutôt qu'un recalcul de fenêtre.
+ * `useZoomScroll` repositionne ce défilement à chaque zoomIn/zoomOut/
+ * resetZoom. Même structure à deux colonnes que `ParcoursMaterielView`
+ * (étiquettes fixes, timeline scrollable) — voir sa note de tête pour le
+ * détail, identique ici.
  */
 
 const {
   options, selectedIds, rows, window: fenetre, loading, loadError,
   days, selectedDayKey, selectDay, stepDay, hourMarks, overlapsDay,
   toggle, selectAll, selectNone, segmentStyle,
+  isZoomed, canZoomIn, canZoomOut, zoomIn, zoomOut, resetZoom,
+  zoomLevel, scrollFraction,
 } = useParcours({
   endpoint: 'technician-journey',
   itemsKey: 'technicians',
   listEndpoint: '/technicians/',
   listParam: 'technicians',
 })
+
+const scrollRef = ref(null)
+useZoomScroll(scrollRef, zoomLevel, scrollFraction)
 
 const KIND_COLORS = {
   show: 'oklch(0.55 0.13 290)',
@@ -113,50 +138,68 @@ const decorated = computed(() =>
           </div>
 
           <template v-else>
-            <ParcoursDayPicker
-              :days="days"
-              :selected-day-key="selectedDayKey"
-              @select="selectDay"
-              @step="stepDay"
-            />
-
-            <div class="parcours-axis">
-              <div v-for="mark in hourMarks" :key="mark.key" class="parcours-axis__tick" :style="{ left: mark.left }">
-                {{ mark.label }}
-              </div>
+            <div class="parcours-toolbar">
+              <ParcoursDayPicker
+                :days="days"
+                :selected-day-key="selectedDayKey"
+                @select="selectDay"
+                @step="stepDay"
+              />
+              <ZoomControls
+                :is-zoomed="isZoomed"
+                :can-zoom-in="canZoomIn"
+                :can-zoom-out="canZoomOut"
+                @zoom-in="zoomIn"
+                @zoom-out="zoomOut"
+                @reset="resetZoom"
+              />
             </div>
 
-            <div v-for="row in decorated" :key="row.id" class="parcours-row">
-              <div class="parcours-row__label">
-                <div class="parcours-row__name">{{ row.name }}</div>
-                <div class="parcours-row__meta">
-                  {{ row.specialty || '—' }} · {{ row.engagementCount }} engagement(s)
-                  <template v-if="row.conflictCount > 0"> · {{ row.conflictCount }} conflit(s)</template>
-                </div>
-              </div>
-              <div class="parcours-track">
-                <div
-                  v-for="mark in hourMarks"
-                  :key="`grid-${mark.key}`"
-                  class="parcours-gridline"
-                  :style="{ left: mark.left }"
-                />
-                <div
-                  v-for="(b, i) in row.blocks"
-                  :key="i"
-                  class="parcours-seg"
-                  :style="b.style"
-                >
-                  <span class="parcours-seg__label">{{ b.label }}</span>
-                  <div class="parcours-tooltip">
-                    <div class="parcours-tooltip__title">{{ b.tooltipTitle }}</div>
-                    <div class="parcours-tooltip__time">{{ b.tooltipTime }}</div>
-                    <div v-for="(line, li) in b.tooltipLines" :key="li" class="parcours-tooltip__line">
-                      {{ line }}
-                    </div>
+            <div class="parcours-timeline">
+              <div class="parcours-labels">
+                <div class="parcours-labels__spacer" />
+                <div v-for="row in decorated" :key="`label-${row.id}`" class="parcours-row__label">
+                  <div class="parcours-row__name">{{ row.name }}</div>
+                  <div class="parcours-row__meta">
+                    {{ row.specialty || '—' }} · {{ row.engagementCount }} engagement(s)
+                    <template v-if="row.conflictCount > 0"> · {{ row.conflictCount }} conflit(s)</template>
                   </div>
                 </div>
-                <div v-if="row.blocks.length === 0" class="track-empty">Aucun engagement</div>
+              </div>
+
+              <div ref="scrollRef" class="parcours-scroll">
+                <div class="parcours-scroll__content" :style="{ width: `${zoomLevel * 100}%` }">
+                  <div class="parcours-axis">
+                    <div v-for="mark in hourMarks" :key="mark.key" class="parcours-axis__tick" :style="{ left: mark.left }">
+                      {{ mark.label }}
+                    </div>
+                  </div>
+
+                  <div v-for="row in decorated" :key="`track-${row.id}`" class="parcours-track">
+                    <div
+                      v-for="mark in hourMarks"
+                      :key="`grid-${mark.key}`"
+                      class="parcours-gridline"
+                      :style="{ left: mark.left }"
+                    />
+                    <div
+                      v-for="(b, i) in row.blocks"
+                      :key="i"
+                      class="parcours-seg"
+                      :style="b.style"
+                    >
+                      <span class="parcours-seg__label">{{ b.label }}</span>
+                      <div class="parcours-tooltip">
+                        <div class="parcours-tooltip__title">{{ b.tooltipTitle }}</div>
+                        <div class="parcours-tooltip__time">{{ b.tooltipTime }}</div>
+                        <div v-for="(line, li) in b.tooltipLines" :key="li" class="parcours-tooltip__line">
+                          {{ line }}
+                        </div>
+                      </div>
+                    </div>
+                    <div v-if="row.blocks.length === 0" class="track-empty">Aucun engagement</div>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -195,12 +238,12 @@ const decorated = computed(() =>
 
 .page-count {
   font: 500 12px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .hint {
   font: 500 13px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .hint--error {
@@ -214,7 +257,7 @@ const decorated = computed(() =>
   align-items: center;
   padding-left: 10px;
   font: 400 10.5px system-ui;
-  color: rgba(255, 255, 255, 0.25);
+  color: rgba(var(--fg-rgb), 0.25);
 }
 
 .legend {
@@ -222,7 +265,7 @@ const decorated = computed(() =>
   flex-wrap: wrap;
   gap: 12px;
   padding-top: 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid rgba(var(--fg-rgb), 0.06);
 }
 
 .legend__item {
@@ -230,7 +273,7 @@ const decorated = computed(() =>
   align-items: center;
   gap: 6px;
   font: 400 11px system-ui;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--fg-rgb), 0.45);
 }
 
 .legend__swatch {

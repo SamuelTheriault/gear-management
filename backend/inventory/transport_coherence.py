@@ -49,6 +49,7 @@ qui « dort » à l'entrepôt est réputé disponible, cohérent avec l'exemptio
 appliquée dans `conflicts.py`.
 """
 
+import heapq
 from datetime import datetime, time, timedelta
 
 from django.utils import timezone
@@ -113,7 +114,7 @@ def get_material_transports(material, window_start, window_end):
         resultats.append({
             'transport_id': transport.id,
             'show_id': transport.show_id,
-            'show_title': transport.show.title,
+            'show_title': transport.show.display_title,
             'origin_venue_id': event['origin_id'],
             'origin_venue_name': transport.origin_venue.name,
             'destination_venue_id': event['destination_id'],
@@ -462,7 +463,7 @@ def _serialize_origin_issue(material, event, available):
         'transport_type': transport.transport_type,
         'scheduled_datetime': transport.scheduled_datetime,
         'show_id': transport.show_id,
-        'show_title': transport.show.title,
+        'show_title': transport.show.display_title,
         'material_id': material.id,
         'material_name': material.name,
         'origin_venue_id': transport.origin_venue_id,
@@ -496,7 +497,7 @@ def _serialize_missing_issue(material, show_material, present, proposal=None):
         'proposal_transport_id': proposal.id if proposal is not None else None,
         'show_material_id': show_material.id,
         'show_id': show.id,
-        'show_title': show.title,
+        'show_title': show.display_title,
         'show_start': show.start_datetime,
         'venue_id': show.venue_id,
         'venue_name': show.venue.name,
@@ -505,7 +506,7 @@ def _serialize_missing_issue(material, show_material, present, proposal=None):
         'quantite_requise': show_material.quantity,
         'quantite_presente': max(present, 0),
         'detail': (
-            f"« {show.title} » requiert {show_material.quantity} × « {material.name} » "
+            f"« {show.display_title} » requiert {show_material.quantity} × « {material.name} » "
             f"à « {show.venue.name} », mais seulement {max(present, 0)} y est/sont "
             f"présent(s) au début de la fenêtre : "
             + (
@@ -557,64 +558,295 @@ def get_project_window(project):
 def get_material_journey(material, window_start, window_end):
     """Parcours d'un matériel : où il se trouve, dans le temps.
 
-    Retourne une liste de **séjours** `{venue_id, venue_name, start, end,
-    quantity}` : le matériel reste au lieu X de `start` à `end`. Les
-    transitions sont les transports confirmés qui le déplacent (voir
-    `_material_events`) — un séjour se termine quand un transport en fait
-    partir des unités, et le suivant commence à l'arrivée.
+    Retourne une liste de **séjours** `{lane, venue_id, venue_name, start,
+    end, quantity, parent_lane, merge_from_lane}` : le matériel — ou une
+    partie de sa quantité — reste au lieu X de `start` à `end`, sur la ligne
+    `lane`. Les transitions sont les transports confirmés qui le déplacent
+    (voir `_material_events`).
 
-    Simplification assumée : on suit le **lieu majoritaire** à chaque instant,
-    pas chaque unité séparément. Pour du matériel en plusieurs exemplaires
-    éparpillés entre deux lieux, le séjour porte le lieu où il y en a le plus,
-    et `quantity` dit combien. Suivre chaque unité individuellement
-    demanderait de les identifier une à une, ce que le modèle ne fait pas
-    (voir `Material.quantity`, décision du 2026-07-19).
+    Révisé le 2026-08-01 à la demande de Samuel : l'ancienne version
+    aplatissait au **lieu majoritaire**, perdant toute trace d'un matériel
+    scindé entre plusieurs lieux à la fois. Ici, chaque position simultanée
+    a sa propre `lane` (une ligne de la timeline) :
+
+    - `parent_lane` est renseigné sur le tout premier séjour d'une ligne
+      **née d'une bifurcation** (une partie de la quantité d'une autre ligne
+      qui part vers un lieu pas encore occupé) — jamais sur les séjours
+      suivants de cette même ligne, seulement celui où la bifurcation a lieu.
+    - `merge_from_lane` est renseigné sur le séjour qui commence quand une
+      autre ligne **fusionne** dans celle-ci (le lieu de destination était
+      déjà occupé par cette ligne) — la ligne qui fusionne disparaît.
+    - Un déplacement qui vide entièrement une ligne vers un lieu encore
+      inoccupé ne crée ni bifurcation ni fusion : la même `lane` continue
+      simplement sous le nouveau lieu (cas le plus fréquent — comportement
+      identique à avant cette révision, `ParcoursAPITests` en dépend).
+    - Les bifurcations et fusions s'enchaînent naturellement (une ligne née
+      d'une bifurcation peut elle-même se scinder plus tard, ou fusionner
+      dans une troisième) : rien dans l'algorithme ne suppose un seul niveau.
+    - Les numéros de ligne sont réutilisés dès qu'ils se libèrent (une ligne
+      qui se vide entièrement lors d'une fusion ou d'une bifurcation rend son
+      numéro disponible) — ça garde le nombre de lignes affichées proche du
+      nombre de positions réellement simultanées, plutôt que de grimper sans
+      fin sur un matériel qui bifurque/fusionne souvent.
+
+    On construit directement depuis `_material_events` (déjà filtré sur CE
+    matériel) plutôt que de rejouer `_ledger_before` à chaque tranche comme
+    avant : chaque événement dit explicitement quelle ligne il vide (son
+    origine) et laquelle il alimente (sa destination), ce qui est le tracé
+    même des bifurcations/fusions — reconstruire cette identité à partir des
+    seuls totaux par lieu (ce que fait `_ledger_before`) serait ambigu dès
+    que deux mouvements touchent le même lieu. `_ledger_before` reste
+    utilisée telle quelle pour l'état initial (position juste avant le début
+    de la fenêtre) et par les trois autres fonctions de ce module
+    (disponibilité, cohérence, retour) — ne pas y toucher.
     """
     events = _material_events(material)
     if material.venue_id is None:
         return []
 
-    # Instants où la position peut changer : le début de la fenêtre, puis
-    # chaque arrivée de transport comprise dedans.
-    bornes = [window_start]
-    for event in events:
-        if window_start < event['effective_end'] <= window_end:
-            bornes.append(event['effective_end'])
-    bornes.append(window_end)
-
     venues_par_id = {
         v.id: v for v in Venue.objects.filter(project_id=material.project_id)
     }
 
+    # État initial : position juste avant le début de la fenêtre. Une seule
+    # ligne par lieu déjà occupé — on ne connaît pas l'historique des
+    # bifurcations antérieures à la fenêtre (elles n'ont pas à être dessinées
+    # hors champ), donc pas de parent_lane/merge_from_lane ici.
+    initial_ledger = _ledger_before(
+        events, window_start + timedelta(microseconds=1), material.venue_id, material.quantity,
+    )
+    initial_positions = sorted(
+        ((vid, q) for vid, q in initial_ledger.items() if q > 0),
+        key=lambda pair: (-pair[1], pair[0]),  # plus grosse quantité d'abord, ordre déterministe
+    )
+
+    events_in_window = [
+        event for event in events
+        if window_start < event['effective_end'] <= window_end
+    ]
+
     sejours = []
-    for index, borne in enumerate(bornes[:-1]):
-        fin = bornes[index + 1]
-        if fin <= borne:
-            continue
-        # `+1µs` : à l'instant exact d'une arrivée, le transport est appliqué.
-        ledger = _ledger_before(
-            events, borne + timedelta(microseconds=1), material.venue_id, material.quantity,
-        )
-        presents = [(vid, q) for vid, q in ledger.items() if q > 0]
-        if not presents:
-            continue
-        venue_id, quantite = max(presents, key=lambda pair: pair[1])
-        venue = venues_par_id.get(venue_id)
-        if venue is None:
-            continue
+    lanes = {}
+    free_lanes = []
+    next_lane_id = 0
 
-        # Fusionne avec le séjour précédent si c'est le même lieu — un
-        # transport qui ne concerne pas ce matériel ne doit pas couper sa barre.
-        if sejours and sejours[-1]['venue_id'] == venue_id and sejours[-1]['quantity'] == quantite:
-            sejours[-1]['end'] = fin
-            continue
+    def allocate_lane():
+        nonlocal next_lane_id
+        if free_lanes:
+            return heapq.heappop(free_lanes)
+        lane_id = next_lane_id
+        next_lane_id += 1
+        return lane_id
 
-        sejours.append({
+    def open_lane(lane_id, venue_id, quantity, start, parent_lane=None, merge_from_lane=None):
+        lanes[lane_id] = {
             'venue_id': venue_id,
+            'quantity': quantity,
+            'start': start,
+            'parent_lane': parent_lane,
+            'merge_from_lane': merge_from_lane,
+        }
+
+    def commit(lane_id, end):
+        """Clôt le tronçon courant de `lane_id` et l'ajoute à `sejours`, sauf
+        s'il est de durée nulle (deux événements simultanés sur la même
+        ligne — la seconde clôture ne doit pas produire de barre vide)."""
+        info = lanes[lane_id]
+        if end <= info['start']:
+            return
+        venue = venues_par_id.get(info['venue_id'])
+        if venue is None:
+            return
+        sejours.append({
+            'lane': lane_id,
+            'venue_id': info['venue_id'],
             'venue_name': venue.name,
             'is_storage': venue.is_storage,
-            'start': borne,
-            'end': fin,
-            'quantity': quantite,
+            'start': info['start'],
+            'end': end,
+            'quantity': info['quantity'],
+            'parent_lane': info['parent_lane'],
+            'merge_from_lane': info['merge_from_lane'],
         })
+
+    def free_lane(lane_id):
+        del lanes[lane_id]
+        heapq.heappush(free_lanes, lane_id)
+
+    for venue_id, quantite in initial_positions:
+        open_lane(allocate_lane(), venue_id, quantite, window_start)
+
+    for event in events_in_window:
+        t = event['effective_end']
+        origin_id = event['origin_id']
+        destination_id = event['destination_id']
+        qty = event['quantity']
+
+        origin_lane = next((lid for lid, info in lanes.items() if info['venue_id'] == origin_id), None)
+        if origin_lane is None:
+            # Incohérence en amont (transport dont l'origine n'a pas de lot
+            # actif ici) — signalée séparément par
+            # `get_material_coherence_issues`, ce n'est pas le rôle du
+            # parcours de la refléter ; on ignore l'événement pour le tracé.
+            continue
+
+        dest_lane = next((lid for lid, info in lanes.items() if info['venue_id'] == destination_id), None)
+        origin_remaining = lanes[origin_lane]['quantity'] - qty
+
+        commit(origin_lane, t)
+
+        if origin_remaining <= 0 and dest_lane is None:
+            # Déplacement complet vers un lieu encore inoccupé : la même
+            # ligne continue, rebaptisée — pas de bifurcation à dessiner.
+            open_lane(origin_lane, destination_id, qty, t)
+            continue
+
+        if origin_remaining > 0:
+            open_lane(origin_lane, origin_id, origin_remaining, t)
+        else:
+            free_lane(origin_lane)
+
+        if dest_lane is not None:
+            # Fusion : la quantité qui part rejoint une ligne déjà active à
+            # ce lieu — c'est cette ligne d'arrivée qui porte l'annotation.
+            quantite_fusionnee = lanes[dest_lane]['quantity'] + qty
+            commit(dest_lane, t)
+            open_lane(dest_lane, destination_id, quantite_fusionnee, t, merge_from_lane=origin_lane)
+        else:
+            # Bifurcation : nouvelle ligne pour la quantité qui part.
+            open_lane(allocate_lane(), destination_id, qty, t, parent_lane=origin_lane)
+
+    for lane_id in list(lanes.keys()):
+        commit(lane_id, window_end)
+
+    sejours.sort(key=lambda s: (s['start'], s['lane']))
     return sejours
+
+
+def get_material_schedule(material, window_start=None, window_end=None):
+    """Agenda chronologique d'un matériel : tout ce qui le mobilise, dans l'ordre.
+
+    Ajouté le 2026-08-01 à la demande de Samuel : la fiche matériel ne
+    montrait que ses assignations à des spectacles, sans horaire ni contexte.
+    Elle liste maintenant, sur une seule ligne de temps, les spectacles, les
+    blocs (montage, répétition, démontage) et les déplacements.
+
+    Trois sources, réunies ici plutôt que côté frontend — la règle
+    d'héritage des blocs est une règle métier, pas un détail d'affichage :
+
+    - **Assignations** (`ShowMaterial`) : un spectacle, une répétition
+      indépendante, ou un bloc de répétition rattaché, qui porte ses propres
+      assignations depuis le 2026-07-31.
+    - **Blocs hérités** : un montage ou un démontage n'a pas d'assignation
+      propre — il utilise le matériel de son événement (voir
+      `Show.inherits_resources`). Le matériel y est pourtant bel et bien
+      mobilisé : chaque bloc de ce type produit une entrée dérivée de
+      l'assignation de son événement, marquée `inherited: True`.
+    - **Déplacements** (`TransportMaterial`) : y compris les propositions
+      encore à approuver, qui n'ont pas d'heure (`start: None`) — elles sont
+      renvoyées en fin de liste plutôt que masquées, c'est justement ce qu'il
+      reste à compléter.
+
+    `conflict` est calculé par assignation avec `get_material_conflicts`,
+    restreint à CE matériel — plus précis et bien moins coûteux que de
+    demander tous les conflits de chaque spectacle concerné.
+
+    **Fenêtre du projet** (2026-08-01, demande de Samuel) : `window_start`/
+    `window_end` bornent la liste — une entrée qui ne croise pas la fenêtre
+    est écartée. C'est la même fenêtre que les écrans « Parcours »
+    (`get_project_window`), pour que les deux racontent la même période. Les
+    écartées ne sont pas perdues pour autant : elles sont comptées et
+    renvoyées à part (voir la valeur de retour), sans quoi une assignation
+    disparaîtrait sans explication. Sans fenêtre, tout est renvoyé.
+
+    Retourne `(entries, hors_fenetre)`.
+    """
+    from .conflicts import get_material_conflicts
+
+    def dans_la_fenetre(debut, fin):
+        # Une proposition sans heure n'a pas de fenêtre à comparer : elle
+        # reste affichée, c'est justement ce qu'il reste à planifier.
+        if debut is None or fin is None:
+            return True
+        if window_start is not None and fin < window_start:
+            return False
+        if window_end is not None and debut > window_end:
+            return False
+        return True
+
+    entries = []
+
+    show_materials = (
+        ShowMaterial.objects.filter(material_id=material.id)
+        .select_related('show', 'show__venue', 'show__parent_show')
+    )
+    for sm in show_materials:
+        show = sm.show
+        entries.append({
+            'kind': 'show',
+            'id': show.id,
+            'title': show.display_title,
+            'event_type': show.event_type,
+            'start': show.start_datetime,
+            'end': show.end_datetime,
+            'venue_name': show.venue.name,
+            'quantity': sm.quantity,
+            'is_rental': sm.is_rental,
+            'rental_vendor': sm.rental_vendor,
+            'inherited': False,
+            'parent_title': show.parent_show.title if show.parent_show_id else None,
+            'conflict': bool(
+                get_material_conflicts(show, material, exclude_id=sm.id, quantity=sm.quantity)
+            ),
+        })
+        # Blocs qui puisent dans cette assignation. `phases` est vide sur un
+        # bloc (hiérarchie à un seul niveau) : pas de doublon à craindre si le
+        # matériel est assigné à la fois à l'événement et à sa répétition.
+        for phase in show.phases.select_related('venue').order_by('start_datetime'):
+            if not phase.inherits_resources:
+                continue
+            entries.append({
+                'kind': 'show',
+                'id': phase.id,
+                'title': phase.display_title,
+                'event_type': phase.event_type,
+                'start': phase.start_datetime,
+                'end': phase.end_datetime,
+                'venue_name': phase.venue.name,
+                'quantity': sm.quantity,
+                'is_rental': sm.is_rental,
+                'rental_vendor': sm.rental_vendor,
+                'inherited': True,
+                'parent_title': show.title,
+                'conflict': False,
+            })
+
+    transport_materials = (
+        TransportMaterial.objects.filter(material_id=material.id)
+        .select_related('transport', 'transport__origin_venue', 'transport__destination_venue')
+    )
+    for tm in transport_materials:
+        transport = tm.transport
+        entries.append({
+            'kind': 'transport',
+            'id': transport.id,
+            'title': (
+                f"{transport.origin_venue.name} → {transport.destination_venue.name}"
+            ),
+            'transport_type': transport.transport_type,
+            'status': transport.status,
+            'start': transport.scheduled_datetime,
+            'end': transport.effective_end,
+            'venue_name': transport.destination_venue.name,
+            'quantity': tm.quantity,
+            'inherited': False,
+            'parent_title': None,
+            'conflict': False,
+        })
+
+    # Une proposition sans heure n'a pas sa place dans la chronologie : elle
+    # part à la fin, avec son `start` à `None` que le frontend sait afficher.
+    retenues = [e for e in entries if dans_la_fenetre(e['start'], e['end'])]
+    hors_fenetre = len(entries) - len(retenues)
+    retenues.sort(key=lambda e: (e['start'] is None, e['start'] or timezone.now(), e['title']))
+    return retenues, hors_fenetre

@@ -60,7 +60,7 @@ watch(
   justify-content: center;
   padding: 24px;
   background:
-    #0b0d10 radial-gradient(var(--border-card) 1px, transparent 1.5px) 0 0 / 22px 22px;
+    var(--bg-page) radial-gradient(var(--border-card) 1px, transparent 1.5px) 0 0 / 22px 22px;
   font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
 
@@ -94,7 +94,7 @@ watch(
   width: 16px;
   height: 16px;
   border-radius: 2px;
-  background: #9b8aef;
+  background: rgb(var(--accent-rgb));
   display: block;
 }
 
@@ -102,12 +102,12 @@ watch(
   font: 700 20px var(--font-mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .brand__tagline {
   font: 400 13px system-ui;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--fg-rgb), 0.45);
   text-align: center;
 }
 
@@ -125,7 +125,7 @@ watch(
 
 .panel__prompt {
   font: 600 13px system-ui;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--fg-rgb), 0.6);
   text-align: center;
 }
 
@@ -145,7 +145,7 @@ watch(
 
 .panel__footer {
   font: 400 11px system-ui;
-  color: rgba(255, 255, 255, 0.3);
+  color: rgba(var(--fg-rgb), 0.3);
   text-align: center;
 }
 </style>

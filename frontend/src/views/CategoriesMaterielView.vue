@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import AppShell from '../components/AppShell.vue'
 import { api } from '../api/client'
 import { useActiveProject } from '../composables/useActiveProject'
+import { useEscapeKey } from '../composables/useEscapeKey'
 
 /**
  * Gestion des catégories de matériel (`/api/material-categories/`) — ajoutée
@@ -39,7 +40,7 @@ const PALETTE = [
   'oklch(0.7 0.16 35)',
   'oklch(0.7 0.14 300)',
   'oklch(0.8 0.1 60)',
-  'rgba(255,255,255,.5)',
+  'rgba(var(--fg-rgb),.5)',
 ]
 
 async function loadCategories() {
@@ -155,6 +156,11 @@ function cancelDelete() {
   deleting.value = null
   deleteError.value = null
 }
+
+// Échap ferme la confirmation, même geste que le clic sur le fond.
+useEscapeKey(() => {
+  if (deleting.value) cancelDelete()
+})
 
 async function confirmDelete() {
   deletingBusy.value = true
@@ -348,12 +354,12 @@ async function confirmDelete() {
 
 .page-count {
   font: 500 12px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .hint {
   font: 500 13px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .hint--error {
@@ -390,12 +396,12 @@ async function confirmDelete() {
 
 .row__name {
   font: 600 14px system-ui;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .row__meta {
   font: 400 11.5px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
   margin-top: 2px;
 }
 
@@ -423,7 +429,7 @@ async function confirmDelete() {
 }
 
 .swatch--active {
-  border-color: #fff;
+  border-color: rgb(var(--fg-rgb));
 }
 
 .empty {
@@ -433,7 +439,7 @@ async function confirmDelete() {
   gap: 10px;
   padding: 56px 20px;
   background: var(--bg-card);
-  border: 1px dashed rgba(255, 255, 255, 0.15);
+  border: 1px dashed rgba(var(--fg-rgb), 0.15);
   border-radius: var(--radius-notch-lg);
 }
 
@@ -441,19 +447,19 @@ async function confirmDelete() {
   width: 40px;
   height: 40px;
   border-radius: 0 10px 0 10px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--fg-rgb), 0.06);
 }
 
 .empty__title {
   font: 600 13px system-ui;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--fg-rgb), 0.6);
 }
 
 .modal {
   width: 100%;
   max-width: 420px;
   background: var(--bg-card);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(var(--fg-rgb), 0.12);
   border-radius: var(--radius-notch-lg);
   padding: 20px;
   display: flex;
@@ -463,7 +469,7 @@ async function confirmDelete() {
 
 .modal__title {
   font: 700 15px var(--font-mono);
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .modal__body {
@@ -475,7 +481,7 @@ async function confirmDelete() {
 .modal__text {
   margin: 0;
   font: 400 13px/1.5 system-ui;
-  color: rgba(255, 255, 255, 0.65);
+  color: rgba(var(--fg-rgb), 0.65);
 }
 
 .modal__actions {

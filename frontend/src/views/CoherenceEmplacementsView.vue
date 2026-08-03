@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import { api } from '../api/client'
 import AppShell from '../components/AppShell.vue'
 import { useActiveProject } from '../composables/useActiveProject'
+import { useChipFilter } from '../composables/useChipFilter'
 
 /**
  * Écran « Cohérence des emplacements » — port de CoherenceEmplacements.dc.html.
@@ -31,7 +32,10 @@ const loading = ref(false)
 const loadError = ref(null)
 const issues = ref([])
 
-const severity = ref('tous')
+// ⌘+clic pour combiner plusieurs sévérités (2026-08-01, à la demande de
+// Samuel — même comportement que toutes les puces de filtre de l'app, voir
+// useChipFilter.js).
+const severityFilter = useChipFilter()
 
 async function loadCoherence() {
   if (!activeProjectId.value) return
@@ -58,7 +62,7 @@ const severityMeta = {
   manquant: { badge: 'MANQUANT', color: 'oklch(0.72 0.16 25)', bg: 'oklch(0.72 0.16 25 / .18)', title: 'Matériel requis nulle part amené' },
   propose: { badge: 'PROPOSÉ', color: 'oklch(0.78 0.13 85)', bg: 'oklch(0.78 0.13 85 / .18)', title: 'Couvert par une proposition à approuver' },
   origine_incoherente: { badge: 'ORIGINE INCOHÉRENTE', color: 'oklch(0.78 0.13 85)', bg: 'oklch(0.78 0.13 85 / .18)', title: "Matériel indisponible au lieu de départ prévu" },
-  origine_inconnue: { badge: 'ORIGINE INCONNUE', color: 'rgba(255,255,255,.5)', bg: 'rgba(255,255,255,.08)', title: "Matériel sans lieu d'entreposage connu" },
+  origine_inconnue: { badge: 'ORIGINE INCONNUE', color: 'rgba(var(--fg-rgb),.5)', bg: 'rgba(var(--fg-rgb),.08)', title: "Matériel sans lieu d'entreposage connu" },
   // Ajouté le 2026-07-30 : à la fin du projet, tout doit être rentré au
   // bercail (voir transport_coherence.get_material_return_issue).
   retour_manquant: { badge: 'NON RETOURNÉ', color: 'oklch(0.75 0.15 300)', bg: 'oklch(0.75 0.15 300 / .18)', title: "Matériel non revenu à son lieu d'origine en fin de projet" },
@@ -67,17 +71,22 @@ const severityMeta = {
 const severityOrder = ['manquant', 'propose', 'retour_manquant', 'origine_incoherente', 'origine_inconnue']
 
 const chips = computed(() => [
-  { value: 'tous', label: 'Tous' },
-  { value: 'manquant', label: 'Manquant' },
-  { value: 'propose', label: 'Proposé' },
-  { value: 'retour_manquant', label: 'Non retourné' },
-  { value: 'origine_incoherente', label: 'Origine incohérente' },
-  { value: 'origine_inconnue', label: 'Origine inconnue' },
+  { value: 'tous', label: 'Tous', active: severityFilter.selected.value.size === 0, select: () => severityFilter.selectAll() },
+  ...[
+    ['manquant', 'Manquant'],
+    ['propose', 'Proposé'],
+    ['retour_manquant', 'Non retourné'],
+    ['origine_incoherente', 'Origine incohérente'],
+    ['origine_inconnue', 'Origine inconnue'],
+  ].map(([value, label]) => ({
+    value,
+    label,
+    active: severityFilter.isSelected(value),
+    select: (event) => severityFilter.toggle(value, event),
+  })),
 ])
 
-const filtered = computed(() =>
-  severity.value === 'tous' ? issues.value : issues.value.filter((it) => issueSeverity(it) === severity.value),
-)
+const filtered = computed(() => issues.value.filter((it) => severityFilter.passes(issueSeverity(it))))
 
 const groups = computed(() =>
   severityOrder
@@ -117,8 +126,8 @@ function actionFor(issue) {
           v-for="c in chips"
           :key="c.value"
           class="chip"
-          :class="{ 'chip--active': severity === c.value }"
-          @click="severity = c.value"
+          :class="{ 'chip--active': c.active }"
+          @click="c.select($event)"
         >
           {{ c.label }}
         </div>
@@ -166,7 +175,7 @@ function actionFor(issue) {
 
 .header__subtitle {
   font: 400 12.5px system-ui;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--fg-rgb), 0.45);
   margin-top: 6px;
 }
 
@@ -179,7 +188,7 @@ function actionFor(issue) {
 .hint {
   padding: 32px 40px;
   font: 500 13px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .hint--error {
@@ -194,7 +203,7 @@ function actionFor(issue) {
   gap: 10px;
   padding: 64px 20px;
   background: var(--bg-card);
-  border: 1px dashed rgba(255, 255, 255, 0.15);
+  border: 1px dashed rgba(var(--fg-rgb), 0.15);
   border-radius: var(--radius-notch-lg);
 }
 
@@ -207,7 +216,7 @@ function actionFor(issue) {
 
 .empty-card__label {
   font: 600 13px system-ui;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--fg-rgb), 0.6);
 }
 
 .group {
@@ -234,12 +243,12 @@ function actionFor(issue) {
   font: 700 11px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .group-count {
   font: 500 11.5px system-ui;
-  color: rgba(255, 255, 255, 0.3);
+  color: rgba(var(--fg-rgb), 0.3);
 }
 
 .issue {
@@ -267,12 +276,12 @@ function actionFor(issue) {
 
 .issue__title {
   font: 600 14px var(--font-mono);
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .issue__context {
   font: 400 11.5px system-ui;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--fg-rgb), 0.45);
   margin-top: 2px;
 }
 

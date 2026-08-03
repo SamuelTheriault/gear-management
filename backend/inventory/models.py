@@ -42,6 +42,23 @@ class User(models.Model):
     email = models.EmailField(unique=True, help_text="Email Google (identifiant de connexion)")
     name = models.CharField(max_length=255)
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, default=ROLE_VIEWER)
+    is_staff_global = models.BooleanField(
+        default=False,
+        help_text=(
+            "Accès de dépannage/support réservé à l'exploitant de la "
+            "plateforme (Samuel), ajouté le 2026-08-02 quand l'app est "
+            "devenue multi-tenant (abonnements vendus à d'autres directeurs "
+            "techniques/compagnies). Distinct de `role` ci-dessus, qui reste "
+            "un rôle global purement d'affichage côté frontend "
+            "(UtilisateursView.vue) et ne gate rien côté API. "
+            "`is_staff_global` COURT-CIRCUITE entièrement le contrôle "
+            "d'accès par projet (voir `ProjectMembership` et "
+            "`HasProjectAccess` dans permissions.py) — utile pour le "
+            "support/dépannage sur les projets clients une fois l'outil "
+            "vendu. Ne pas confondre avec un rôle `owner` de "
+            "`ProjectMembership`, qui ne donne accès qu'à SES projets."
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     django_user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
@@ -107,6 +124,51 @@ class Settings(models.Model):
     date_format = models.CharField(max_length=3, choices=DATE_FORMAT_CHOICES, default=DATE_FORMAT_DMY)
     time_format = models.CharField(max_length=3, choices=TIME_FORMAT_CHOICES, default=TIME_FORMAT_24H)
 
+    # Couleurs des bandes qui ne sont rattachées à aucune fiche éditable
+    # (contrairement à `Venue.color`/`MaterialCategory.color`) — ajoutées le
+    # 2026-08-02 à la demande de Samuel. `transport_color` couvrait déjà tout
+    # déplacement confirmé (Dashboard + Parcours Matériel) via le jeton CSS
+    # fixe `--transport` ; les 5 couleurs `event_color_*` couvrent
+    # `Show.EVENT_TYPE_CHOICES`, jusqu'ici dupliquées en dur dans 4 fichiers
+    # Vue distincts (voir CLAUDE.md, 2026-08-02). Même convention que
+    # `Venue.color`/`MaterialCategory.color` : chaîne CSS libre, pas de
+    # validation de format — les défauts reprennent tels quels les valeurs
+    # « badge » qui étaient codées en dur (pas les teintes plus foncées que
+    # `DashboardView.vue` appliquait spécifiquement à Montage/Démontage sur
+    # sa timeline : cette nuance devient une déclinaison calculée par
+    # `color-mix()` côté frontend à partir de cette même couleur de base,
+    # plutôt qu'une deuxième valeur stockée — une seule source par type).
+    transport_color = models.CharField(
+        max_length=64,
+        default='oklch(0.64 0.21 340)',
+        help_text="Couleur des déplacements confirmés (Dashboard, Parcours Matériel).",
+    )
+    event_color_rehearsal = models.CharField(
+        max_length=64,
+        default='oklch(0.8 0.13 85)',
+        help_text="Couleur du type de spectacle Répétition.",
+    )
+    event_color_performance = models.CharField(
+        max_length=64,
+        default='oklch(0.75 0.13 320)',
+        help_text="Couleur du type de spectacle Représentation.",
+    )
+    event_color_storage = models.CharField(
+        max_length=64,
+        default='rgba(var(--fg-rgb),.6)',
+        help_text="Couleur du type de spectacle Entreposage.",
+    )
+    event_color_setup = models.CharField(
+        max_length=64,
+        default='oklch(0.75 0.13 165)',
+        help_text="Couleur du type de bloc Montage.",
+    )
+    event_color_teardown = models.CharField(
+        max_length=64,
+        default='oklch(0.7 0.11 255)',
+        help_text="Couleur du type de bloc Démontage.",
+    )
+
     class Meta:
         db_table = 'settings'
         verbose_name = 'Réglages'
@@ -168,6 +230,14 @@ class Project(models.Model):
     supprimer — basculer d'un projet à l'autre (actif ou archivé) doit rester
     possible à tout moment sans recharger/exporter de fichier, contrairement
     à une sauvegarde classique.
+
+    **Accès** (2026-08-02, quand l'app est devenue multi-tenant — abonnements
+    vendus à d'autres directeurs techniques/compagnies) : un `Project` n'a
+    plus « pas de propriétaire » comme documenté avant cette date — voir
+    `ProjectMembership` ci-dessous, qui relie chaque `User` ayant accès à ce
+    projet avec un rôle (`owner`/`editor`/`viewer`). Le contrôle réel se fait
+    côté API via `HasProjectAccess` (permissions.py), pas par une contrainte
+    de ce modèle.
     """
 
     STATUS_ACTIVE = 'active'
@@ -194,6 +264,84 @@ class Project(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class ProjectMembership(models.Model):
+    """Accès d'un `User` applicatif à un `Project`, avec un rôle (ajouté le
+    2026-08-02, quand l'app est devenue multi-tenant — abonnements vendus à
+    d'autres directeurs techniques/compagnies, plus seulement Samuel).
+
+    Trois rôles, **par projet** (décision de Samuel — ne pas rouvrir) :
+    - `owner` : gère les accès du projet (cette table) + édite tout le reste.
+    - `editor` : édite tout SAUF la gestion des accès.
+    - `viewer` : lecture seule.
+
+    Le contrôle réel est fait par `HasProjectAccess` (permissions.py), pas
+    par ce modèle lui-même — cette table n'est que la source de vérité que
+    cette permission interroge. `User.is_staff_global` (voir plus haut)
+    contourne entièrement ce contrôle : un accès de dépannage plateforme,
+    distinct d'un accès `owner` qui reste limité à SES projets.
+
+    **Flux d'invitation** (décision de Samuel : pas d'envoi de courriel
+    automatique pour l'instant, aucune infra SMTP configurée) :
+    `ProjectMembershipViewSet.create` (réservé owner/staff) réutilise ou crée
+    un `User` par email — `status='pending'` tant que cette personne ne s'est
+    jamais connectée via Google (`User.django_user_id` encore nul),
+    `status='active'` d'emblée si elle a déjà un compte lié. Un `status`
+    `pending` NE COMPTE PAS comme un accès actif — voir `HasProjectAccess`.
+    `signals.py` (`provisionner_utilisateur_inventory`) active automatiquement
+    les memberships `pending` de l'email qui vient de compléter son premier
+    login Google, exactement comme le pré-provisioning global déjà en place
+    pour `User` lui-même.
+    """
+
+    ROLE_OWNER = 'owner'
+    ROLE_EDITOR = 'editor'
+    ROLE_VIEWER = 'viewer'
+    ROLE_CHOICES = [
+        (ROLE_OWNER, 'Owner'),
+        (ROLE_EDITOR, 'Editor'),
+        (ROLE_VIEWER, 'Viewer'),
+    ]
+
+    STATUS_PENDING = 'pending'
+    STATUS_ACTIVE = 'active'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'En attente'),
+        (STATUS_ACTIVE, 'Actif'),
+    ]
+
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name='memberships',
+        help_text="Projet auquel cet accès donne droit.",
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='project_memberships',
+        help_text="Compte applicatif qui reçoit l'accès (jamais nullable — voir le flux d'invitation ci-dessus).",
+    )
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES, default=ROLE_VIEWER)
+    invited_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='invitations_sent',
+        help_text="Utilisateur qui a envoyé l'invitation — nul pour l'appartenance créée automatiquement (ex. le créateur d'un projet).",
+    )
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'project_memberships'
+        unique_together = ('project', 'user')
+        ordering = ['project_id', 'role']
+
+    def __str__(self):
+        return f"{self.user} → {self.project} ({self.role}, {self.status})"
 
 
 class Venue(models.Model):
@@ -243,6 +391,19 @@ class Venue(models.Model):
     longitude = models.DecimalField(
         max_digits=9, decimal_places=6, null=True, blank=True,
         help_text="Coordonnée GPS — voir latitude.",
+    )
+    color = models.CharField(
+        max_length=64,
+        blank=True,
+        default='',
+        help_text=(
+            "Couleur d'affichage optionnelle pour les bandes représentant ce "
+            "lieu (Parcours Matériel) — chaîne CSS libre (ex. oklch(...)). "
+            "Vide par défaut : la couleur reste générée automatiquement "
+            "(palette cyclée par ordre d'apparition, voir ParcoursMaterielView.vue) "
+            "— ce champ ne fait que permettre de la fixer manuellement pour un "
+            "lieu donné. Ajouté le 2026-08-02 à la demande de Samuel."
+        ),
     )
 
     class Meta:
@@ -388,6 +549,22 @@ class Material(models.Model):
         related_name='components',
         help_text="Matériel parent (ex. 'Kit Audio' est parent de 'Micro sans fil')",
     )
+    is_kit_parent = models.BooleanField(
+        default=False,
+        help_text=(
+            "Active ce matériel comme parent de kit possible — limite la liste "
+            "affichée dans le sélecteur « Fait partie du kit » d'un autre "
+            "matériel (MaterialSerializer.validate_parent_material refuse un "
+            "parent qui n'a pas ce drapeau) et fait apparaître sur sa fiche une "
+            "section pour lui ajouter directement des composants. Un matériel "
+            "à quantity > 1 ne peut pas être marqué ainsi (voir "
+            "MaterialSerializer.validate(), même esprit que la contrainte sur "
+            "quantity ci-dessous). Ajouté le 2026-08-02 à la demande de Samuel "
+            "— décision actée avec lui : pas de bascule automatique sur les "
+            "kits existants (déjà des composants), à réactiver manuellement au "
+            "cas par cas."
+        ),
+    )
     venue = models.ForeignKey(
         Venue,
         null=True,
@@ -466,7 +643,11 @@ class Show(models.Model):
         related_name='shows',
         help_text="Production à laquelle ce spectacle appartient — voir Project. Doit correspondre au projet de `venue`.",
     )
-    title = models.CharField(max_length=255)
+    # Nullable au sens Django (`blank=True`) depuis le 2026-08-02 : pour un
+    # bloc rattaché, ce champ n'est plus le nom complet mais une précision
+    # optionnelle — voir `display_title`. Reste obligatoire (validé par
+    # `ShowSerializer`) pour un événement top-level.
+    title = models.CharField(max_length=255, blank=True)
     venue = models.ForeignKey(Venue, on_delete=models.PROTECT, related_name='shows')
     event_type = models.CharField(max_length=15, choices=EVENT_TYPE_CHOICES)
     start_datetime = models.DateTimeField()
@@ -498,7 +679,33 @@ class Show(models.Model):
         ordering = ['start_datetime']
 
     def __str__(self):
+        if self.parent_show_id is not None:
+            return self.display_title
         return f"{self.title} ({self.get_event_type_display()})"
+
+    @property
+    def display_title(self):
+        """Titre à afficher — dynamique pour un bloc, stocké tel quel sinon.
+
+        Signalé par Samuel (2026-08-02) : le titre d'un bloc rattaché était
+        généré UNE FOIS à sa création (« Répétition — Nom du spectacle »,
+        recopié dans `title`) et ne bougeait plus si l'événement était
+        renommé ensuite — un doublon qui divergeait. Ici, rien n'est stocké :
+        le nom de l'événement est relu à chaque fois sur `parent_show.title`,
+        qui reste la seule vérité.
+
+        Pour un bloc, `title` n'est donc plus le nom complet mais une
+        précision optionnelle ajoutée après le type (ex. `title="technique"`
+        → « Répétition technique — Vertiges » ; `title=""` → « Répétition —
+        Vertiges »). Pour un événement top-level, `title` reste le nom
+        complet et `display_title` lui est identique.
+        """
+        if self.parent_show_id is None:
+            return self.title
+        label = self.get_event_type_display()
+        if self.title:
+            label = f"{label} {self.title}"
+        return f"{label} — {self.parent_show.title}"
 
     @property
     def effective_start(self):

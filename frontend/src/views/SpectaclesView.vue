@@ -3,11 +3,18 @@ import { ref, computed, watch } from 'vue'
 import AppShell from '../components/AppShell.vue'
 import { api } from '../api/client'
 import { useActiveProject } from '../composables/useActiveProject'
+import { useChipFilter } from '../composables/useChipFilter'
+import { EVENT_TYPE_META } from '../constants/eventTypeMeta'
 
 /**
  * Liste des spectacles — port de Spectacles.dc.html, branché sur l'API réelle
  * (/api/shows/, /api/venues/) plutôt que sur les données de démonstration du
  * prototype. Voir schema.md section 5 pour les champs de `Show`.
+ *
+ * Filtre « Jour » (2026-08-02, demande de Samuel) : réutilise `s.date` (déjà
+ * calculé), trié chronologiquement par `start_datetime` — pas de bucket
+ * « À planifier » à gérer ici, contrairement à Transports, `start_datetime`
+ * étant obligatoire sur `Show`. Voir la note dédiée dans CLAUDE.md.
  */
 
 const { activeProjectId } = useActiveProject()
@@ -17,38 +24,10 @@ const venues = ref([])
 const loading = ref(false)
 const loadError = ref(null)
 
-const typeMeta = {
-  rehearsal: {
-    label: 'Répétition',
-    color: 'oklch(0.8 0.13 85)',
-    bg: 'oklch(0.8 0.13 85 / .16)',
-    dot: 'oklch(0.8 0.13 85)',
-  },
-  setup: {
-    label: 'Montage',
-    color: 'oklch(0.75 0.13 165)',
-    bg: 'oklch(0.75 0.13 165 / .16)',
-    dot: 'oklch(0.75 0.13 165)',
-  },
-  teardown: {
-    label: 'Démontage',
-    color: 'oklch(0.7 0.11 255)',
-    bg: 'oklch(0.7 0.11 255 / .16)',
-    dot: 'oklch(0.7 0.11 255)',
-  },
-  performance: {
-    label: 'Représentation',
-    color: 'oklch(0.75 0.13 320)',
-    bg: 'oklch(0.75 0.13 320 / .16)',
-    dot: 'oklch(0.75 0.13 320)',
-  },
-  storage: {
-    label: 'Entreposage',
-    color: 'rgba(255,255,255,.6)',
-    bg: 'rgba(255,255,255,.08)',
-    dot: 'rgba(255,255,255,.3)',
-  },
-}
+// Couleurs personnalisables depuis Réglages (2026-08-02) — voir
+// constants/eventTypeMeta.js, source unique partagée avec SpectacleDetailView.vue,
+// MaterielDetailView.vue et DashboardView.vue.
+const typeMeta = EVENT_TYPE_META
 
 const dateFmt = new Intl.DateTimeFormat('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' })
 const timeFmt = new Intl.DateTimeFormat('fr-CA', { hour: '2-digit', minute: '2-digit', hour12: false })
@@ -118,16 +97,42 @@ const decorated = computed(() =>
   }),
 )
 
-const selectedType = ref('Tous')
-const selectedVenue = ref('Tous')
+// ⌘+clic pour combiner plusieurs valeurs (2026-08-01, à la demande de
+// Samuel — même comportement que toutes les puces de filtre de l'app, voir
+// useChipFilter.js). Trois groupes indépendants (jour, type, lieu), combinés
+// en ET.
+const dayFilter = useChipFilter()
+const typeFilter = useChipFilter()
+const venueFilter = useChipFilter()
 
-const typeFilters = computed(() =>
-  ['Tous', 'Répétition', 'Représentation', 'Entreposage', 'Montage', 'Démontage'].map((label) => ({
-    label,
-    active: selectedType.value === label,
-    select: () => (selectedType.value = label),
+// Options de jour (2026-08-02, demande de Samuel) : `start_datetime` est
+// obligatoire sur `Show` (pas de bucket « À planifier » à gérer, contrairement
+// à Transport), donc un simple tri chronologique par première occurrence.
+const dayOptions = computed(() => {
+  const byLabel = new Map()
+  decorated.value.forEach((s) => {
+    if (!byLabel.has(s.date)) byLabel.set(s.date, new Date(s.start_datetime))
+  })
+  return [...byLabel.entries()].sort(([, a], [, b]) => a - b).map(([label]) => label)
+})
+
+const dayFilters = computed(() => [
+  { label: 'Tous les jours', active: dayFilter.selected.value.size === 0, select: () => dayFilter.selectAll() },
+  ...dayOptions.value.map((d) => ({
+    label: d,
+    active: dayFilter.isSelected(d),
+    select: (event) => dayFilter.toggle(d, event),
   })),
-)
+])
+
+const typeFilters = computed(() => [
+  { label: 'Tous', active: typeFilter.selected.value.size === 0, select: () => typeFilter.selectAll() },
+  ...['Répétition', 'Représentation', 'Entreposage', 'Montage', 'Démontage'].map((label) => ({
+    label,
+    active: typeFilter.isSelected(label),
+    select: (event) => typeFilter.toggle(label, event),
+  })),
+])
 
 const venueOptions = computed(() => {
   const seen = new Map()
@@ -138,19 +143,17 @@ const venueOptions = computed(() => {
 })
 
 const venueFilters = computed(() => [
-  { label: 'Tous les lieux', active: selectedVenue.value === 'Tous', select: () => (selectedVenue.value = 'Tous') },
+  { label: 'Tous les lieux', active: venueFilter.selected.value.size === 0, select: () => venueFilter.selectAll() },
   ...venueOptions.value.map((v) => ({
     label: v.name,
-    active: selectedVenue.value === v.id,
-    select: () => (selectedVenue.value = v.id),
+    active: venueFilter.isSelected(v.id),
+    select: (event) => venueFilter.toggle(v.id, event),
   })),
 ])
 
 const matching = computed(() =>
   decorated.value.filter(
-    (s) =>
-      (selectedType.value === 'Tous' || s.typeLabel === selectedType.value) &&
-      (selectedVenue.value === 'Tous' || s.venue === selectedVenue.value),
+    (s) => dayFilter.passes(s.date) && typeFilter.passes(s.typeLabel) && venueFilter.passes(s.venue),
   ),
 )
 
@@ -268,11 +271,22 @@ async function submitShow(force = false) {
       <div class="filters">
         <div class="filters__row">
           <div
+            v-for="f in dayFilters"
+            :key="f.label"
+            class="chip chip--small"
+            :class="{ 'chip--active': f.active }"
+            @click="f.select($event)"
+          >
+            {{ f.label }}
+          </div>
+        </div>
+        <div class="filters__row">
+          <div
             v-for="f in typeFilters"
             :key="f.label"
             class="chip"
             :class="{ 'chip--active': f.active }"
-            @click="f.select"
+            @click="f.select($event)"
           >
             {{ f.label }}
           </div>
@@ -283,7 +297,7 @@ async function submitShow(force = false) {
             :key="f.label"
             class="chip chip--small"
             :class="{ 'chip--active': f.active }"
-            @click="f.select"
+            @click="f.select($event)"
           >
             {{ f.label }}
           </div>
@@ -306,7 +320,7 @@ async function submitShow(force = false) {
             <div class="show-row__bar" :style="{ background: show.dot }" />
             <div class="show-row__body">
               <div class="show-row__top">
-                <div class="show-row__title">{{ show.title }}</div>
+                <div class="show-row__title">{{ show.display_title }}</div>
                 <div
                   class="show-row__type"
                   :style="{ color: show.typeColor, background: show.typeBg }"
@@ -427,7 +441,7 @@ async function submitShow(force = false) {
 
 .page-count {
   font: 500 12px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .filters {
@@ -450,7 +464,7 @@ async function submitShow(force = false) {
 
 .hint {
   font: 500 13px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .hint--error {
@@ -469,7 +483,7 @@ async function submitShow(force = false) {
 .show-row--nested {
   position: relative;
   margin-left: 26px;
-  border-left: 2px solid rgba(155, 138, 239, 0.25);
+  border-left: 2px solid rgba(var(--accent-rgb), 0.25);
 }
 
 .show-row--nested::before {
@@ -479,7 +493,7 @@ async function submitShow(force = false) {
   top: 50%;
   width: 14px;
   height: 2px;
-  background: rgba(155, 138, 239, 0.25);
+  background: rgba(var(--accent-rgb), 0.25);
 }
 
 .show-row {
@@ -514,7 +528,7 @@ async function submitShow(force = false) {
 
 .show-row__title {
   font: 600 15px var(--font-mono);
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .show-row__type {
@@ -535,13 +549,13 @@ async function submitShow(force = false) {
 
 .show-row__meta {
   font: 400 12.5px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
   margin-top: 4px;
 }
 
 .show-row__link {
   font: 600 11px system-ui;
-  color: #a5b4fc;
+  color: var(--link);
   cursor: pointer;
   white-space: nowrap;
   text-decoration: none;
@@ -555,7 +569,7 @@ async function submitShow(force = false) {
   gap: 10px;
   padding: 64px 20px;
   background: var(--bg-card);
-  border: 1px dashed rgba(255, 255, 255, 0.15);
+  border: 1px dashed rgba(var(--fg-rgb), 0.15);
   border-radius: var(--radius-notch-lg);
 }
 
@@ -563,17 +577,17 @@ async function submitShow(force = false) {
   width: 40px;
   height: 40px;
   border-radius: 0 10px 0 10px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--fg-rgb), 0.06);
 }
 
 .empty__title {
   font: 600 13px system-ui;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--fg-rgb), 0.6);
 }
 
 .empty__subtitle {
   font: 400 12px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
   text-align: center;
   max-width: 280px;
 }

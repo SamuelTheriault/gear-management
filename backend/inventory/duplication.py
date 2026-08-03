@@ -50,6 +50,10 @@ def duplicate_project(source_project, name, client_name=''):
                 is_storage=venue.is_storage,
                 latitude=venue.latitude,
                 longitude=venue.longitude,
+                # Couleur des bandes (`Venue.color`, 2026-08-02) : copiée comme
+                # le reste des champs d'affichage — une édition dupliquée ne
+                # doit pas perdre silencieusement une couleur fixée à la main.
+                color=venue.color,
             )
             venue_id_map[venue.id] = new_venue
 

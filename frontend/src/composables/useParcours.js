@@ -57,6 +57,7 @@ export function useParcours({ endpoint, itemsKey, listEndpoint, listParam }) {
     }
     loading.value = true
     loadError.value = null
+    zoomWindow.value = null
     try {
       const data = await api.get(`/projects/${activeProjectId.value}/${endpoint}/`, {
         [listParam]: selectedIds.value.join(','),
@@ -151,6 +152,7 @@ export function useParcours({ endpoint, itemsKey, listEndpoint, listParam }) {
 
   function selectDay(key) {
     selectedDayKey.value = key
+    zoomWindow.value = null
   }
 
   /** Passe au jour précédent/suivant de la liste (bornée, pas de bouclage). */
@@ -159,7 +161,10 @@ export function useParcours({ endpoint, itemsKey, listEndpoint, listParam }) {
     const index = liste.findIndex((j) => j.key === selectedDayKey.value)
     if (index === -1) return
     const suivant = liste[index + delta]
-    if (suivant) selectedDayKey.value = suivant.key
+    if (suivant) {
+      selectedDayKey.value = suivant.key
+      zoomWindow.value = null
+    }
   }
 
   // --- Positionnement dans la journée choisie ---
@@ -172,7 +177,9 @@ export function useParcours({ endpoint, itemsKey, listEndpoint, listParam }) {
     return { start, end, span: end - start }
   })
 
-  /** Position (0-100 %) d'un instant dans la journée choisie, bornée aux extrémités. */
+  /** Position (0-100 %) d'un instant dans la journée choisie (TOUJOURS la
+   * journée complète, indépendamment du zoom — voir la note sur le zoom
+   * ci-dessous), bornée aux extrémités. */
   function pct(iso) {
     if (!dayBounds.value || !iso) return 0
     const t = new Date(iso).getTime()
@@ -193,14 +200,103 @@ export function useParcours({ endpoint, itemsKey, listEndpoint, listParam }) {
     return { left: `${left}%`, width: `${width}%` }
   }
 
-  // Graduation fixe (0h→24h, un repère toutes les 2h) : contrairement à
-  // l'ancien axe multi-jours, la journée choisie a toujours la même étendue,
-  // pas besoin d'une granularité adaptative comme sur le Dashboard.
+  // --- Zoom (2026-08-02, demande de Samuel ; révisé le même jour pour le
+  // défilement horizontal) ---
+  //
+  // Le zoom n'agit plus sur `pct`/`overlapsDay`/`segmentStyle` (qui restent
+  // TOUJOURS relatifs à la journée entière, ci-dessus) : il agit sur la
+  // LARGEUR du conteneur qui les affiche. `zoomLevel` (>= 1) multiplie cette
+  // largeur (`ParcoursMaterielView`/`ParcoursTechniciensView` l'appliquent en
+  // `width: ${zoomLevel * 100}%` sur un conteneur scrollable) — les segments
+  // gardent leurs % habituels, mais comme le conteneur est plus large que la
+  // fenêtre visible, seule une fraction est visible à la fois. Se déplacer
+  // dans cette fraction devient alors un DÉFILEMENT NATIF du navigateur
+  // (molette, trackpad, barre de défilement), pas un recalcul de fenêtre —
+  // c'est ce que Samuel a demandé : « un scroll horizontal... pour se
+  // déplacer dans la vue ».
+  //
+  // `zoomWindow` reste la portion de journée qu'on VEUT voir (centre du
+  // niveau de zoom) ; `scrollFraction` traduit son début en une position
+  // 0-1 dans la largeur totale, que la vue applique au `scrollLeft` de son
+  // conteneur après chaque zoom (voir `useScrollSync` plus bas). Le
+  // défilement manuel de l'utilisateur, lui, ne repasse jamais par
+  // `zoomWindow` — le navigateur s'en charge seul, on ne le lit pas en retour.
+  const ZOOM_FACTOR = 0.6
+  const MIN_ZOOM_SPAN_MS = 15 * 60 * 1000
+
+  const zoomWindow = ref(null)
+
+  function clampToDay(start, span) {
+    if (!dayBounds.value) return null
+    const day = dayBounds.value
+    const clampedSpan = Math.min(Math.max(span, MIN_ZOOM_SPAN_MS), day.span)
+    const clampedStart = Math.max(day.start, Math.min(day.end - clampedSpan, start))
+    return { start: clampedStart, end: clampedStart + clampedSpan, span: clampedSpan }
+  }
+
+  const activeWindow = computed(() => zoomWindow.value ?? dayBounds.value)
+  const isZoomed = computed(() => zoomWindow.value != null)
+  const canZoomIn = computed(() => !!activeWindow.value && activeWindow.value.span > MIN_ZOOM_SPAN_MS + 1)
+  const canZoomOut = computed(() => isZoomed.value)
+
+  /** >= 1 : combien de fois la journée complète est « étirée ». 1 = pas de
+   * zoom, le conteneur fait 100 % de sa largeur normale. */
+  const zoomLevel = computed(() => {
+    if (!dayBounds.value || !activeWindow.value) return 1
+    return dayBounds.value.span / activeWindow.value.span
+  })
+
+  /** Position 0-1 du DÉBUT de la fenêtre zoomée dans la largeur totale
+   * (zoomée) du conteneur — à appliquer au `scrollLeft` après un zoom. */
+  const scrollFraction = computed(() => {
+    if (!dayBounds.value || !activeWindow.value) return 0
+    return (activeWindow.value.start - dayBounds.value.start) / dayBounds.value.span
+  })
+
+  /** Zoome vers l'intérieur d'un palier fixe, centré sur le milieu de la
+   * fenêtre actuellement visée (zoomée ou non). */
+  function zoomIn() {
+    const base = activeWindow.value
+    if (!base) return
+    const center = (base.start + base.end) / 2
+    const newSpan = base.span * ZOOM_FACTOR
+    zoomWindow.value = clampToDay(center - newSpan / 2, newSpan)
+  }
+
+  /** Zoome vers l'extérieur d'un palier fixe. De retour (à peu près) à la
+   * journée complète, retombe explicitement sur « pas de zoom » plutôt que
+   * de garder une fenêtre presque identique à `dayBounds`. */
+  function zoomOut() {
+    const base = activeWindow.value
+    if (!base || !dayBounds.value) return
+    const center = (base.start + base.end) / 2
+    const newSpan = base.span / ZOOM_FACTOR
+    if (newSpan >= dayBounds.value.span - 1) {
+      zoomWindow.value = null
+      return
+    }
+    zoomWindow.value = clampToDay(center - newSpan / 2, newSpan)
+  }
+
+  function resetZoom() {
+    zoomWindow.value = null
+  }
+
+  // Graduation adaptative : toutes les 2h tant qu'on affiche la journée
+  // complète, mais un pas plus fin quand on est zoomé — les repères sont
+  // TOUJOURS positionnés sur toute la largeur de la journée (comme
+  // `pct`/`segmentStyle`), c'est le conteneur élargi qui n'en montre qu'une
+  // fraction à la fois.
   const hourMarks = computed(() => {
     if (!dayBounds.value) return []
+    const spanMin = (activeWindow.value?.span ?? dayBounds.value.span) / 60000
+    const step = spanMin <= 60 ? 10 : spanMin <= 180 ? 15 : spanMin <= 360 ? 30 : spanMin <= 720 ? 60 : 120
+    const stepMs = step * 60000
     const marques = []
-    for (let h = 0; h <= 24; h += 2) {
-      marques.push({ key: h, label: `${String(h).padStart(2, '0')}h`, left: `${(h / 24) * 100}%` })
+    for (let t = Math.ceil(dayBounds.value.start / stepMs) * stepMs; t <= dayBounds.value.end; t += stepMs) {
+      const d = new Date(t)
+      const label = `${String(d.getHours()).padStart(2, '0')}h${d.getMinutes() ? String(d.getMinutes()).padStart(2, '0') : ''}`
+      marques.push({ key: t, label, left: `${((t - dayBounds.value.start) / dayBounds.value.span) * 100}%` })
     }
     return marques
   })
@@ -225,5 +321,13 @@ export function useParcours({ endpoint, itemsKey, listEndpoint, listParam }) {
     pct,
     segmentStyle,
     reload,
+    isZoomed,
+    canZoomIn,
+    canZoomOut,
+    zoomIn,
+    zoomOut,
+    resetZoom,
+    zoomLevel,
+    scrollFraction,
   }
 }

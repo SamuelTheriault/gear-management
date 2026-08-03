@@ -3,12 +3,22 @@ import { ref, computed, watch } from 'vue'
 import AppShell from '../components/AppShell.vue'
 import { api } from '../api/client'
 import { useActiveProject } from '../composables/useActiveProject'
+import { VENUE_PALETTE } from '../constants/venuePalette'
 
 /**
  * Liste des lieux — port de Lieux.dc.html, branché sur l'API réelle
  * (/api/venues/). Voir schema.md section 2 pour les champs de `Venue`
  * (contact_name/contact_info séparés côté modèle, `code` optionnel et unique
  * par projet — voir `VenueSerializer.validate_code`).
+ *
+ * Tag du code court coloré (2026-08-02, demande de Samuel) : reprend la
+ * couleur du lieu (`Venue.color`, voir LieuDetailView.vue) — même
+ * `autoPreviewColor()` que la fiche pour un aperçu en mode Automatique
+ * (dupliqué faute de composant partagé, même limite documentée là-bas : un
+ * aperçu plausible, pas la couleur exacte du Parcours Matériel). Un
+ * entrepôt SANS couleur fixée garde le badge neutre d'origine plutôt que la
+ * teinte grise translucide de l'aperçu — celle-ci est trop pâle pour rester
+ * lisible comme couleur de TEXTE.
  */
 
 const { activeProjectId } = useActiveProject()
@@ -33,12 +43,23 @@ async function loadVenues() {
 
 watch(activeProjectId, loadVenues, { immediate: true })
 
+// Aperçu déterministe par id — voir la note de tête du module et
+// LieuDetailView.vue pour la limite (approximation, pas la couleur exacte
+// du Parcours Matériel, qui cycle par ordre d'apparition dans les données).
+function autoPreviewColor(v) {
+  return VENUE_PALETTE[v.id % VENUE_PALETTE.length]
+}
+
 const decorated = computed(() =>
   venues.value.map((v) => ({
     ...v,
     tag: v.is_storage ? 'Entrepôt' : 'Salle',
-    tagColor: v.is_storage ? 'rgba(255,255,255,.6)' : 'oklch(0.75 0.13 320)',
-    tagBg: v.is_storage ? 'rgba(255,255,255,.08)' : 'oklch(0.75 0.13 320 / .16)',
+    tagColor: v.is_storage ? 'rgba(var(--fg-rgb),.6)' : 'oklch(0.75 0.13 320)',
+    tagBg: v.is_storage ? 'rgba(var(--fg-rgb),.08)' : 'oklch(0.75 0.13 320 / .16)',
+    // Entrepôt sans couleur fixée : `null` retombe sur le badge neutre
+    // d'origine (voir `.card-code`) plutôt que le gris translucide de
+    // l'aperçu, illisible comme couleur de texte.
+    venueColor: v.color || (v.is_storage ? null : autoPreviewColor(v)),
     contact: [v.contact_name, v.contact_info].filter(Boolean).join(' · ') || '—',
   })),
 )
@@ -116,7 +137,14 @@ async function addVenue() {
           <div v-for="v in decorated" :key="v.id" class="card">
             <div class="card-top">
               <div class="card-name" :title="v.name">
-                <span v-if="v.code" class="card-code">{{ v.code }}</span>{{ v.name }}
+                <span
+                  v-if="v.code"
+                  class="card-code"
+                  :style="v.venueColor ? {
+                    background: `color-mix(in oklch, ${v.venueColor} 65%, transparent)`,
+                    color: '#fff',
+                  } : {}"
+                >{{ v.code }}</span>{{ v.name }}
               </div>
               <div class="card-tag" :style="{ color: v.tagColor, background: v.tagBg }">{{ v.tag }}</div>
             </div>
@@ -203,12 +231,12 @@ async function addVenue() {
 
 .page-count {
   font: 500 12px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .hint {
   font: 500 13px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .hint--error {
@@ -240,7 +268,7 @@ async function addVenue() {
 
 .card-name {
   font: 600 15px var(--font-mono);
-  color: #fff;
+  color: rgb(var(--fg-rgb));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -261,16 +289,16 @@ async function addVenue() {
   margin-right: 8px;
   padding: 2px 6px;
   border-radius: 0 5px 0 5px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--fg-rgb), 0.08);
   font: 700 10.5px var(--font-mono);
   letter-spacing: 0.06em;
-  color: rgba(255, 255, 255, 0.65);
+  color: rgba(var(--fg-rgb), 0.65);
   vertical-align: 1px;
 }
 
 .card-address {
   font: 400 12.5px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .card-bottom {
@@ -283,12 +311,12 @@ async function addVenue() {
 
 .card-contact {
   font: 400 12px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .card-link {
   font: 600 11px system-ui;
-  color: #a5b4fc;
+  color: var(--link);
   cursor: pointer;
   white-space: nowrap;
   text-decoration: none;
@@ -302,7 +330,7 @@ async function addVenue() {
   gap: 10px;
   padding: 64px 20px;
   background: var(--bg-card);
-  border: 1px dashed rgba(255, 255, 255, 0.15);
+  border: 1px dashed rgba(var(--fg-rgb), 0.15);
   border-radius: var(--radius-notch-lg);
 }
 
@@ -310,12 +338,12 @@ async function addVenue() {
   width: 40px;
   height: 40px;
   border-radius: 0 10px 0 10px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--fg-rgb), 0.06);
 }
 
 .empty__title {
   font: 600 13px system-ui;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--fg-rgb), 0.6);
 }
 
 </style>

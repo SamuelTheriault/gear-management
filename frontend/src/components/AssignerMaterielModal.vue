@@ -1,6 +1,9 @@
 <script setup>
 import { ref, computed, reactive, onMounted } from 'vue'
 import { api } from '../api/client'
+import { useEscapeKey } from '../composables/useEscapeKey'
+import { useChipFilter } from '../composables/useChipFilter'
+import { normalizeText } from '../utils/text'
 
 /**
  * Modale « Assigner du matériel » — port de AssignationMateriel.dc.html.
@@ -65,10 +68,13 @@ const props = defineProps({
 
 const emit = defineEmits(['close', 'assigned'])
 
+// Échap ferme la modale, même geste que le clic sur le fond ou le « × ».
+useEscapeKey(() => emit('close'))
+
 // Nom et couleur de catégorie viennent de l'API depuis le 2026-07-30
 // (`category_name`/`category_color` sur MaterialSerializer — voir
 // MaterialCategory) : plus de table de correspondance codée en dur ici.
-const NO_CATEGORY = { label: 'Sans catégorie', color: 'rgba(255,255,255,.3)' }
+const NO_CATEGORY = { label: 'Sans catégorie', color: 'rgba(var(--fg-rgb),.3)' }
 
 function categoryOf(material) {
   return material?.category
@@ -108,10 +114,13 @@ function isAssigned(materialId) {
   return assignedByMaterial.value.has(materialId) || submittedQty.value[materialId] != null
 }
 
-// Filtre par catégorie (2026-07-30, suite) : puces générées à partir des
-// catégories réellement présentes dans le catalogue du projet — même esprit
-// que MaterielView.vue (« Tous » + seulement les catégories utilisées).
-const selectedCategory = ref('all')
+// Filtre par catégorie (2026-07-30, suite ; ⌘+clic pour en combiner
+// plusieurs depuis le 2026-08-01, à la demande de Samuel — même
+// comportement que toutes les puces de filtre de l'app, voir
+// useChipFilter.js) : puces générées à partir des catégories réellement
+// présentes dans le catalogue du projet — même esprit que MaterielView.vue
+// (« Tous » + seulement les catégories utilisées).
+const categoryFilter = useChipFilter()
 
 const categoryChips = computed(() => {
   const seen = new Map()
@@ -121,14 +130,37 @@ const categoryChips = computed(() => {
   })
   const sorted = [...seen.entries()].sort((a, b) => a[1].label.localeCompare(b[1].label, 'fr'))
   return [
-    { key: 'all', label: 'Tous', active: selectedCategory.value === 'all', select: () => (selectedCategory.value = 'all') },
+    { key: 'all', label: 'Tous', active: categoryFilter.selected.value.size === 0, select: () => categoryFilter.selectAll() },
     ...sorted.map(([key, meta]) => ({
       key,
       label: meta.label,
-      active: selectedCategory.value === key,
-      select: () => (selectedCategory.value = key),
+      active: categoryFilter.isSelected(key),
+      select: (event) => categoryFilter.toggle(key, event),
     })),
   ]
+})
+
+// Recherche texte (2026-07-31, à la demande de Samuel — même comportement
+// que MaterielView.vue) : se combine avec le filtre de catégorie. Un kit
+// reste visible si son propre nom correspond (avec tous ses composants,
+// comme d'habitude dans cette modale — elle ne les replie jamais) ou si un
+// seul composant correspond (le kit reste visible pour donner le contexte).
+const search = ref('')
+const searchNormalized = computed(() => normalizeText(search.value.trim()))
+function matchesSearch(name) {
+  return !searchNormalized.value || normalizeText(name).includes(searchNormalized.value)
+}
+
+const searchFilteredIds = computed(() => {
+  if (!searchNormalized.value) return null
+  const ids = new Set()
+  materials.value.forEach((m) => {
+    if (!matchesSearch(m.name)) return
+    ids.add(m.id)
+    if (m.parent_material != null) ids.add(m.parent_material)
+    ;(childrenByParent.value.get(m.id) ?? []).forEach((c) => ids.add(c.id))
+  })
+  return ids
 })
 
 // --- Sélection en cascade des kits (2026-07-30, demande de Samuel) ---
@@ -209,11 +241,16 @@ function orderByKit(list) {
   return ordonne
 }
 
+// Catégorie ET recherche, combinées (ET logique) — réutilisé par
+// `catalogRows` et `visibleIds` pour ne pas dupliquer les deux filtres.
+const filteredMaterials = computed(() =>
+  materials.value
+    .filter((m) => categoryFilter.passes(m.category ?? 'none'))
+    .filter((m) => !searchFilteredIds.value || searchFilteredIds.value.has(m.id)),
+)
+
 const catalogRows = computed(() =>
-  orderByKit(
-    materials.value
-      .filter((m) => selectedCategory.value === 'all' || (m.category ?? 'none') === selectedCategory.value),
-  )
+  orderByKit(filteredMaterials.value)
     .map((m) => {
     const locked = lockedQty(m.id)
     const qty = catalogQty.value[m.id] || 0
@@ -251,13 +288,7 @@ const catalogRows = computed(() =>
   }),
 )
 
-const visibleIds = computed(
-  () => new Set(
-    materials.value
-      .filter((m) => selectedCategory.value === 'all' || (m.category ?? 'none') === selectedCategory.value)
-      .map((m) => m.id),
-  ),
-)
+const visibleIds = computed(() => new Set(filteredMaterials.value.map((m) => m.id)))
 
 const selectedCount = computed(() => catalogRows.value.filter((r) => r.selected).length)
 const removeCount = computed(() => removedIds.value.length)
@@ -388,18 +419,27 @@ async function forcePendingConflicts() {
           Aucun matériel dans le catalogue de ce projet.
         </div>
         <template v-else>
+          <input
+            v-model="search"
+            type="search"
+            class="fiche-input"
+            placeholder="Rechercher du matériel…"
+          />
           <div class="filters">
             <div
               v-for="f in categoryChips"
               :key="f.key"
               class="chip"
               :class="{ 'chip--active': f.active }"
-              @click="f.select"
+              @click="f.select($event)"
             >
               {{ f.label }}
             </div>
           </div>
-          <div class="modal__body">
+          <div v-if="catalogRows.length === 0" class="hint">
+            Aucun matériel ne correspond à ces filtres.
+          </div>
+          <div v-else class="modal__body">
             <div
               v-for="r in catalogRows"
               :key="r.id"
@@ -495,7 +535,7 @@ async function forcePendingConflicts() {
   height: 85vh;
   max-height: 85vh;
   background: var(--bg-card);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(var(--fg-rgb), 0.08);
   border-radius: 0 14px 0 14px;
   padding: 22px;
   display: flex;
@@ -512,19 +552,19 @@ async function forcePendingConflicts() {
 .modal__title {
   font: 700 15px var(--font-mono);
   letter-spacing: 0.03em;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .modal__close {
   font: 400 20px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
   cursor: pointer;
   line-height: 1;
 }
 
 .modal__context {
   font: 500 12px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
   margin-top: -8px;
 }
 
@@ -547,7 +587,7 @@ async function forcePendingConflicts() {
 
 .hint {
   font: 500 12.5px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
   padding: 8px 0;
 }
 
@@ -557,12 +597,12 @@ async function forcePendingConflicts() {
   gap: 10px;
   padding: 6px 12px;
   border-radius: var(--radius-notch-sm);
-  background: #1b1f25;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--bg-row);
+  border: 1px solid rgba(var(--fg-rgb), 0.08);
 }
 
 .catalog-row--selected {
-  border-color: rgba(155, 138, 239, 0.35);
+  border-color: rgba(var(--accent-rgb), 0.35);
 }
 
 /* Composant affiché en retrait sous son kit, avec le trait de raccordement —
@@ -570,7 +610,7 @@ async function forcePendingConflicts() {
 .catalog-row--nested {
   position: relative;
   margin-left: 26px;
-  border-left: 2px solid rgba(155, 138, 239, 0.25);
+  border-left: 2px solid rgba(var(--accent-rgb), 0.25);
 }
 
 .catalog-row--nested::before {
@@ -580,7 +620,7 @@ async function forcePendingConflicts() {
   top: 50%;
   width: 14px;
   height: 2px;
-  background: rgba(155, 138, 239, 0.25);
+  background: rgba(var(--accent-rgb), 0.25);
 }
 
 .catalog-row--removed {
@@ -597,16 +637,16 @@ async function forcePendingConflicts() {
 }
 
 .catalog-row__kit {
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .catalog-row__child {
-  color: rgba(255, 255, 255, 0.3);
+  color: rgba(var(--fg-rgb), 0.3);
 }
 
 .modal__hint {
   font: 400 11.5px system-ui;
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(var(--fg-rgb), 0.35);
   padding: 0 20px 4px;
 }
 
@@ -619,7 +659,7 @@ async function forcePendingConflicts() {
   width: 18px;
   height: 18px;
   border-radius: 0 4px 0 4px;
-  border: 1.5px solid rgba(255, 255, 255, 0.3);
+  border: 1.5px solid rgba(var(--fg-rgb), 0.3);
   flex: none;
   cursor: pointer;
   display: flex;
@@ -649,12 +689,12 @@ async function forcePendingConflicts() {
 
 .catalog-row__name {
   font: 600 13px system-ui;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .catalog-row__stock {
   font: 400 11px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .catalog-row__rental {
@@ -670,7 +710,7 @@ async function forcePendingConflicts() {
   align-items: center;
   gap: 6px;
   font: 600 11px system-ui;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--fg-rgb), 0.6);
   cursor: pointer;
 }
 
@@ -678,10 +718,10 @@ async function forcePendingConflicts() {
   box-sizing: border-box;
   padding: 5px 8px;
   border-radius: 0 6px 0 6px;
-  background: #0e1013;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--bg-deep);
+  border: 1px solid rgba(var(--fg-rgb), 0.12);
   font: 500 11.5px system-ui;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
   min-width: 140px;
 }
 
@@ -712,9 +752,9 @@ async function forcePendingConflicts() {
   width: 24px;
   height: 24px;
   border-radius: 0 6px 0 6px;
-  background: #0e1013;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: #fff;
+  background: var(--bg-deep);
+  border: 1px solid rgba(var(--fg-rgb), 0.12);
+  color: rgb(var(--fg-rgb));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -727,10 +767,10 @@ async function forcePendingConflicts() {
   box-sizing: border-box;
   padding: 4px;
   border-radius: 0 6px 0 6px;
-  background: #0e1013;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--bg-deep);
+  border: 1px solid rgba(var(--fg-rgb), 0.12);
   font: 600 12px system-ui;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
   text-align: center;
 }
 
@@ -749,7 +789,7 @@ async function forcePendingConflicts() {
 
 .modal__count {
   font: 500 12px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
   margin-right: auto;
 }
 
@@ -762,8 +802,8 @@ async function forcePendingConflicts() {
 }
 
 .btn--ghost {
-  color: rgba(255, 255, 255, 0.6);
-  background: rgba(255, 255, 255, 0.06);
+  color: rgba(var(--fg-rgb), 0.6);
+  background: rgba(var(--fg-rgb), 0.06);
 }
 
 .btn--primary {

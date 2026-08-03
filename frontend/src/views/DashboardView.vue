@@ -2,8 +2,11 @@
 import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
+import ZoomControls from '../components/ZoomControls.vue'
 import { api } from '../api/client'
 import { useActiveProject } from '../composables/useActiveProject'
+import { useChipFilter } from '../composables/useChipFilter'
+import { useZoomScroll } from '../composables/useZoomScroll'
 
 const router = useRouter()
 
@@ -23,9 +26,10 @@ const router = useRouter()
  * `to_approve` non complétée) est ignoré, faute de fenêtre exploitable, même
  * logique que `Transport.effective_end`/`is_confirmed` côté backend).
  *
- * Filtre de type (2026-07-30, suite) : puces « Spectacles/Répétitions/
- * Entreposage/Transports » en haut de page (`typeFilters`/`typeChips`),
- * bascule indépendante par type (pas un select unique) — s'applique à la
+ * Filtre de type (2026-07-30, suite ; passé à `useChipFilter` le
+ * 2026-08-01) : puces « Spectacles/Répétitions/Entreposage/Transports » en
+ * haut de page (`typeFilter`/`typeChips`) — clic simple = un seul type,
+ * ⌘+clic combine, comme partout ailleurs dans l'app. S'applique à la
  * timeline « Cette semaine » et à « Spectacles à venir ». Ne touche pas aux
  * cartes de stats (spectacles ce mois, conflits, items en inventaire), qui
  * ne se découpent pas naturellement par ce même type.
@@ -44,8 +48,9 @@ const router = useRouter()
  * droit = début/fin) et se déplace en entier depuis son centre (garde la
  * durée). Horizontal seulement — on ne change pas le jour d'un événement par
  * ce biais, seulement son heure. `dragState` porte le glisser en cours,
- * converti en minutes via `weekWindow.winStart`/`span` (mêmes valeurs que le
- * rendu normal). Au relâchement (`onDragEnd`) : PATCH `start_datetime`/
+ * converti en minutes via `DAY_SPAN_MIN` (2026-08-02, suite : la journée
+ * complète fixe, pas la fenêtre zoomée — voir la note sur le défilement
+ * horizontal plus bas). Au relâchement (`onDragEnd`) : PATCH `start_datetime`/
  * `end_datetime` pour un spectacle, `scheduled_datetime`/
  * `estimated_duration_minutes` pour un transport, **sans** `force` — en cas
  * de conflit (400), le bloc revient à sa position d'origine (on ne mute
@@ -65,6 +70,94 @@ const router = useRouter()
  * chevauchement horaire entre deux spectacles à des lieux différents et
  * sans ressource partagée n'est PAS un conflit dans cette app (voir
  * architecture.md, section 4d).
+ *
+ * Zoom (2026-08-02, demande de Samuel) : `weekEntries`/`weekDays` (jours +
+ * lanes) sont maintenant calculés INDÉPENDAMMENT de la fenêtre affichée —
+ * seule `autoWindow` (la fenêtre event-bounded ci-dessus, désormais isolée
+ * dans son propre computed) dépend des vrais horaires. `zoomWindow`
+ * restreint optionnellement cette fenêtre (paliers `zoomIn`/`zoomOut`,
+ * `ZoomControls.vue`, même composant que les deux écrans Parcours) ;
+ * `activeWindow` = `zoomWindow ?? autoWindow` fait foi pour la granularité
+ * de l'axe et pour le défilement — PAS pour la position des blocs (voir
+ * ci-dessous).
+ *
+ * Défilement horizontal sous zoom (2026-08-02, suite, demande de Samuel :
+ * « se déplacer dans la vue ») : même mécanisme que les deux écrans
+ * Parcours (`useZoomScroll.js`) — plutôt que de filtrer/rogner les blocs à
+ * la fenêtre active, `weekWindow` positionne maintenant TOUS les blocs de
+ * chaque jour relativement à la journée COMPLÈTE fixe (0-1440 min,
+ * `DAY_SPAN_MIN`), une fois pour toutes. `.dash-timeline__scroll-content`
+ * (axe + pistes des jours) s'élargit à `zoomLevel * 100 %` dans
+ * `.dash-timeline__scroll` (`overflow-x: auto`) — `zoomLevel = DAY_SPAN_MIN
+ * / activeWindow.span`, donc déjà > 1 par défaut (avant tout clic sur
+ * zoom) puisque `autoWindow` est plus étroite que la journée complète.
+ * `useZoomScroll` repositionne le défilement (`scrollFraction =
+ * activeWindow.start / DAY_SPAN_MIN`) à chaque zoomIn/zoomOut/resetZoom.
+ * Les positions `left`/`width` des blocs ne dépendent donc plus JAMAIS du
+ * zoom — seule la largeur du conteneur change, exactement comme pour le
+ * Parcours Matériel/Technicien. Corollaire : `blockStyle` (aperçu pendant
+ * un glisser) et `onDragMove` (conversion pixel → minutes) utilisent
+ * maintenant `DAY_SPAN_MIN` directement plutôt que `weekWindow.span` — le
+ * `trackWidthPx` mesuré (`getBoundingClientRect`) représente déjà la
+ * journée complète à l'échelle du zoom courant.
+ *
+ * Sous-lignes par lieu (2026-08-02, suite, demande de Samuel) : chaque jour
+ * de « Cette semaine » n'est plus UNE piste (avec empilement générique de
+ * « voies » en cas de chevauchement, sans indication de quoi est où) —
+ * `weekDays` groupe maintenant les entrées du jour PAR LIEU
+ * (`venueName`/`originVenueName`/`destinationVenueName`), chaque lieu
+ * devenant sa propre sous-ligne avec son propre empilement de voies (utile
+ * pour un montage/spectacle/démontage dont les fenêtres effectives se
+ * touchent au même lieu). Un lieu sans événement le(s) jour(s) affiché(s)
+ * n'a simplement pas d'entrée dans la `Map` — rien à cacher explicitement.
+ * Un spectacle a un seul lieu ; un transport relie une origine à une
+ * destination et apparaît donc dans les DEUX lignes de lieu correspondantes
+ * (décision Samuel — pas de lieu unique à choisir pour un transport), sauf
+ * cas limite origine = destination (une seule ligne). Comme un transport
+ * peut apparaître deux fois, chaque occurrence est une COPIE indépendante
+ * de l'entrée (`{ ...item }` dans `pushTo`) : la voie (`lane`) assignée
+ * dans une ligne de lieu ne doit pas écraser celle assignée dans l'autre.
+ * Gabarit à deux colonnes inchangé — label et piste gagnent un niveau
+ * supplémentaire : un en-tête de jour (`.dash-timeline__day-header`, texte
+ * seul) suivi d'une ligne par lieu (`.dash-timeline__venue-label`), avec un
+ * espaceur de même hauteur (`.dash-timeline__day-spacer`) côté piste pour
+ * garder les deux colonnes alignées, comme `.dash-timeline__labels-spacer`
+ * le fait déjà pour l'axe.
+ *
+ * Filtres jour/lieu (2026-08-02, suite, demande de Samuel) : deux nouvelles
+ * rangées de puces (`dayChips`/`venueChips`, `dayFilter`/`venueFilter`,
+ * même `useChipFilter` que le filtre de type) au-dessus de la timeline
+ * « Cette semaine » — décidé avec Samuel (`AskUserQuestion`) : puces
+ * multi-sélection (pas un sélecteur mono-jour façon Parcours), listant
+ * SEULEMENT les jours/lieux réellement présents cette semaine (pas la
+ * liste complète des lieux du projet), et portée limitée à cette carte —
+ * « Spectacles à venir » n'est pas affecté, contrairement au filtre de
+ * type qui touche les deux.
+ *
+ * `availableDays`/`availableVenues` énumèrent les options à partir de
+ * `weekEntries` (déjà filtré par type) — AVANT le filtre jour/lieu
+ * lui-même, pour que les puces restent stables pendant qu'on filtre (une
+ * puce ne disparaît pas parce qu'on vient de cocher une autre puce). Un
+ * transport touche DEUX lieux (origine + destination) : il compte pour les
+ * deux dans `availableVenues`, et `venueFilter.passes(...)` est vérifié
+ * séparément à chaque `pushTo` dans `weekDays` (pas une seule fois par
+ * entrée) — si seule l'origine est sélectionnée, le transport reste visible
+ * dans la ligne d'origine mais disparaît de la ligne de destination,
+ * cohérent avec le fait qu'il y apparaît déjà en double (voir plus haut).
+ * `visibleWeekEntries` (jour + lieu, lieu au sens large : au moins UN des
+ * deux lieux d'un transport passe) alimente à la fois `weekDays` et
+ * `autoWindow` — le zoom « Réinitialiser » se recentre donc automatiquement
+ * sur ce qui reste visible après filtrage, pas sur la semaine entière.
+ *
+ * **Différence assumée avec les Parcours** : le bouton « Réinitialiser »
+ * ramène à `autoWindow` (premier événement au dernier ± 30 min), PAS à
+ * 0h-24h — sur cet écran, contrairement aux Parcours, la fenêtre par défaut
+ * n'a jamais été la journée complète. `zoomOut` peut en revanche aller
+ * au-delà d'`autoWindow`, jusqu'à 0h-24h, si on veut voir la journée entière
+ * malgré tout. Le zoom ne se réinitialise PAS après un glisser-déposer
+ * réussi (`onDragEnd` → `loadDashboard`) — seul un changement de projet le
+ * fait : perdre son zoom juste après avoir ajusté un bloc précisément
+ * grâce à lui serait contre-productif.
  */
 
 const { activeProjectId } = useActiveProject()
@@ -117,53 +210,62 @@ const typeSuffix = {
 
 // Couleur des blocs de timeline par type d'événement. Montage et démontage
 // (blocs rattachés, 2026-07-31) se distinguent du spectacle qu'ils encadrent :
-// on doit voir d'un coup d'œil que la salle est occupée avant et après.
+// on doit voir d'un coup d'œil que la salle est occupée avant et après. Les
+// couleurs « badge » des 5 types (rehearsal/performance/storage/setup/
+// teardown, désormais personnalisables via Réglages — voir
+// constants/eventTypeMeta.js) ne sont PAS reprises telles quelles ici : seuls
+// Montage/Démontage ont une teinte dédiée dans cette timeline, calculée
+// (`color-mix`, 2026-08-02) comme une déclinaison plus foncée de
+// `--event-setup`/`--event-teardown` — une seule source par type, la nuance
+// de la timeline n'est qu'un rendu différent de la même couleur. Répétition/
+// Représentation/Entreposage restent volontairement sur le vert « statut OK »
+// par défaut plus bas (sémantique, comme le rouge conflit/orange à
+// approuver — hors de la portée des couleurs personnalisables).
 const typeColors = {
-  setup: 'oklch(0.5 0.1 165)',
-  teardown: 'oklch(0.46 0.08 255)',
+  setup: 'color-mix(in oklch, var(--event-setup) 70%, black)',
+  teardown: 'color-mix(in oklch, var(--event-teardown) 70%, black)',
 }
 
 // --- Filtre de catégories (2026-07-30, suite) ---
 // Filtre les types d'entrées affichées dans la timeline « Cette semaine » et
 // dans « Spectacles à venir » — les 3 event_type de Show (Spectacle/
 // Répétition/Entreposage) plus Transport (n'apparaît que dans la timeline).
-// Bascule indépendante par type (pas un select unique façon MaterielView) :
-// on veut pouvoir combiner librement, ex. cacher les répétitions tout en
-// gardant spectacles + transports visibles.
-const typeFilters = ref({
-  performance: true,
-  rehearsal: true,
-  storage: true,
-  // Blocs rattachés à un événement (2026-07-31) : ce sont des `Show` comme
-  // les autres, ils arrivent donc dans la même liste et se filtrent pareil.
-  setup: true,
-  teardown: true,
-  transport: true,
-})
+//
+// ⌘+clic pour combiner plusieurs types (2026-08-01, à la demande de Samuel
+// — même comportement que toutes les puces de filtre de l'app, voir
+// useChipFilter.js). Avant ce changement, le Dashboard était le seul écran
+// où le clic simple combinait déjà librement (bascule indépendante par
+// type, sans ⌘) — remplacé par le même modèle Set « vide = tout affiché »
+// que les autres écrans, pour que le geste soit identique partout.
+const typeFilter = useChipFilter()
 
 const typeChips = computed(() => {
   const defs = [
     { key: 'performance', label: 'Spectacles' },
     { key: 'rehearsal', label: 'Répétitions' },
     { key: 'storage', label: 'Entreposage' },
+    // Blocs rattachés à un événement (2026-07-31) : ce sont des `Show` comme
+    // les autres, ils arrivent donc dans la même liste et se filtrent pareil.
     { key: 'setup', label: 'Montages' },
     { key: 'teardown', label: 'Démontages' },
     { key: 'transport', label: 'Transports' },
   ]
-  const allActive = defs.every((d) => typeFilters.value[d.key])
   return [
-    {
-      label: 'Tous',
-      active: allActive,
-      select: () => defs.forEach((d) => { typeFilters.value[d.key] = true }),
-    },
+    { label: 'Tous', active: typeFilter.selected.value.size === 0, select: () => typeFilter.selectAll() },
     ...defs.map((d) => ({
       label: d.label,
-      active: typeFilters.value[d.key],
-      select: () => { typeFilters.value[d.key] = !typeFilters.value[d.key] },
+      active: typeFilter.isSelected(d.key),
+      select: (event) => typeFilter.toggle(d.key, event),
     })),
   ]
 })
+
+// --- Filtres jour/lieu (2026-08-02, suite, demande de Samuel) ---
+// Portée limitée à « Cette semaine » (contrairement au filtre de type
+// ci-dessus, qui touche aussi « Spectacles à venir ») — voir la note de
+// tête du module.
+const dayFilter = useChipFilter()
+const venueFilter = useChipFilter()
 
 // --- Conflits (réutilise le même rapport project-wide que ConflitsView.vue) ---
 
@@ -225,26 +327,25 @@ function fmtMinutes(minutes) {
 
 const dayLabelFmt = new Intl.DateTimeFormat('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' })
 
-const weekWindow = computed(() => {
+// Fusionne spectacles et transports en une seule liste d'entrées de la
+// semaine — indépendant de la fenêtre affichée (zoomée ou non), pour que
+// zoomer/dézoomer ne recalcule jamais quels événements existent, seulement
+// comment ils se positionnent.
+const weekEntries = computed(() => {
   const weekStart = startOfWeek(new Date())
   const weekEnd = endOfWeek(new Date())
-
-  // Fusionne spectacles et transports en une seule liste d'entrées avant de
-  // répartir par jour, pour que les deux partagent la même fenêtre horaire
-  // et le même algorithme d'attribution de « voie » (évite le chevauchement
-  // visuel entre un bloc spectacle et un bloc transport le même jour).
-  const weekEntries = []
+  const entries = []
   for (const show of shows.value) {
-    if (!typeFilters.value[show.event_type]) continue
+    if (!typeFilter.passes(show.event_type)) continue
     const start = new Date(show.start_datetime)
     if (start < weekStart || start > weekEnd) continue
-    weekEntries.push({
+    entries.push({
       kind: 'show',
       id: show.id,
       date: start,
       start,
       end: new Date(show.end_datetime),
-      name: show.title,
+      name: show.display_title,
       conflict: conflictedShowIds.value.has(show.id),
       venueName: show.venue_name,
       eventTypeLabel: typeSuffix[show.event_type] ?? show.event_type,
@@ -255,7 +356,7 @@ const weekWindow = computed(() => {
     })
   }
   for (const t of transports.value) {
-    if (!typeFilters.value.transport) continue
+    if (!typeFilter.passes('transport')) continue
     // Une proposition auto non complétée (to_approve sans heure) n'a pas de
     // fenêtre exploitable — voir Transport.effective_end côté backend.
     if (!t.scheduled_datetime || !t.effective_end) continue
@@ -264,7 +365,7 @@ const weekWindow = computed(() => {
     const typeLabel = t.transport_type === 'delivery' ? 'Livraison' : 'Ramassage'
     const from = t.origin_venue_code || t.origin_venue_name
     const to = t.destination_venue_code || t.destination_venue_name
-    weekEntries.push({
+    entries.push({
       kind: 'transport',
       id: t.id,
       date: start,
@@ -275,59 +376,269 @@ const weekWindow = computed(() => {
       conflict: !!t.has_technician_conflict,
       technicianName: (t.technician_names ?? []).join(', '),
       materialsSummary: t.is_empty ? 'Camion vide' : `${(t.materials ?? []).length} article(s)`,
+      // Noms complets (pas les codes utilisés dans `name` ci-dessus) : ce
+      // sont les clés de regroupement par lieu (voir `weekDays`).
+      originVenueName: t.origin_venue_name,
+      destinationVenueName: t.destination_venue_name,
       route: `/transports/${t.id}`,
     })
   }
+  return entries
+})
 
-  if (weekEntries.length === 0) return { days: [], hasEntries: false, hourMarks: [], winStart: 0, span: 1 }
+// Options des puces jour/lieu : seulement ce qui est réellement présent
+// cette semaine (après filtre de type, AVANT le filtre jour/lieu lui-même —
+// une puce ne doit pas disparaître parce qu'on vient d'en cocher une autre).
+const availableDays = computed(() => {
+  const map = new Map()
+  for (const entry of weekEntries.value) {
+    const key = entry.date.toDateString()
+    if (!map.has(key)) map.set(key, entry.date)
+  }
+  return [...map.entries()]
+    .sort((a, b) => a[1] - b[1])
+    .map(([key, date]) => ({ key, label: dayLabelFmt.format(date) }))
+})
 
-  let winStart = 24 * 60
-  let winEnd = 0
+const dayChips = computed(() => [
+  { label: 'Tous', active: dayFilter.selected.value.size === 0, select: () => dayFilter.selectAll() },
+  ...availableDays.value.map((d) => ({
+    label: d.label,
+    active: dayFilter.isSelected(d.key),
+    select: (event) => dayFilter.toggle(d.key, event),
+  })),
+])
+
+// Un transport touche deux lieux (origine + destination) : il compte pour
+// les deux ici, même s'il n'apparaîtra en double dans la timeline que si les
+// deux passent le filtre (voir `pushTo` dans `weekDays`).
+const availableVenues = computed(() => {
+  const set = new Set()
+  for (const entry of weekEntries.value) {
+    if (entry.kind === 'show') {
+      if (entry.venueName) set.add(entry.venueName)
+    } else {
+      if (entry.originVenueName) set.add(entry.originVenueName)
+      if (entry.destinationVenueName) set.add(entry.destinationVenueName)
+    }
+  }
+  return [...set].sort((a, b) => a.localeCompare(b, 'fr'))
+})
+
+const venueChips = computed(() => [
+  { label: 'Tous', active: venueFilter.selected.value.size === 0, select: () => venueFilter.selectAll() },
+  ...availableVenues.value.map((name) => ({
+    label: name,
+    active: venueFilter.isSelected(name),
+    select: (event) => venueFilter.toggle(name, event),
+  })),
+])
+
+const hasAnyEntriesThisWeek = computed(() => weekEntries.value.length > 0)
+
+// Entrées qui passent le filtre jour ET (au sens large pour un transport :
+// au moins UN des deux lieux) le filtre lieu — alimente `weekDays` ET
+// `autoWindow`, pour que le zoom « Réinitialiser » se recentre sur ce qui
+// reste visible après filtrage plutôt que sur la semaine entière.
+const visibleWeekEntries = computed(() => weekEntries.value.filter((entry) => {
+  if (!dayFilter.passes(entry.date.toDateString())) return false
+  if (entry.kind === 'show') return venueFilter.passes(entry.venueName)
+  return venueFilter.passes(entry.originVenueName) || venueFilter.passes(entry.destinationVenueName)
+}))
+
+const LANE_HEIGHT = 34
+
+// Empile les entrées qui se chevauchent en « voies » (lane 0, 1, 2…) et
+// renvoie la hauteur de piste correspondante — factorisé pour être appliqué
+// PAR LIEU (voir `weekDays` ci-dessous) plutôt qu'une seule fois par jour.
+function packLanes(items) {
+  const sorted = [...items].sort((a, b) => a.start - b.start)
+  const laneEnds = []
+  sorted.forEach((it) => {
+    let lane = laneEnds.findIndex((end) => end <= it.start)
+    if (lane === -1) {
+      lane = laneEnds.length
+      laneEnds.push(it.end)
+    } else {
+      laneEnds[lane] = it.end
+    }
+    it.lane = lane
+  })
+  return { items: sorted, rowHeight: `${laneEnds.length * LANE_HEIGHT - 4}px` }
+}
+
+// Groupement par jour PUIS par lieu à l'intérieur du jour (2026-08-02, suite,
+// demande de Samuel) — chaque lieu devient sa propre sous-ligne, avec son
+// propre empilement de voies. Un lieu sans événement le(s) jour(s) affiché(s)
+// n'a simplement pas d'entrée dans la Map — rien à cacher explicitement.
+// Indépendant du zoom, comme avant : la hauteur d'une piste et la ligne
+// verticale d'un bloc ne doivent pas sauter en zoomant.
+//
+// Source `visibleWeekEntries` (2026-08-02, suite) plutôt que `weekEntries` :
+// le filtre jour est déjà appliqué à ce stade (voir sa définition), le
+// filtre lieu est réappliqué plus finement ci-dessous (par lieu, pas par
+// entrée entière) pour qu'un transport partiellement filtré (un seul de ses
+// deux lieux sélectionné) ne perde que la ligne correspondante.
+const weekDays = computed(() => {
   const byDay = new Map()
-  for (const entry of weekEntries) {
+  for (const entry of visibleWeekEntries.value) {
     const key = entry.date.toDateString()
     const startMin = minutesOfDay(entry.start)
     const endMin = Math.max(startMin + 15, minutesOfDay(entry.end)) // évite une largeur nulle si même heure
+    if (!byDay.has(key)) byDay.set(key, { date: entry.date, items: [] })
+    byDay.get(key).items.push({ ...entry, start: startMin, end: endMin })
+  }
+  return [...byDay.values()]
+    .sort((a, b) => a.date - b.date)
+    .map(({ date, items }) => {
+      const byVenue = new Map()
+      // Copie l'entrée (`{ ...item }`) plutôt que de partager la référence :
+      // un transport peut être poussé dans DEUX lieux (origine +
+      // destination), chacun avec sa propre voie (`lane`) assignée par
+      // `packLanes` — muter la même référence deux fois écraserait la
+      // première assignation.
+      const pushTo = (venueName, item) => {
+        if (!venueName) return
+        if (!venueFilter.passes(venueName)) return
+        if (!byVenue.has(venueName)) byVenue.set(venueName, [])
+        byVenue.get(venueName).push({ ...item })
+      }
+      for (const it of items) {
+        if (it.kind === 'show') {
+          pushTo(it.venueName, it)
+        } else if (it.originVenueName === it.destinationVenueName) {
+          // Cas limite (théoriquement invalide côté métier) : une seule ligne.
+          pushTo(it.originVenueName, it)
+        } else {
+          pushTo(it.originVenueName, it)
+          pushTo(it.destinationVenueName, it)
+        }
+      }
+      const venues = [...byVenue.entries()]
+        .map(([venueName, venueItems]) => {
+          const { items: sorted, rowHeight } = packLanes(venueItems)
+          return { venueName, items: sorted, rowHeight }
+        })
+        // Le lieu qui démarre le plus tôt ce jour-là en premier — ordre
+        // cohérent avec le tri chronologique des jours eux-mêmes.
+        .sort((a, b) => a.items[0].start - b.items[0].start)
+      return { date, label: dayLabelFmt.format(date), venues }
+    })
+    .filter((day) => day.venues.length > 0)
+})
+
+// Fenêtre AUTOMATIQUE : du premier au dernier événement VISIBLE (jour/lieu
+// filtrés, 2026-08-02, suite) de la semaine, ±30 min de marge — c'est la
+// fenêtre par défaut (zoom non actif) ET ce que cible le bouton
+// Réinitialiser, PAS 0h-24h (voir la note de tête du module).
+const autoWindow = computed(() => {
+  const entries = visibleWeekEntries.value
+  if (entries.length === 0) return null
+  let winStart = 24 * 60
+  let winEnd = 0
+  for (const entry of entries) {
+    const startMin = minutesOfDay(entry.start)
+    const endMin = Math.max(startMin + 15, minutesOfDay(entry.end))
     winStart = Math.min(winStart, startMin)
     winEnd = Math.max(winEnd, endMin)
-    if (!byDay.has(key)) byDay.set(key, { date: entry.date, items: [] })
-    // On garde toute l'entrée (id/route/venueName/technicianName/…) pour
-    // construire l'info-bulle et le lien de navigation plus bas — seuls
-    // `start`/`end` sont remplacés par leurs équivalents en minutes.
-    byDay.get(key).items.push({ ...entry, start: startMin, end: endMin })
   }
   winStart = Math.max(0, winStart - 30)
   winEnd = Math.min(24 * 60, winEnd + 30)
-  const span = winEnd - winStart || 1
+  return { start: winStart, end: winEnd, span: winEnd - winStart || 1 }
+})
 
-  // Graduation adaptative : plus la fenêtre est large, plus l'écart entre
-  // les repères d'heure augmente, pour éviter que les libellés se chevauchent.
-  const step = span <= 240 ? 30 : span <= 720 ? 60 : 120
+// --- Zoom (2026-08-02, demande de Samuel) ---
+
+const DAY_SPAN_MIN = 24 * 60
+const ZOOM_FACTOR = 0.6
+const MIN_ZOOM_SPAN_MIN = 15
+
+// { start, end, span } en minutes de la journée, ou `null` = fenêtre
+// automatique (`autoWindow`). Contrairement à `useParcours.js`, `null` NE
+// représente PAS 0h-24h ici — c'est pourquoi `zoomOut` ne retombe jamais sur
+// `null` en approchant la journée complète (seul `resetZoom` le fait).
+const zoomWindow = ref(null)
+
+function clampWindow(start, span) {
+  const clampedSpan = Math.min(Math.max(span, MIN_ZOOM_SPAN_MIN), DAY_SPAN_MIN)
+  const clampedStart = Math.max(0, Math.min(DAY_SPAN_MIN - clampedSpan, start))
+  return { start: clampedStart, end: clampedStart + clampedSpan, span: clampedSpan }
+}
+
+const activeWindow = computed(() => zoomWindow.value ?? autoWindow.value)
+const isZoomed = computed(() => zoomWindow.value != null)
+const canZoomIn = computed(() => !!activeWindow.value && activeWindow.value.span > MIN_ZOOM_SPAN_MIN + 0.5)
+const canZoomOut = computed(() => !!activeWindow.value && activeWindow.value.span < DAY_SPAN_MIN - 0.5)
+
+function zoomIn() {
+  const base = activeWindow.value
+  if (!base) return
+  const center = (base.start + base.end) / 2
+  const newSpan = base.span * ZOOM_FACTOR
+  zoomWindow.value = clampWindow(center - newSpan / 2, newSpan)
+}
+
+function zoomOut() {
+  const base = activeWindow.value
+  if (!base) return
+  const center = (base.start + base.end) / 2
+  const newSpan = base.span / ZOOM_FACTOR
+  zoomWindow.value = clampWindow(center - newSpan / 2, newSpan)
+}
+
+function resetZoom() {
+  zoomWindow.value = null
+}
+
+// Changer de projet est le seul déclencheur automatique — PAS un rechargement
+// après glisser-déposer (`onDragEnd` → `loadDashboard`), qui perdrait le zoom
+// juste après qu'il ait servi à ajuster un bloc précisément.
+watch(activeProjectId, () => { zoomWindow.value = null })
+
+// zoomLevel/scrollFraction (2026-08-02, suite) : mêmes formules que
+// `useParcours.js`, voir la note de tête sur le défilement horizontal.
+const zoomLevel = computed(() => {
+  if (!activeWindow.value) return 1
+  return DAY_SPAN_MIN / activeWindow.value.span
+})
+
+const scrollFraction = computed(() => {
+  if (!activeWindow.value) return 0
+  return activeWindow.value.start / DAY_SPAN_MIN
+})
+
+const scrollRef = ref(null)
+useZoomScroll(scrollRef, zoomLevel, scrollFraction)
+
+// --- Cette semaine : rendu ---
+//
+// Les positions des blocs (left/width) sont TOUJOURS relatives à la journée
+// complète (0-1440 min) — jamais à la fenêtre zoomée, voir la note de tête.
+// Seule la graduation de l'axe (densité des repères) dépend de la fenêtre
+// active, pour rester lisible à n'importe quel niveau de zoom.
+const weekWindow = computed(() => {
+  if (weekEntries.value.length === 0 || !activeWindow.value) return { days: [], hasEntries: false, hourMarks: [] }
+  const span = activeWindow.value.span
+
+  const step = span <= 60 ? 10 : span <= 180 ? 15 : span <= 360 ? 30 : span <= 720 ? 60 : 120
   const hourMarks = []
-  for (let m = Math.ceil(winStart / step) * step; m <= winEnd; m += step) {
-    hourMarks.push({ minute: m, label: fmtMinutes(m), left: `${((m - winStart) / span) * 100}%` })
+  for (let m = 0; m <= DAY_SPAN_MIN; m += step) {
+    hourMarks.push({ minute: m, label: fmtMinutes(m), left: `${(m / DAY_SPAN_MIN) * 100}%` })
   }
 
-  const days = [...byDay.values()]
-    .sort((a, b) => a.date - b.date)
-    .map(({ date, items }) => {
-      const sorted = [...items].sort((a, b) => a.start - b.start)
-      const laneEnds = []
-      sorted.forEach((it) => {
-        let lane = laneEnds.findIndex((end) => end <= it.start)
-        if (lane === -1) {
-          lane = laneEnds.length
-          laneEnds.push(it.end)
-        } else {
-          laneEnds[lane] = it.end
-        }
-        it.lane = lane
-      })
-      const blocks = sorted.map((it) => {
+  const days = weekDays.value.map((day) => {
+    const venues = day.venues.map((venue) => {
+      const blocks = []
+      for (const it of venue.items) {
+        const left = (it.start / DAY_SPAN_MIN) * 100
+        const width = (Math.max(it.end - it.start, 1) / DAY_SPAN_MIN) * 100
+
         // Rouge = conflit (chevauchement réel, spectacle ou technicien de
-        // transport). Sinon : vert pour un spectacle, lavande pour un
-        // transport confirmé, orange pour une proposition à approuver —
-        // mêmes couleurs de statut que TransportsView.vue.
+        // transport). Sinon : vert pour un spectacle, fuchsia pour un
+        // transport confirmé (`--transport`, 2026-08-02 — était `--accent`,
+        // se confondait avec des couleurs de lieu mauve du Parcours sous le
+        // thème clair), orange pour une proposition à approuver — mêmes
+        // couleurs de statut que TransportsView.vue.
         let color = 'oklch(0.72 0.13 165)'
         let textColor = '#062622'
         if (it.conflict) {
@@ -338,7 +649,7 @@ const weekWindow = computed(() => {
             color = 'oklch(0.78 0.13 85)'
             textColor = '#2a1f00'
           } else {
-            color = 'var(--accent)'
+            color = 'var(--transport)'
             textColor = '#211c33'
           }
         } else if (it.typeColor) {
@@ -346,7 +657,7 @@ const weekWindow = computed(() => {
           // sourde que l'événement qu'il encadre, pour lire la séquence
           // montage → spectacle → démontage d'un coup d'œil.
           color = it.typeColor
-          textColor = 'rgba(255,255,255,.9)'
+          textColor = 'rgba(var(--fg-rgb),.9)'
         }
         // Lignes de détail pour l'info-bulle au survol — voir note du module.
         const details = it.kind === 'transport'
@@ -362,27 +673,29 @@ const weekWindow = computed(() => {
             ]
         if (it.conflict) details.push(it.kind === 'transport' ? 'Conflit technicien' : "Conflit d'horaire")
 
-        return {
+        blocks.push({
           id: it.id,
           kind: it.kind,
-          dayDate: date,
+          dayDate: day.date,
           startMin: it.start,
           endMin: it.end,
-          left: `${((it.start - winStart) / span) * 100}%`,
-          width: `${((it.end - it.start) / span) * 100}%`,
-          top: `${it.lane * 34}px`,
+          left: `${left}%`,
+          width: `${width}%`,
+          top: `${it.lane * LANE_HEIGHT}px`,
           name: it.name,
           time: `${fmtMinutes(it.start)}–${fmtMinutes(it.end)}`,
           color,
           textColor,
           details,
           route: it.route,
-        }
-      })
-      return { label: dayLabelFmt.format(date), blocks, rowHeight: `${laneEnds.length * 34 - 4}px` }
+        })
+      }
+      return { venueName: venue.venueName, blocks, rowHeight: venue.rowHeight }
     })
+    return { label: day.label, venues }
+  })
 
-  return { days, hasEntries: true, hourMarks, winStart, span }
+  return { days, hasEntries: days.length > 0, hourMarks }
 })
 
 // --- Glisser-déposer pour ajuster l'horaire (voir note du module) ---
@@ -404,11 +717,12 @@ function minutesToDate(dayDate, minutes) {
 function blockStyle(block) {
   const state = dragState.value
   if (state && state.kind === block.kind && state.id === block.id) {
-    const { winStart, span } = weekWindow.value
+    // Relatif à la journée complète, comme le rendu normal — voir la note
+    // de tête sur le défilement horizontal sous zoom.
     return {
       top: block.top,
-      left: `${((state.startMin - winStart) / span) * 100}%`,
-      width: `${((state.endMin - state.startMin) / span) * 100}%`,
+      left: `${(state.startMin / DAY_SPAN_MIN) * 100}%`,
+      width: `${((state.endMin - state.startMin) / DAY_SPAN_MIN) * 100}%`,
       background: block.color,
       color: block.textColor,
     }
@@ -471,8 +785,9 @@ function onDragMove(event) {
   if (!state) return
   const deltaPx = event.clientX - state.pointerStartX
   if (Math.abs(deltaPx) > 3) suppressClick = true
-  const { span } = weekWindow.value
-  const deltaMin = (deltaPx / state.trackWidthPx) * span
+  // trackWidthPx représente toujours la journée complète (0-1440 min) à
+  // l'échelle du zoom courant — voir la note de tête.
+  const deltaMin = (deltaPx / state.trackWidthPx) * DAY_SPAN_MIN
 
   let newStart = state.originStartMin
   let newEnd = state.originEndMin
@@ -551,7 +866,7 @@ const totalItems = computed(() => materials.value.reduce((sum, m) => sum + (m.qu
 const upcoming = computed(() => {
   const now = new Date()
   return shows.value
-    .filter((s) => new Date(s.end_datetime) >= now && typeFilters.value[s.event_type])
+    .filter((s) => new Date(s.end_datetime) >= now && typeFilter.passes(s.event_type))
     .sort((a, b) => new Date(a.start_datetime) - new Date(b.start_datetime))
     .slice(0, 5)
     .map((s) => {
@@ -562,11 +877,16 @@ const upcoming = computed(() => {
       const conflict = conflictedShowIds.value.has(s.id)
       return {
         id: s.id,
-        title: `${s.title} — ${typeSuffix[s.event_type] ?? s.event_type}`,
+        // Un bloc (montage/démontage/répétition rattachée) a déjà son type
+        // dans `display_title` (2026-08-02, voir `Show.display_title`) —
+        // lui accoler le suffixe de type le doublerait.
+        title: s.parent_show
+          ? s.display_title
+          : `${s.title} — ${typeSuffix[s.event_type] ?? s.event_type}`,
         venue: s.venue_name,
         time: isToday ? timeRange : `${dayLabelFmt.format(start)} ${timeRange}`,
         conflict,
-        rowBg: conflict ? 'oklch(0.27 0.07 35 / .5)' : '#1b1f25',
+        rowBg: conflict ? 'oklch(0.27 0.07 35 / .5)' : 'var(--bg-row)',
         rowBorder: conflict ? '1px solid oklch(0.5 0.15 35 / .6)' : '1px solid transparent',
         dotColor: conflict ? 'oklch(0.7 0.16 35)' : 'oklch(0.72 0.13 165)',
       }
@@ -593,7 +913,7 @@ const upcoming = computed(() => {
           :key="f.label"
           class="chip"
           :class="{ 'chip--active': f.active }"
-          @click="f.select"
+          @click="f.select($event)"
         >
           {{ f.label }}
         </div>
@@ -609,58 +929,111 @@ const upcoming = computed(() => {
       </div>
 
       <div class="dash-card">
-        <div class="dash-card__title">Cette semaine</div>
+        <div class="dash-card__head">
+          <div class="dash-card__title">Cette semaine</div>
+          <ZoomControls
+            v-if="weekWindow.hasEntries"
+            :is-zoomed="isZoomed"
+            :can-zoom-in="canZoomIn"
+            :can-zoom-out="canZoomOut"
+            @zoom-in="zoomIn"
+            @zoom-out="zoomOut"
+            @reset="resetZoom"
+          />
+        </div>
+        <div v-if="hasAnyEntriesThisWeek" class="dash-timeline-filters">
+          <div class="dash-timeline-filters__row">
+            <span class="dash-timeline-filters__label">Jour</span>
+            <div
+              v-for="f in dayChips"
+              :key="'day-' + f.label"
+              class="chip"
+              :class="{ 'chip--active': f.active }"
+              @click="f.select($event)"
+            >{{ f.label }}</div>
+          </div>
+          <div class="dash-timeline-filters__row">
+            <span class="dash-timeline-filters__label">Lieu</span>
+            <div
+              v-for="f in venueChips"
+              :key="'venue-' + f.label"
+              class="chip"
+              :class="{ 'chip--active': f.active }"
+              @click="f.select($event)"
+            >{{ f.label }}</div>
+          </div>
+        </div>
         <div v-if="dragError" class="dash-drag-error">
           {{ dragError }}
           <span class="dash-drag-error__dismiss" @click="dragError = null">✕</span>
         </div>
         <div v-if="weekWindow.hasEntries" class="dash-timeline">
-          <div class="dash-timeline__row dash-timeline__row--axis">
-            <div class="dash-timeline__label"></div>
-            <div class="dash-timeline__axis">
-              <span
-                v-for="mark in weekWindow.hourMarks"
-                :key="mark.minute"
-                class="dash-timeline__axis-mark"
-                :style="{ left: mark.left }"
-              >{{ mark.label }}</span>
-            </div>
+          <div class="dash-timeline__labels">
+            <div class="dash-timeline__labels-spacer" />
+            <template v-for="day in weekWindow.days" :key="'daylabel-' + day.label">
+              <div class="dash-timeline__day-header">{{ day.label }}</div>
+              <div
+                v-for="venue in day.venues"
+                :key="'venuelabel-' + day.label + '-' + venue.venueName"
+                class="dash-timeline__venue-label"
+                :style="{ height: venue.rowHeight }"
+              >{{ venue.venueName }}</div>
+            </template>
           </div>
-          <div v-for="day in weekWindow.days" :key="day.label" class="dash-timeline__row">
-            <div class="dash-timeline__label">{{ day.label }}</div>
-            <div class="dash-timeline__track" :style="{ height: day.rowHeight }">
-              <div
-                v-for="mark in weekWindow.hourMarks"
-                :key="'grid-' + mark.minute"
-                class="dash-timeline__gridline"
-                :style="{ left: mark.left }"
-              />
-              <div
-                v-for="block in day.blocks"
-                :key="block.kind + '-' + block.id"
-                class="dash-timeline__block"
-                :class="{
-                  'dash-timeline__block--transport': block.kind === 'transport',
-                  'dash-timeline__block--dragging': isDragging(block),
-                }"
-                :style="blockStyle(block)"
-                @pointerdown="beginDrag(block, 'move', $event)"
-                @click="handleBlockClick(block)"
-              >
-                <div class="dash-timeline__handle dash-timeline__handle--start" @pointerdown="beginDrag(block, 'resize-start', $event)" />
-                <div class="dash-timeline__block-name">{{ block.name }}</div>
-                <div class="dash-timeline__block-time">{{ blockTimeLabel(block) }}</div>
-                <div class="dash-timeline__handle dash-timeline__handle--end" @pointerdown="beginDrag(block, 'resize-end', $event)" />
 
-                <div class="dash-timeline__tooltip">
-                  <div class="dash-timeline__tooltip-title">{{ block.name }}</div>
-                  <div class="dash-timeline__tooltip-time">{{ blockTimeLabel(block) }}</div>
-                  <div v-for="(line, i) in block.details" :key="i" class="dash-timeline__tooltip-line">{{ line }}</div>
-                </div>
+          <div ref="scrollRef" class="dash-timeline__scroll">
+            <div class="dash-timeline__scroll-content" :style="{ width: `${zoomLevel * 100}%` }">
+              <div class="dash-timeline__axis">
+                <span
+                  v-for="mark in weekWindow.hourMarks"
+                  :key="mark.minute"
+                  class="dash-timeline__axis-mark"
+                  :style="{ left: mark.left }"
+                >{{ mark.label }}</span>
               </div>
+              <template v-for="day in weekWindow.days" :key="'daytrack-' + day.label">
+                <div class="dash-timeline__day-spacer" />
+                <div
+                  v-for="venue in day.venues"
+                  :key="'venuetrack-' + day.label + '-' + venue.venueName"
+                  class="dash-timeline__track"
+                  :style="{ height: venue.rowHeight }"
+                >
+                  <div
+                    v-for="mark in weekWindow.hourMarks"
+                    :key="'grid-' + mark.minute"
+                    class="dash-timeline__gridline"
+                    :style="{ left: mark.left }"
+                  />
+                  <div
+                    v-for="block in venue.blocks"
+                    :key="block.kind + '-' + block.id"
+                    class="dash-timeline__block"
+                    :class="{
+                      'dash-timeline__block--transport': block.kind === 'transport',
+                      'dash-timeline__block--dragging': isDragging(block),
+                    }"
+                    :style="blockStyle(block)"
+                    @pointerdown="beginDrag(block, 'move', $event)"
+                    @click="handleBlockClick(block)"
+                  >
+                    <div class="dash-timeline__handle dash-timeline__handle--start" @pointerdown="beginDrag(block, 'resize-start', $event)" />
+                    <div class="dash-timeline__block-name">{{ block.name }}</div>
+                    <div class="dash-timeline__block-time">{{ blockTimeLabel(block) }}</div>
+                    <div class="dash-timeline__handle dash-timeline__handle--end" @pointerdown="beginDrag(block, 'resize-end', $event)" />
+
+                    <div class="dash-timeline__tooltip">
+                      <div class="dash-timeline__tooltip-title">{{ block.name }}</div>
+                      <div class="dash-timeline__tooltip-time">{{ blockTimeLabel(block) }}</div>
+                      <div v-for="(line, i) in block.details" :key="i" class="dash-timeline__tooltip-line">{{ line }}</div>
+                    </div>
+                  </div>
+                </div>
+              </template>
             </div>
           </div>
         </div>
+        <div v-else-if="hasAnyEntriesThisWeek" class="row-empty">Aucun événement ne correspond aux filtres jour/lieu sélectionnés.</div>
         <div v-else class="row-empty">Aucun spectacle ni transport cette semaine.</div>
         <div class="dash-legend">
           <div class="dash-legend__item">
@@ -723,7 +1096,7 @@ const upcoming = computed(() => {
 .hint {
   padding: 32px 40px;
   font: 500 13px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .hint--error {
@@ -732,7 +1105,7 @@ const upcoming = computed(() => {
 
 .row-empty {
   font: 500 12.5px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
   padding: 10px 0;
 }
 
@@ -758,7 +1131,7 @@ const upcoming = computed(() => {
 
 .dash-date {
   font: 500 12px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
   text-transform: capitalize;
 }
 
@@ -817,8 +1190,52 @@ const upcoming = computed(() => {
   font: 700 12px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: rgba(255, 255, 255, 0.65);
+  color: rgba(var(--fg-rgb), 0.65);
   margin-bottom: 16px;
+}
+
+/* Titre + contrôles de zoom sur une même ligne (2026-08-02) — seule « Cette
+   semaine » en a besoin ; « Spectacles à venir » garde son
+   `.dash-card__title` seul, avec sa marge basse habituelle (annulée ici
+   puisque c'est `.dash-card__head` qui la porte pour toute la ligne). */
+.dash-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.dash-card__head .dash-card__title {
+  margin-bottom: 0;
+}
+
+/* Puces jour/lieu (2026-08-02, suite, demande de Samuel) — portée limitée à
+   « Cette semaine », contrairement aux puces de type (`.filters` plus haut)
+   qui touchent aussi « Spectacles à venir ». Deux rangées avec un libellé de
+   colonne (« Jour »/« Lieu ») pour ne pas les confondre au premier regard. */
+.dash-timeline-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.dash-timeline-filters__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dash-timeline-filters__label {
+  flex: none;
+  min-width: 32px;
+  font: 700 10px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(var(--fg-rgb), 0.35);
 }
 
 .dash-drag-error {
@@ -841,26 +1258,78 @@ const upcoming = computed(() => {
   flex: none;
 }
 
+/* Deux colonnes (2026-08-02, suite — défilement horizontal sous zoom) :
+   étiquettes de jour fixes à gauche, axe + pistes défilables à droite dans
+   `.dash-timeline__scroll` — même structure que `.parcours-labels`/
+   `.parcours-scroll` sur les deux écrans Parcours. */
 .dash-timeline {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.dash-timeline__labels {
+  width: 140px;
+  flex: none;
   display: flex;
   flex-direction: column;
   gap: 14px;
 }
 
-.dash-timeline__row {
-  display: grid;
-  grid-template-columns: 140px 1fr;
-  gap: 12px;
+.dash-timeline__labels-spacer {
+  height: 16px;
+}
+
+/* Sous-lignes par lieu (2026-08-02, suite, demande de Samuel) : chaque jour
+   est maintenant un en-tête (`.dash-timeline__day-header`, texte seul) suivi
+   d'une ligne par lieu (`.dash-timeline__venue-label`, indentée pour montrer
+   la hiérarchie). Côté piste, `.dash-timeline__day-spacer` occupe la même
+   hauteur que l'en-tête pour garder les deux colonnes alignées — même
+   principe que `.dash-timeline__labels-spacer` pour l'axe. */
+.dash-timeline__day-header {
+  display: flex;
+  align-items: flex-end;
+  height: 22px;
+  box-sizing: border-box;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border-card);
+  font: 700 11px system-ui;
+  color: rgba(var(--fg-rgb), 0.7);
+}
+
+.dash-timeline__day-spacer {
+  height: 22px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--border-card);
+}
+
+.dash-timeline__venue-label {
+  display: flex;
   align-items: center;
+  padding-left: 10px;
+  font: 500 11.5px system-ui;
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
-.dash-timeline__label {
-  font: 600 12px system-ui;
-  color: rgba(255, 255, 255, 0.55);
+.dash-timeline__scroll {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  /* `overflow-y: hidden` explicite (2026-08-02, même correction que
+     `.parcours-scroll` dans style.css, bug signalé par Samuel) — sinon
+     `overflow-x: auto` fait passer `overflow-y` à `auto` aussi, ce qui en
+     fait une deuxième zone de défilement vertical qui capte la molette/le
+     trackpad indépendamment de `.dash-timeline__labels`, désynchronisant
+     les noms de jour à gauche des pistes. Le défilement vertical doit
+     rester celui de la page, qui fait bouger les deux colonnes ensemble. */
+  overflow-y: hidden;
 }
 
-.dash-timeline__row--axis {
-  margin-bottom: -4px;
+.dash-timeline__scroll-content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 100%;
 }
 
 .dash-timeline__axis {
@@ -872,13 +1341,13 @@ const upcoming = computed(() => {
   position: absolute;
   transform: translateX(-50%);
   font: 600 9.5px var(--font-mono);
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(var(--fg-rgb), 0.35);
   white-space: nowrap;
 }
 
 .dash-timeline__track {
   position: relative;
-  background: #1b1f25;
+  background: var(--bg-row);
   border-radius: var(--radius-notch-sm);
   /* Pas d'overflow:hidden : l'info-bulle au survol (position absolue,
      ancrée au bloc) doit pouvoir déborder au-dessus de la piste. */
@@ -953,8 +1422,8 @@ const upcoming = computed(() => {
   max-width: 240px;
   padding: 10px 12px;
   border-radius: var(--radius-notch-sm);
-  background: #0e1013;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--bg-deep);
+  border: 1px solid rgba(var(--fg-rgb), 0.12);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   opacity: 0;
   visibility: hidden;
@@ -970,20 +1439,20 @@ const upcoming = computed(() => {
 
 .dash-timeline__tooltip-title {
   font: 700 12px system-ui;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
   white-space: normal;
   margin-bottom: 4px;
 }
 
 .dash-timeline__tooltip-time {
   font: 600 11px system-ui;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--fg-rgb), 0.55);
   margin-bottom: 6px;
 }
 
 .dash-timeline__tooltip-line {
   font: 500 11.5px system-ui;
-  color: rgba(255, 255, 255, 0.75);
+  color: rgba(var(--fg-rgb), 0.75);
   line-height: 1.4;
 }
 
@@ -1007,7 +1476,7 @@ const upcoming = computed(() => {
   gap: 16px;
   margin-top: 16px;
   font: 500 11px system-ui;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--fg-rgb), 0.45);
 }
 
 .dash-legend__item {
@@ -1018,7 +1487,7 @@ const upcoming = computed(() => {
 
 .dash-legend__item--hint {
   margin-left: auto;
-  color: rgba(255, 255, 255, 0.3);
+  color: rgba(var(--fg-rgb), 0.3);
   font-style: italic;
 }
 
@@ -1037,7 +1506,7 @@ const upcoming = computed(() => {
 }
 
 .dash-legend__swatch--transport {
-  background: var(--accent);
+  background: var(--transport);
 }
 
 .dash-legend__swatch--transport-pending {
@@ -1060,7 +1529,7 @@ const upcoming = computed(() => {
 .dash-stat__value {
   font: 800 34px var(--font-mono);
   letter-spacing: 0.02em;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .dash-stat__value--accent {
@@ -1069,7 +1538,7 @@ const upcoming = computed(() => {
 
 .dash-stat__label {
   font: 500 12px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .dash-upcoming {
@@ -1101,12 +1570,12 @@ const upcoming = computed(() => {
 
 .dash-upcoming__title {
   font: 600 14px var(--font-mono);
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .dash-upcoming__subtitle {
   font: 400 11.5px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .dash-upcoming__badge {

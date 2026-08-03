@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { api } from '../api/client'
+import { useEscapeKey } from '../composables/useEscapeKey'
 
 /**
  * Modale « Assigner des techniciens » — port de AssignationTechnicien.dc.html.
@@ -32,6 +33,9 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['close', 'assigned'])
+
+// Échap ferme la modale, même geste que le clic sur le fond ou le « × ».
+useEscapeKey(() => emit('close'))
 
 function initials(name) {
   return (name || '?')
@@ -246,7 +250,7 @@ async function submit(force = false) {
   height: 85vh;
   max-height: 85vh;
   background: var(--bg-card);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(var(--fg-rgb), 0.08);
   border-radius: 0 14px 0 14px;
   padding: 22px;
   display: flex;
@@ -263,25 +267,25 @@ async function submit(force = false) {
 .modal__title {
   font: 700 15px var(--font-mono);
   letter-spacing: 0.03em;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .modal__close {
   font: 400 20px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
   cursor: pointer;
   line-height: 1;
 }
 
 .modal__context {
   font: 500 12px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
   margin-top: -8px;
 }
 
 .hint {
   font: 500 12.5px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
   padding: 8px 0;
 }
 
@@ -302,12 +306,12 @@ async function submit(force = false) {
   gap: 10px;
   padding: 10px 12px;
   border-radius: var(--radius-notch-sm);
-  background: #1b1f25;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--bg-row);
+  border: 1px solid rgba(var(--fg-rgb), 0.08);
 }
 
 .tech-row--selected {
-  border-color: rgba(155, 138, 239, 0.35);
+  border-color: rgba(var(--accent-rgb), 0.35);
 }
 
 /* Marqué à retirer : barré et estompé jusqu'à la validation. */
@@ -328,7 +332,7 @@ async function submit(force = false) {
   width: 18px;
   height: 18px;
   border-radius: 0 4px 0 4px;
-  border: 1.5px solid rgba(255, 255, 255, 0.3);
+  border: 1.5px solid rgba(var(--fg-rgb), 0.3);
   flex: none;
   cursor: pointer;
   display: flex;
@@ -353,24 +357,24 @@ async function submit(force = false) {
 
 .tech-row__name {
   font: 600 13px system-ui;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .tech-row__role {
   font: 400 11px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .modal__hint {
   font: 400 11.5px system-ui;
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(var(--fg-rgb), 0.35);
   padding-bottom: 4px;
 }
 
 .modal__count {
   margin-right: auto;
   font: 500 11.5px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
   align-self: center;
 }
 
@@ -417,8 +421,8 @@ async function submit(force = false) {
 }
 
 .btn--ghost {
-  color: rgba(255, 255, 255, 0.6);
-  background: rgba(255, 255, 255, 0.06);
+  color: rgba(var(--fg-rgb), 0.6);
+  background: rgba(var(--fg-rgb), 0.06);
 }
 
 .btn--primary {

@@ -5,6 +5,7 @@ import AppShell from '../components/AppShell.vue'
 import { api } from '../api/client'
 import { useFicheEdition } from '../composables/useFicheEdition'
 import { useSuppressionFiche } from '../composables/useSuppressionFiche'
+import { VENUE_PALETTE } from '../constants/venuePalette'
 
 /**
  * Fiche lieu — port de LieuDetail.dc.html, branché sur l'API réelle
@@ -12,6 +13,46 @@ import { useSuppressionFiche } from '../composables/useSuppressionFiche'
  * coordonnées GPS du lieu si elles sont renseignées (voir `Venue.latitude`/
  * `longitude`, utilisées aussi par l'estimation Google Routes du module
  * transport — maps.py), sinon retombe sur une recherche par adresse.
+ *
+ * Couleur des bandes (2026-08-02, demande de Samuel) : `Venue.color`
+ * (optionnel, vide par défaut) permet de fixer la teinte utilisée pour ce
+ * lieu sur le Parcours Matériel — voir ParcoursMaterielView.vue,
+ * `venueColorOverrides`. Vide = comportement inchangé, génération
+ * automatique. Le sélecteur pioche dans `VENUE_PALETTE`
+ * (constants/venuePalette.js), la MÊME palette que la génération
+ * automatique — Samuel a explicitement demandé de garder cette dernière
+ * telle quelle, pas d'en proposer une différente pour le choix manuel.
+ *
+ * Aperçu + sélecteur natif (2026-08-02, suite, demande de Samuel) : une
+ * pastille `.color-preview` affiche la couleur réellement retenue (lecture
+ * ET édition), pas seulement le contour des puces de palette — nécessaire
+ * dès qu'une couleur ne vient PAS de `VENUE_PALETTE`. Un `<input
+ * type="color">` (`.swatch--picker`) s'ajoute aux puces pour choisir une
+ * teinte libre, hors palette — `draft.color` devient alors une chaîne hex,
+ * pas `oklch(...)` ; `hexColor()` ne sert qu'à donner une valeur de départ
+ * valide au picker natif (qui ne comprend pas `oklch`), il n'altère jamais
+ * `draft.color` lui-même.
+ *
+ * Aperçu même en mode Automatique (2026-08-02, suite, demande de Samuel :
+ * « la couleur n'est pas affichée en mode auto ») : `autoPreviewColor()`
+ * calcule une teinte à afficher quand `color` est vide, par
+ * `venue.id % VENUE_PALETTE.length` — stable et déterministe, mais À NE PAS
+ * CONFONDRE avec la couleur RÉELLEMENT utilisée sur le Parcours Matériel
+ * (`venueColorOverrides`/cycle par ORDRE D'APPARITION dans les données
+ * affichées, voir ParcoursMaterielView.vue) : cette dernière dépend de quels
+ * lieux apparaissent ce jour-là et dans quel ordre chronologique, une donnée
+ * que cette fiche n'a pas. C'est un aperçu plausible, pas une garantie de
+ * correspondance exacte — seule une couleur FIXÉE (non vide) est garantie
+ * identique partout.
+ *
+ * Icône de sélecteur (2026-08-02, suite, demande de Samuel : « montrer
+ * l'icône de dégradé de couleur et de hue ») : `<input type="color">`
+ * n'affiche par défaut que sa valeur courante (un carré uni), pas une icône
+ * de sélecteur. `.swatch--picker` superpose donc un `<input>` NATIF
+ * invisible (`opacity: 0`, mais toujours cliquable et fonctionnel) par-
+ * dessus un dégradé conique (roue de teintes) posé en fond — l'utilisateur
+ * voit une icône « roue de couleurs », mais clique bien sur le vrai
+ * sélecteur système en dessous.
  */
 
 const route = useRoute()
@@ -91,7 +132,7 @@ const {
   endpoint: '/venues',
   fields: [
     'name', 'code', 'address', 'contact_name', 'contact_info',
-    'notes', 'is_storage', 'latitude', 'longitude',
+    'notes', 'is_storage', 'latitude', 'longitude', 'color',
   ],
   errorMessage: 'Impossible d’enregistrer le lieu.',
   toDraft: (v) => ({
@@ -107,6 +148,9 @@ const {
     // l'envoi (voir toPayload).
     latitude: v.latitude ?? '',
     longitude: v.longitude ?? '',
+    // '' = pas de couleur fixée, génération automatique (voir la note de
+    // tête du module).
+    color: v.color ?? '',
   }),
   isValid: (d) => d.name.trim().length > 0,
   toPayload: (d) => ({
@@ -122,8 +166,24 @@ const {
     // DecimalField).
     latitude: String(d.latitude).trim() === '' ? null : d.latitude,
     longitude: String(d.longitude).trim() === '' ? null : d.longitude,
+    color: d.color,
   }),
 })
+
+// Valeur de départ du sélecteur natif (<input type="color">, qui n'accepte
+// que du hex) — sans rapport avec ce qui est réellement enregistré tant que
+// l'utilisateur n'y touche pas : une puce de palette reste `oklch(...)`.
+function hexColor(c) {
+  return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(c) ? c : '#9b8aef'
+}
+
+// Aperçu affiché quand aucune couleur n'est fixée (mode Automatique) — voir
+// la note de tête du module pour la limite de cet aperçu (approximation,
+// pas la couleur exacte du Parcours Matériel).
+function autoPreviewColor({ id, is_storage }) {
+  if (is_storage) return 'rgba(var(--fg-rgb),.12)'
+  return VENUE_PALETTE[id % VENUE_PALETTE.length]
+}
 
 // Normalisation majuscules à la saisie — le backend fait la même chose à
 // l'enregistrement (Venue.save()).
@@ -168,7 +228,7 @@ const mapSrc = computed(() => {
       <div class="header">
         <h1 class="header__title">{{ venue.name }}</h1>
         <div class="header__tag" :style="venue.is_storage
-          ? { color: 'rgba(255,255,255,.6)', background: 'rgba(255,255,255,.08)' }
+          ? { color: 'rgba(var(--fg-rgb),.6)', background: 'rgba(var(--fg-rgb),.08)' }
           : { color: 'oklch(0.75 0.13 320)', background: 'oklch(0.75 0.13 320 / .16)' }">
           {{ venue.is_storage ? 'Entrepôt' : 'Salle' }}
         </div>
@@ -212,6 +272,16 @@ const mapSrc = computed(() => {
             <div class="info-value info-value--code">
               <span v-if="venue.code" class="code-badge">{{ venue.code }}</span>
               <span v-else class="code-empty">Aucun code</span>
+            </div>
+          </div>
+          <div>
+            <div class="info-label">Couleur (Parcours Matériel)</div>
+            <div class="info-value info-value--code">
+              <span
+                class="color-preview"
+                :style="{ background: venue.color || autoPreviewColor(venue) }"
+              />
+              <span>{{ venue.color ? 'Personnalisée' : 'Automatique' }}</span>
             </div>
           </div>
           <div v-if="venue.latitude != null && venue.longitude != null">
@@ -300,9 +370,49 @@ const mapSrc = computed(() => {
           </label>
 
           <label class="fiche-field fiche-field--full">
-            <span class="fiche-label">Notes</span>
-            <textarea v-model="draft.notes" rows="4" class="fiche-input fiche-input--area" />
+            <span class="fiche-label">Couleur (bandes du Parcours Matériel)</span>
+            <div class="color-picker-row">
+              <span
+                class="color-preview"
+                :style="{ background: draft.color || autoPreviewColor({ id: venue.id, is_storage: draft.is_storage }) }"
+              />
+              <div class="swatches">
+                <button
+                  type="button"
+                  class="swatch swatch--auto"
+                  :class="{ 'swatch--active': !draft.color }"
+                  title="Automatique (génération par défaut)"
+                  @click="draft.color = ''"
+                >
+                  ✕
+                </button>
+                <button
+                  v-for="color in VENUE_PALETTE"
+                  :key="color"
+                  type="button"
+                  class="swatch"
+                  :class="{ 'swatch--active': draft.color === color }"
+                  :style="{ background: color }"
+                  :title="color"
+                  @click="draft.color = color"
+                />
+                <span class="swatch swatch--picker" title="Choisir une couleur personnalisée">
+                  <input
+                    type="color"
+                    class="swatch--picker__input"
+                    :value="hexColor(draft.color)"
+                    @input="draft.color = $event.target.value"
+                  />
+                </span>
+              </div>
+            </div>
           </label>
+        </div>
+
+        <div class="fiche-hint">
+          Laisse sur « Automatique » pour garder la couleur générée par ordre
+          d'apparition dans le Parcours Matériel — ce choix ne fixe une teinte
+          que pour CE lieu, sans toucher aux autres.
         </div>
 
         <div class="fiche-hint">
@@ -381,7 +491,7 @@ const mapSrc = computed(() => {
 .hint {
   padding: 32px 40px;
   font: 500 13px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .hint--error {
@@ -390,11 +500,11 @@ const mapSrc = computed(() => {
 
 .breadcrumb {
   font: 500 12px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .breadcrumb :deep(a) {
-  color: #a5b4fc;
+  color: var(--link);
   text-decoration: none;
 }
 
@@ -442,12 +552,12 @@ const mapSrc = computed(() => {
   font: 700 11px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--fg-rgb), 0.45);
 }
 
 .info-value {
   font: 500 14px system-ui;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
   margin-top: 4px;
 }
 
@@ -460,15 +570,94 @@ const mapSrc = computed(() => {
 .code-badge {
   padding: 3px 8px;
   border-radius: 0 6px 0 6px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--fg-rgb), 0.08);
   font: 700 12px var(--font-mono);
   letter-spacing: 0.08em;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .code-empty {
   font: 500 13px system-ui;
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(var(--fg-rgb), 0.35);
+}
+
+/* Aperçu de la couleur retenue (2026-08-02, suite) — carré plutôt qu'un
+   petit point : la teinte doit se voir clairement, pas juste se deviner.
+   Utilisé en lecture (à côté de « Personnalisée »/« Automatique ») ET en
+   édition (à côté du sélecteur), même élément dans les deux cas. Toujours
+   une vraie couleur de fond (jamais vide) : en mode Automatique,
+   `autoPreviewColor()` fournit un aperçu — voir la note de tête du module. */
+.color-preview {
+  width: 28px;
+  height: 28px;
+  border-radius: 0 7px 0 7px;
+  border: 1px solid var(--border-card);
+  flex: none;
+}
+
+.color-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Sélecteur de couleur (2026-08-02) — même gabarit que les puces de
+   catégorie de CategoriesMaterielView.vue, dupliqué faute de composant
+   partagé. `.swatch--auto` (« ✕ », remet `draft.color` à `''`) est le seul
+   ajout propre à ce sélecteur : contrairement aux catégories, une couleur de
+   lieu est optionnelle, il faut donc un moyen de revenir à « rien ». */
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 0 6px 0 6px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+.swatch--active {
+  border-color: rgb(var(--fg-rgb));
+}
+
+.swatch--auto {
+  background: var(--bg-row);
+  color: rgba(var(--fg-rgb), 0.45);
+  font: 700 12px system-ui;
+}
+
+/* Sélecteur natif (2026-08-02, suite, demande de Samuel : « donner l'option
+   d'utiliser le color picker », puis « montrer l'icône de dégradé de
+   couleur et de hue ») — même gabarit que les puces de palette. Un
+   `<input type="color">` affiche par défaut sa VALEUR courante (un carré
+   uni), pas une icône de sélecteur : on superpose donc un dégradé conique
+   (roue de teintes) en fond de `.swatch--picker`, et le vrai `<input>`
+   NATIF par-dessus en `opacity: 0` — invisible mais toujours cliquable et
+   fonctionnel (`inset: 0`, plein cadre), c'est lui qui ouvre le sélecteur
+   système et reçoit la valeur choisie. */
+.swatch--picker {
+  position: relative;
+  overflow: hidden;
+  background: conic-gradient(
+    from 0deg,
+    red, yellow, lime, cyan, blue, magenta, red
+  );
+}
+
+.swatch--picker__input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  opacity: 0;
+  cursor: pointer;
 }
 
 .info-value--mono {
@@ -489,8 +678,8 @@ const mapSrc = computed(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #1b1f25;
-  color: rgba(255, 255, 255, 0.4);
+  background: var(--bg-row);
+  color: rgba(var(--fg-rgb), 0.4);
   font: 500 12.5px system-ui;
   text-align: center;
   padding: 20px;
@@ -500,12 +689,12 @@ const mapSrc = computed(() => {
   font: 700 12px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: rgba(255, 255, 255, 0.65);
+  color: rgba(var(--fg-rgb), 0.65);
 }
 
 .card-text {
   font: 400 13.5px/1.6 system-ui;
-  color: rgba(255, 255, 255, 0.75);
+  color: rgba(var(--fg-rgb), 0.75);
   margin-top: 14px;
 }
 
@@ -521,7 +710,7 @@ const mapSrc = computed(() => {
   gap: 12px;
   padding: 10px 12px;
   border-radius: var(--radius-notch-sm);
-  background: #1b1f25;
+  background: var(--bg-row);
 }
 
 .row__dot {
@@ -538,14 +727,14 @@ const mapSrc = computed(() => {
 
 .row__title {
   font: 600 13px system-ui;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
   text-decoration: none;
   display: block;
 }
 
 .row__subtitle {
   font: 400 11.5px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .row__conflict {
@@ -558,7 +747,7 @@ const mapSrc = computed(() => {
 
 .row-empty {
   font: 500 12.5px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
   padding: 10px 12px;
 }
 </style>

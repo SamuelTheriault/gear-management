@@ -260,3 +260,27 @@ class SettingsAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(Settings.load().default_buffer_before_minutes, 30)
         self.assertEqual(Settings.objects.count(), 1)
+
+    def test_get_returns_color_defaults(self):
+        """Couleurs des bandes non rattachées à une fiche (2026-08-02) : transport
+        + 5 types de spectacle, valeurs par défaut reprises des anciennes constantes
+        codées en dur côté frontend."""
+        response = self.client.get('/api/settings/')
+        self.assertEqual(response.data['transport_color'], 'oklch(0.64 0.21 340)')
+        self.assertEqual(response.data['event_color_rehearsal'], 'oklch(0.8 0.13 85)')
+        self.assertEqual(response.data['event_color_performance'], 'oklch(0.75 0.13 320)')
+        self.assertEqual(response.data['event_color_storage'], 'rgba(var(--fg-rgb),.6)')
+        self.assertEqual(response.data['event_color_setup'], 'oklch(0.75 0.13 165)')
+        self.assertEqual(response.data['event_color_teardown'], 'oklch(0.7 0.11 255)')
+
+    def test_patch_updates_colors(self):
+        response = self.client.patch('/api/settings/', {
+            'transport_color': '#ff00ff',
+            'event_color_setup': 'oklch(0.6 0.2 120)',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        settings_row = Settings.load()
+        self.assertEqual(settings_row.transport_color, '#ff00ff')
+        self.assertEqual(settings_row.event_color_setup, 'oklch(0.6 0.2 120)')
+        # Les autres couleurs ne sont pas touchées par un PATCH partiel.
+        self.assertEqual(settings_row.event_color_teardown, 'oklch(0.7 0.11 255)')

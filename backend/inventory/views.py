@@ -35,8 +35,16 @@ from .conflicts import (
     serialize_venue_conflict,
 )
 from .duplication import duplicate_project
+from .permissions import (
+    HasProjectAccess,
+    IsStaffGlobal,
+    bypasses_project_access,
+    resolve_inventory_user,
+    restrict_queryset_to_membership,
+)
 from .transport_coherence import (
     get_material_journey,
+    get_material_schedule,
     get_material_transports,
     get_project_coherence_report,
     get_project_window,
@@ -47,6 +55,7 @@ from .models import (
     Material,
     MaterialCategory,
     Project,
+    ProjectMembership,
     Settings,
     Show,
     ShowMaterial,
@@ -60,6 +69,7 @@ from .models import (
 from .serializers import (
     MaterialCategorySerializer,
     MaterialSerializer,
+    ProjectMembershipSerializer,
     ProjectSerializer,
     SettingsSerializer,
     ShowMaterialSerializer,
@@ -90,19 +100,226 @@ class ProjectFilteredMixin:
         return queryset
 
 
+class ProjectMembershipQuerysetMixin:
+    """Restreint le queryset d'un ViewSet project-scoped aux lignes dont le
+    projet fait l'objet d'un `ProjectMembership` actif de l'utilisateur
+    courant — voir `permissions.restrict_queryset_to_membership`, dont c'est
+    le point d'accroche unique sur chaque ViewSet.
+
+    Complète `ProjectFilteredMixin` (filtre optionnel `?project=<id>`, qui ne
+    protège rien à lui seul) et `HasProjectAccess` (qui ne peut rien filtrer
+    pour une LISTE, faute d'objet à évaluer un par un) : sans ce mixin, une
+    liste renverrait toujours TOUT le queryset de base à n'importe quel
+    compte authentifié. `project_lookup` (défaut `'project_id'`) est
+    redéfini par les ViewSets dont le modèle n'a pas de FK `project` directe
+    (ex. `'show__project_id'` pour ShowMaterial/ShowTechnician/Transport).
+    """
+
+    project_lookup = 'project_id'
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        return restrict_queryset_to_membership(self.request, queryset, self.project_lookup)
+
+
 class UserViewSet(viewsets.ModelViewSet):
-    """CRUD standard sur les comptes applicatifs."""
+    """CRUD standard sur les comptes applicatifs.
+
+    Réservé aux comptes staff (`is_staff_global`) depuis le 2026-08-02 : la
+    liste complète des comptes de la plateforme (toutes productions/clients
+    confondus) ne doit pas fuiter vers un client normal — voir
+    `permissions.IsStaffGlobal`. `UtilisateursView.vue` continue de
+    fonctionner tel quel pour Samuel, qui est staff.
+    """
 
     queryset = User.objects.all()
     serializer_class = UserSerializer
+    permission_classes = [IsStaffGlobal]
+
+
+class ProjectMembershipViewSet(viewsets.ModelViewSet):
+    """CRUD sur les accès par projet (`ProjectMembership`, voir models.py) —
+    invitations, changement de rôle, retrait d'accès. Filtrable par
+    `?project=<id>`, comme les autres ViewSets project-scoped.
+
+    Lecture (list/retrieve) : accessible à tout membre actif du projet, pas
+    seulement l'owner — « voir qui a accès » n'est pas une action de
+    gestion. Écriture (create/update/destroy) : réservée owner/staff
+    (`owner_only_actions`), via `HasProjectAccess`.
+
+    `create` (inviter) et `update`/`destroy` (changer un rôle / retirer un
+    accès) contournent le flux `ModelSerializer` standard — la logique
+    (résoudre un `User` par email, empêcher de retirer le dernier owner
+    actif) ne se prête pas à un simple `serializer.save()`.
+    """
+
+    queryset = ProjectMembership.objects.select_related('project', 'user', 'invited_by').all()
+    serializer_class = ProjectMembershipSerializer
+    permission_classes = [HasProjectAccess]
+    project_lookup = 'project_id'
+    owner_only_actions = ('create', 'update', 'partial_update', 'destroy')
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        queryset = restrict_queryset_to_membership(self.request, queryset, self.project_lookup)
+        project_id = self.request.query_params.get('project')
+        if project_id:
+            queryset = queryset.filter(project_id=project_id)
+        return queryset
+
+    def get_create_project_id(self, request):
+        raw = request.data.get('project')
+        try:
+            return int(raw) if raw not in (None, '') else None
+        except (TypeError, ValueError):
+            return None
+
+    def get_object_project_id(self, obj):
+        return obj.project_id
+
+    def create(self, request, *args, **kwargs):
+        """Invite un email sur un projet avec un rôle donné.
+
+        Réutilise le pattern `get_or_create` par email déjà en place dans
+        `signals.py` (`provisionner_utilisateur_inventory`) : si un `User`
+        existe déjà pour cet email, on le réutilise ; sinon on en crée un
+        (`name` = email par défaut, `django_user` nul — lié plus tard au
+        premier login Google, voir `signals.py`). `status` part à `'active'`
+        d'emblée si cette personne a déjà un compte Google lié
+        (`django_user_id` renseigné), sinon `'pending'` jusqu'à son premier
+        login (voir `ProjectMembership`, models.py).
+        """
+        project_id = request.data.get('project')
+        email = (request.data.get('email') or '').strip().lower()
+        role = request.data.get('role')
+        valid_roles = dict(ProjectMembership.ROLE_CHOICES)
+        if not project_id or not email or role not in valid_roles:
+            return Response(
+                {'detail': "« project », « email » et « role » (owner/editor/viewer) sont requis."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        project = Project.objects.filter(id=project_id).first()
+        if project is None:
+            return Response({'project': "Projet introuvable."}, status=status.HTTP_400_BAD_REQUEST)
+
+        target_user, _created = User.objects.get_or_create(
+            email=email, defaults={'name': email},
+        )
+        membership_status = (
+            ProjectMembership.STATUS_ACTIVE if target_user.django_user_id else ProjectMembership.STATUS_PENDING
+        )
+        inviter = resolve_inventory_user(request)
+
+        membership, created = ProjectMembership.objects.get_or_create(
+            project=project, user=target_user,
+            defaults={'role': role, 'status': membership_status, 'invited_by': inviter},
+        )
+        if not created:
+            return Response(
+                {'detail': "Cette personne a déjà accès à ce projet."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(self.get_serializer(membership).data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        """Change le rôle d'un membership existant — `partial_update` (PATCH)
+        et `update` (PUT) se comportent identiquement, seul `role` est
+        modifiable ici (changer `project`/`user` reviendrait à une autre
+        invitation, pas à une mise à jour)."""
+        instance = self.get_object()
+        new_role = request.data.get('role', instance.role)
+        if new_role not in dict(ProjectMembership.ROLE_CHOICES):
+            return Response({'role': "Rôle invalide."}, status=status.HTTP_400_BAD_REQUEST)
+        if (
+            instance.status == ProjectMembership.STATUS_ACTIVE
+            and instance.role == ProjectMembership.ROLE_OWNER
+            and new_role != ProjectMembership.ROLE_OWNER
+        ):
+            self._guard_last_owner(instance)
+        instance.role = new_role
+        instance.save(update_fields=['role'])
+        return Response(self.get_serializer(instance).data)
+
+    def partial_update(self, request, *args, **kwargs):
+        return self.update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        """Retire un accès — refuse de retirer le dernier owner actif du
+        projet (voir `_guard_last_owner`, plutôt qu'un projet orphelin)."""
+        instance = self.get_object()
+        if instance.status == ProjectMembership.STATUS_ACTIVE and instance.role == ProjectMembership.ROLE_OWNER:
+            self._guard_last_owner(instance)
+        return super().destroy(request, *args, **kwargs)
+
+    def _guard_last_owner(self, instance):
+        """Lève une 400 si `instance` est le dernier owner actif de son
+        projet — appelé avant de le rétrograder ou de le retirer."""
+        autres_owners = ProjectMembership.objects.filter(
+            project=instance.project,
+            role=ProjectMembership.ROLE_OWNER,
+            status=ProjectMembership.STATUS_ACTIVE,
+        ).exclude(id=instance.id)
+        if not autres_owners.exists():
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({'detail': "Impossible de retirer le dernier owner actif de ce projet."})
 
 
 class ProjectViewSet(viewsets.ModelViewSet):
     """CRUD standard sur les productions — voir `Project` (models.py), plus
-    l'action `duplicate` pour démarrer une nouvelle édition d'un mandat."""
+    l'action `duplicate` pour démarrer une nouvelle édition d'un mandat.
+
+    Accès (2026-08-02) : voir `ProjectMembership`/`HasProjectAccess`. La
+    LISTE ne renvoie que les projets où l'utilisateur a un membership actif
+    (tout, pour un compte staff/superutilisateur — voir `get_queryset`) —
+    fini la vue « tous projets confondus » pour un compte normal. La
+    CRÉATION (POST) et l'action `duplicate` créent automatiquement un
+    `ProjectMembership(role='owner', status='active')` sur le projet obtenu
+    pour l'utilisateur qui fait l'appel (`_grant_owner_membership`) — sans
+    lui, personne n'aurait accès au projet qu'il vient de créer.
+    `destroy` (suppression) est réservé owner/staff (`owner_only_actions`) ;
+    la gestion des memberships eux-mêmes vit sur `ProjectMembershipViewSet`.
+    """
 
     queryset = Project.objects.all()
     serializer_class = ProjectSerializer
+    permission_classes = [HasProjectAccess]
+    owner_only_actions = ('destroy',)
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if bypasses_project_access(self.request):
+            return queryset
+        profile = resolve_inventory_user(self.request)
+        if profile is None:
+            return queryset.none()
+        return queryset.filter(
+            memberships__user=profile, memberships__status=ProjectMembership.STATUS_ACTIVE,
+        ).distinct()
+
+    def get_object_project_id(self, obj):
+        return obj.id
+
+    def _grant_owner_membership(self, project):
+        """Donne un accès `owner` actif sur `project` à l'utilisateur courant,
+        s'il a un profil applicatif (voir docstring de classe). Sans profil
+        (ex. superutilisateur Django hors flux Google, comme dans toute la
+        suite de tests existante) : pas d'erreur, juste rien à créer — ce
+        compte contourne déjà le contrôle par projet."""
+        profile = resolve_inventory_user(self.request)
+        if profile is None:
+            return
+        ProjectMembership.objects.get_or_create(
+            project=project, user=profile,
+            defaults={
+                'role': ProjectMembership.ROLE_OWNER,
+                'status': ProjectMembership.STATUS_ACTIVE,
+                'invited_by': None,
+            },
+        )
+
+    def perform_create(self, serializer):
+        project = serializer.save()
+        self._grant_owner_membership(project)
 
     @action(detail=True, methods=['post'])
     def duplicate(self, request, pk=None):
@@ -127,6 +344,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
             client_name = source_project.client_name
 
         new_project, counts = duplicate_project(source_project, name=name, client_name=client_name)
+        self._grant_owner_membership(new_project)
         return Response(
             {'project': ProjectSerializer(new_project).data, 'copied': counts},
             status=status.HTTP_201_CREATED,
@@ -203,7 +421,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 'assignments': [
                     {
                         'show_id': sm.show_id,
-                        'show_title': sm.show.title,
+                        'show_title': sm.show.display_title,
                         'venue_name': sm.show.venue.name,
                         'start': sm.show.effective_start,
                         'end': sm.show.effective_end,
@@ -266,7 +484,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 engagements.append({
                     'kind': 'show',
                     'id': st.show_id,
-                    'label': st.show.title,
+                    'label': st.show.display_title,
                     'venue_name': st.show.venue.name,
                     'start': st.show.effective_start,
                     'end': st.show.effective_end,
@@ -315,7 +533,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
         return Response({**report, 'conflict_count': total})
 
 
-class VenueViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
+class VenueViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewsets.ModelViewSet):
     """CRUD standard sur les lieux, filtrable par projet (`?project=<id>`).
 
     Suppression (décision de Samuel du 2026-07-30) : **refusée** tant que le
@@ -332,6 +550,7 @@ class VenueViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
 
     queryset = Venue.objects.select_related('project').all()
     serializer_class = VenueSerializer
+    permission_classes = [HasProjectAccess]
 
     def destroy(self, request, *args, **kwargs):
         """Supprime un lieu, sauf s'il est encore référencé quelque part."""
@@ -365,7 +584,7 @@ class VenueViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
         return super().destroy(request, *args, **kwargs)
 
 
-class MaterialCategoryViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
+class MaterialCategoryViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewsets.ModelViewSet):
     """CRUD sur les catégories de matériel, filtrable par projet (`?project=<id>`).
 
     Suppression (décision de Samuel du 2026-07-30) : `Material.category` est
@@ -401,6 +620,7 @@ class MaterialCategoryViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
 
     queryset = MaterialCategory.objects.select_related('project').all()
     serializer_class = MaterialCategorySerializer
+    permission_classes = [HasProjectAccess]
 
     def list(self, request, *args, **kwargs):
         """Liste les catégories, triées insensible à la casse et aux accents (voir docstring de classe)."""
@@ -454,7 +674,7 @@ class MaterialCategoryViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class MaterialViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
+class MaterialViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewsets.ModelViewSet):
     """CRUD standard sur l'inventaire de matériel, filtrable par projet (`?project=<id>`).
 
     Le matériel désactivé (`is_active=False`, ex. un vieux rideau qu'on
@@ -469,6 +689,7 @@ class MaterialViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
 
     queryset = Material.objects.select_related('project', 'parent_material', 'venue', 'category').all()
     serializer_class = MaterialSerializer
+    permission_classes = [HasProjectAccess]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -480,13 +701,66 @@ class MaterialViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
                 queryset = queryset.filter(is_active=True)
         return queryset
 
+    @action(detail=True, methods=['get'])
+    def schedule(self, request, pk=None):
+        """Agenda chronologique de ce matériel — spectacles, blocs et déplacements.
 
-class ShowViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
+        Alimente la chronologie de la fiche matériel (2026-08-01). La règle
+        d'héritage des blocs de montage/démontage est appliquée ici, pas côté
+        frontend : voir `get_material_schedule` dans transport_coherence.py.
+
+        Bornée à la fenêtre du projet (demande de Samuel du 2026-08-01) — la
+        même que les écrans « Parcours », pour que les deux racontent la même
+        période. `outside_window` compte ce qui a été écarté : une assignation
+        planifiée hors des dates du projet ne doit pas disparaître en silence.
+        """
+        material = self.get_object()
+        window_start, window_end = get_project_window(material.project)
+        entries, outside = get_material_schedule(material, window_start, window_end)
+        return Response({
+            'window': {'start': window_start, 'end': window_end},
+            'entries': entries,
+            'outside_window': outside,
+        })
+
+    @action(detail=True, methods=['get'])
+    def distribution(self, request, pk=None):
+        """Répartition de ce matériel entre les lieux, sur toute la durée du projet.
+
+        Alimente la carte « Répartition » de la fiche matériel (2026-08-01,
+        demande de Samuel) : une barre par lieu, montrant les périodes où il
+        détient une partie du stock et en quelle quantité.
+
+        Réutilise `get_material_journey`/`get_material_transports` — donc
+        exactement la même source que l'écran « Parcours Matériel », qui ne
+        peut ainsi pas raconter autre chose. La différence est le regroupement :
+        le Parcours empile une ligne par *lane* (pour tracer les bifurcations),
+        cette carte-ci regroupe **par lieu**, ce que le frontend fait à partir
+        des mêmes séjours.
+
+        Contrairement à `ProjectViewSet.material_journey`, répond aussi pour un
+        matériel désactivé : on arrive ici depuis sa fiche, qui reste
+        consultable (voir `get_queryset` ci-dessus).
+        """
+        material = self.get_object()
+        window_start, window_end = get_project_window(material.project)
+        if window_start is None:
+            return Response({'window': None, 'stays': [], 'transports': []})
+        return Response({
+            'window': {'start': window_start, 'end': window_end},
+            'total': material.quantity,
+            'stays': get_material_journey(material, window_start, window_end),
+            'transports': get_material_transports(material, window_start, window_end),
+        })
+
+
+class ShowViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewsets.ModelViewSet):
     """CRUD standard sur les fiches spectacles, filtrable par projet (`?project=<id>`),
     plus l'action `conflicts` en lecture seule."""
 
     queryset = Show.objects.select_related('project', 'venue').all()
     serializer_class = ShowSerializer
+    permission_classes = [HasProjectAccess]
 
     @action(detail=True, methods=['get'])
     def conflicts(self, request, pk=None):
@@ -546,7 +820,7 @@ class ShowViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
         return Response({'issues': issues, 'issue_count': len(issues)})
 
 
-class ShowMaterialViewSet(viewsets.ModelViewSet):
+class ShowMaterialViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
     """CRUD standard sur les assignations de matériel (validation de conflit dans le serializer).
 
     Filtres optionnels : `?show=<id>` (assignations d'un spectacle — utilisé par
@@ -560,6 +834,19 @@ class ShowMaterialViewSet(viewsets.ModelViewSet):
 
     queryset = ShowMaterial.objects.select_related('show', 'material').all()
     serializer_class = ShowMaterialSerializer
+    permission_classes = [HasProjectAccess]
+    # `ShowMaterial` n'a pas de FK `project` directe — isolé via `show`
+    # (voir `ProjectMembershipQuerysetMixin`/`HasProjectAccess`, permissions.py).
+    project_lookup = 'show__project_id'
+
+    def get_create_project_id(self, request):
+        show_id = request.data.get('show')
+        if not show_id:
+            return None
+        return Show.objects.filter(id=show_id).values_list('project_id', flat=True).first()
+
+    def get_object_project_id(self, obj):
+        return obj.show.project_id
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -572,14 +859,15 @@ class ShowMaterialViewSet(viewsets.ModelViewSet):
         return queryset
 
 
-class TechnicianViewSet(ProjectFilteredMixin, viewsets.ModelViewSet):
+class TechnicianViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewsets.ModelViewSet):
     """CRUD standard sur les techniciens, filtrable par projet (`?project=<id>`)."""
 
     queryset = Technician.objects.select_related('project').all()
     serializer_class = TechnicianSerializer
+    permission_classes = [HasProjectAccess]
 
 
-class ShowTechnicianViewSet(viewsets.ModelViewSet):
+class ShowTechnicianViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
     """CRUD standard sur les assignations de techniciens (validation de conflit dans le serializer).
 
     Filtres optionnels : `?show=<id>` ou `?technician=<id>` — même logique et
@@ -588,6 +876,17 @@ class ShowTechnicianViewSet(viewsets.ModelViewSet):
 
     queryset = ShowTechnician.objects.select_related('show', 'technician').all()
     serializer_class = ShowTechnicianSerializer
+    permission_classes = [HasProjectAccess]
+    project_lookup = 'show__project_id'
+
+    def get_create_project_id(self, request):
+        show_id = request.data.get('show')
+        if not show_id:
+            return None
+        return Show.objects.filter(id=show_id).values_list('project_id', flat=True).first()
+
+    def get_object_project_id(self, obj):
+        return obj.show.project_id
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -600,7 +899,7 @@ class ShowTechnicianViewSet(viewsets.ModelViewSet):
         return queryset
 
 
-class TransportViewSet(viewsets.ModelViewSet):
+class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
     """CRUD standard sur les déplacements (livraison/ramassage), validation de conflit dans le serializer.
 
     Filtres optionnels : `?status=to_approve` (ne renvoyer que les propositions
@@ -621,6 +920,17 @@ class TransportViewSet(viewsets.ModelViewSet):
         .all()
     )
     serializer_class = TransportSerializer
+    permission_classes = [HasProjectAccess]
+    project_lookup = 'show__project_id'
+
+    def get_create_project_id(self, request):
+        show_id = request.data.get('show')
+        if not show_id:
+            return None
+        return Show.objects.filter(id=show_id).values_list('project_id', flat=True).first()
+
+    def get_object_project_id(self, obj):
+        return obj.show.project_id
 
     def get_queryset(self):
         queryset = super().get_queryset()

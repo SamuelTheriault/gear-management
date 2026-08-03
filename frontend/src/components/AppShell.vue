@@ -1,11 +1,17 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { useActiveProject } from '../composables/useActiveProject'
 import { useAuth } from '../composables/useAuth'
+import { useEscapeKey } from '../composables/useEscapeKey'
+import { useEventColors } from '../composables/useEventColors'
+import { useTheme } from '../composables/useTheme'
 
 /**
- * Coquille commune à tout RégiStock : sidebar desktop + tabbar mobile.
+ * Coquille commune à tout RégiStock : sidebar desktop, qui devient un tiroir
+ * (drawer) sous 860px plutôt que de disparaître complètement (2026-07-31,
+ * remplace l'ancienne tabbar à 4 raccourcis — celle-ci ne couvrait qu'une
+ * fraction des sections et masquait tout le reste sur mobile).
  * L'entrée « Départements » (sous-item de Matériel) a été retirée le
  * 2026-07-29 avec le modèle `Department`, abandonné au profit de
  * `Material.category` — voir décision dans recapitulatif_projet.md.
@@ -15,6 +21,12 @@ import { useAuth } from '../composables/useAuth'
  * page n'est jamais atteinte tant que le garde de route (router/index.js)
  * n'a pas confirmé une session valide, donc `currentUser` y est toujours
  * renseigné en pratique.
+ *
+ * Toggle Dark/Bright (2026-08-02, demande de Samuel) : ajouté juste au-dessus
+ * de ce bloc compte, dans le même pied de sidebar — voir useTheme.js pour la
+ * persistance et l'anti-flash. Un seul bouton bascule vers l'AUTRE mode (pas
+ * deux boutons séparés) : plus compact, cohérent avec les `zoom-btn` déjà en
+ * place ailleurs dans l'app.
  */
 
 const route = useRoute()
@@ -22,6 +34,37 @@ const router = useRouter()
 const { projects, activeProjectId, setActiveProject, loading: projectsLoading } =
   useActiveProject()
 const { currentUser, logout } = useAuth()
+const { theme, toggleTheme } = useTheme()
+// Charge Settings et pose les CSS vars de couleur (--transport, --event-*)
+// dès l'entrée dans l'app — voir useEventColors.js. Rien d'autre à faire ici,
+// le composable applique lui-même les variables sur <html>.
+useEventColors()
+
+// Tiroir mobile (<860px) : même contenu que la sidebar desktop, pas de liste
+// séparée. Fermé par défaut, ouvert via le bouton ☰ flottant, refermé au
+// clic sur l'overlay ou dès qu'on navigue (sinon il resterait ouvert
+// par-dessus la nouvelle page après un clic sur un lien).
+const drawerOpen = ref(false)
+
+function toggleDrawer() {
+  drawerOpen.value = !drawerOpen.value
+}
+
+function closeDrawer() {
+  drawerOpen.value = false
+}
+
+watch(
+  () => route.path,
+  () => {
+    drawerOpen.value = false
+  },
+)
+
+// Échap referme le tiroir, même geste que le clic sur l'overlay.
+useEscapeKey(() => {
+  if (drawerOpen.value) closeDrawer()
+})
 
 async function handleLogout() {
   await logout()
@@ -34,7 +77,8 @@ async function handleLogout() {
 // transversaux au projet, plutôt que des entités qu'on liste/édite comme un
 // spectacle ou un lieu — Conflits/Cohérence rejoignent le sous-menu le
 // 2026-07-31, à la demande de Samuel, suite à l'audit ergonomie) et
-// Matériel (Inventaire / Catégories). La tabbar mobile reste à plat.
+// Matériel (Inventaire / Catégories). Le tiroir mobile reprend cette même
+// structure telle quelle (voir plus bas).
 //
 // `activeMatch` : prédicat d'activation du parent, quand `startsWith` ne
 // suffit pas. Le Tableau de bord pointe sur `/`, qui préfixe tout — et ses
@@ -76,15 +120,8 @@ const bottomNavItems = [
   { label: 'Utilisateurs', to: '/utilisateurs' },
 ]
 
-const tabbarItems = [
-  { label: 'Accueil', to: '/' },
-  { label: 'Spectacles', to: '/spectacles' },
-  { label: 'Matériel', to: '/materiel' },
-  { label: 'Techniciens', to: '/techniciens' },
-]
-
 function isActive(item) {
-  // Accepte un item de menu ou un simple chemin (la tabbar passe un chemin).
+  // Accepte un item de menu ou un simple chemin (bottomNavItems passe un chemin).
   const to = typeof item === 'string' ? item : item.to
   const match = typeof item === 'string' ? null : item.activeMatch
   if (match) return match(route.path)
@@ -104,7 +141,22 @@ const activeProjectIdModel = computed({
 
 <template>
   <div class="shell">
-    <nav class="shell-nav">
+    <button
+      type="button"
+      class="shell-menu-btn"
+      :class="{ 'shell-menu-btn--open': drawerOpen }"
+      aria-label="Ouvrir le menu"
+      :aria-expanded="drawerOpen"
+      @click="toggleDrawer"
+    >
+      <span />
+      <span />
+      <span />
+    </button>
+
+    <div v-if="drawerOpen" class="shell-nav-overlay" @click="closeDrawer" />
+
+    <nav class="shell-nav" :class="{ 'shell-nav--open': drawerOpen }">
       <div class="shell-nav__label">RégiStock</div>
 
       <select
@@ -146,29 +198,22 @@ const activeProjectIdModel = computed({
         {{ item.label }}
       </RouterLink>
 
-      <div class="shell-nav__account" v-if="currentUser">
-        <div class="shell-nav__email" :title="currentUser.email">{{ currentUser.email }}</div>
-        <div class="shell-nav__logout" @click="handleLogout">Se déconnecter</div>
+      <div class="shell-nav__footer">
+        <button type="button" class="shell-nav__theme" @click="toggleTheme">
+          <span class="shell-nav__theme-icon">{{ theme === 'light' ? '☀' : '☾' }}</span>
+          Passer en {{ theme === 'light' ? 'sombre' : 'clair' }}
+        </button>
+
+        <div class="shell-nav__account" v-if="currentUser">
+          <div class="shell-nav__email" :title="currentUser.email">{{ currentUser.email }}</div>
+          <div class="shell-nav__logout" @click="handleLogout">Se déconnecter</div>
+        </div>
       </div>
-      <div class="shell-nav__version">v0.1 · JD</div>
     </nav>
 
     <div class="shell-main">
       <slot />
     </div>
-
-    <nav class="shell-tabbar">
-      <RouterLink
-        v-for="item in tabbarItems"
-        :key="item.label"
-        :to="item.to"
-        class="shell-tabbar__item"
-        :class="{ 'shell-tabbar__item--active': isActive(item.to) }"
-      >
-        <span class="shell-tabbar__icon" :class="{ 'shell-tabbar__icon--active': isActive(item.to) }" />
-        <span>{{ item.label }}</span>
-      </RouterLink>
-    </nav>
   </div>
 </template>
 
@@ -177,16 +222,16 @@ const activeProjectIdModel = computed({
   display: flex;
   min-height: 100vh;
   background:
-    #0b0d10 radial-gradient(rgba(255, 255, 255, 0.09) 1px, transparent 1.5px) 0 0 / 22px 22px;
-  color: #fff;
+    var(--bg-page) radial-gradient(rgba(var(--fg-rgb), 0.09) 1px, transparent 1.5px) 0 0 / 22px 22px;
+  color: rgb(var(--fg-rgb));
   font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
 
 .shell-nav {
   flex: none;
   width: 220px;
-  background: #0e1013;
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--bg-deep);
+  border-right: 1px solid rgba(var(--fg-rgb), 0.08);
   padding: 24px 16px;
   display: flex;
   flex-direction: column;
@@ -197,7 +242,7 @@ const activeProjectIdModel = computed({
   font: 700 15px/1 var(--font-mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
   padding: 0 8px 12px;
 }
 
@@ -205,9 +250,9 @@ const activeProjectIdModel = computed({
   margin-bottom: 12px;
   padding: 8px 10px;
   border-radius: var(--radius-notch-sm);
-  background: #1b1f25;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #fff;
+  background: var(--bg-row);
+  border: 1px solid rgba(var(--fg-rgb), 0.1);
+  color: rgb(var(--fg-rgb));
   font: 500 12px system-ui;
 }
 
@@ -217,7 +262,7 @@ const activeProjectIdModel = computed({
   gap: 10px;
   padding: 10px 8px;
   border-radius: 8px;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--fg-rgb), 0.55);
   font: 500 13px system-ui;
   text-decoration: none;
 }
@@ -228,7 +273,7 @@ const activeProjectIdModel = computed({
 
 .shell-nav__item--active {
   border-radius: 8px 8px 0 0;
-  background: rgba(155, 138, 239, 0.18);
+  background: rgba(var(--accent-rgb), 0.18);
   color: var(--accent);
   font-weight: 600;
 }
@@ -243,14 +288,14 @@ const activeProjectIdModel = computed({
 .shell-nav__subitem {
   padding: 7px 8px;
   border-radius: 8px;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--fg-rgb), 0.45);
   font: 500 12.5px system-ui;
   text-decoration: none;
 }
 
 .shell-nav__subitem--active {
   color: var(--accent);
-  background: rgba(155, 138, 239, 0.12);
+  background: rgba(var(--accent-rgb), 0.12);
   font-weight: 600;
 }
 
@@ -264,22 +309,54 @@ const activeProjectIdModel = computed({
 }
 
 .shell-nav__item--active .shell-nav__dot {
-  background: #9b8aef;
+  background: rgb(var(--accent-rgb));
   opacity: 1;
 }
 
-.shell-nav__account {
+.shell-nav__footer {
   margin-top: auto;
-  padding: 10px 8px 0;
+  padding-top: 10px;
+  border-top: 1px solid rgba(var(--fg-rgb), 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.shell-nav__theme {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  margin: 0;
+  width: fit-content;
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-notch-sm);
+  background: rgba(var(--fg-rgb), 0.04);
+  color: rgba(var(--fg-rgb), 0.55);
+  font: 600 11px system-ui;
+  cursor: pointer;
+}
+
+.shell-nav__theme:hover {
+  background: rgba(var(--accent-rgb), 0.16);
+  color: var(--accent);
+  border-color: rgba(var(--accent-rgb), 0.4);
+}
+
+.shell-nav__theme-icon {
+  font-size: 12px;
+}
+
+.shell-nav__account {
+  padding: 0 8px;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .shell-nav__email {
   font: 500 11px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -287,20 +364,9 @@ const activeProjectIdModel = computed({
 
 .shell-nav__logout {
   font: 600 11.5px system-ui;
-  color: #a5b4fc;
+  color: var(--link);
   cursor: pointer;
   width: fit-content;
-}
-
-.shell-nav__version {
-  margin-top: auto;
-  padding: 10px 8px 0;
-  color: rgba(255, 255, 255, 0.3);
-  font: 500 11px system-ui;
-}
-
-.shell-nav__account + .shell-nav__version {
-  margin-top: 0;
 }
 
 .shell-main {
@@ -310,53 +376,86 @@ const activeProjectIdModel = computed({
   box-sizing: border-box;
 }
 
-.shell-tabbar {
+/* Bouton d'ouverture du tiroir : caché par défaut, n'apparaît que sous
+   860px (voir media query plus bas). Flottant plutôt qu'intégré à une
+   barre d'en-tête — il n'y en a pas sur mobile, en ajouter une aurait été
+   un changement structurel plus lourd que nécessaire ici. */
+.shell-menu-btn {
   display: none;
   position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  background: #0e1013;
-}
-
-.shell-tabbar__item {
-  flex: 1;
-  padding: 10px 0 12px;
-  display: flex;
+  top: 16px;
+  left: 16px;
+  z-index: 210;
+  width: 40px;
+  height: 40px;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 4px;
-  color: rgba(255, 255, 255, 0.4);
-  font: 500 10px system-ui;
-  text-decoration: none;
+  border: 1px solid rgba(var(--fg-rgb), 0.1);
+  border-radius: var(--radius-notch-sm);
+  background: #14171c;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  padding: 0;
 }
 
-.shell-tabbar__item--active {
-  color: var(--accent);
-  font-weight: 600;
+.shell-menu-btn span {
+  width: 18px;
+  height: 2px;
+  background: rgb(var(--fg-rgb));
+  border-radius: 1px;
+  transition: transform 0.15s ease, opacity 0.15s ease;
 }
 
-.shell-tabbar__icon {
-  width: 20px;
-  height: 20px;
-  border-radius: 5px;
-  background: rgba(255, 255, 255, 0.15);
+.shell-menu-btn--open span:nth-child(1) {
+  transform: translateY(6px) rotate(45deg);
 }
 
-.shell-tabbar__icon--active {
-  background: oklch(0.65 0.15 290);
+.shell-menu-btn--open span:nth-child(2) {
+  opacity: 0;
+}
+
+.shell-menu-btn--open span:nth-child(3) {
+  transform: translateY(-6px) rotate(-45deg);
+}
+
+.shell-nav-overlay {
+  display: none;
 }
 
 @media (max-width: 860px) {
-  .shell-nav {
-    display: none;
-  }
-  .shell-tabbar {
+  .shell-menu-btn {
     display: flex;
   }
+
+  .shell-nav-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 199;
+  }
+
+  .shell-nav {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 200;
+    width: min(280px, 82vw);
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    overflow-y: auto;
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.5);
+  }
+
+  .shell-nav--open {
+    transform: translateX(0);
+  }
+
   .shell-main {
-    padding: 20px;
+    padding: 76px 20px 32px;
   }
 }
 </style>

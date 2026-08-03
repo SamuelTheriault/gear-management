@@ -1,8 +1,10 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import AppShell from '../components/AppShell.vue'
+import ColorField from '../components/ColorField.vue'
 import { api } from '../api/client'
 import { useActiveProject } from '../composables/useActiveProject'
+import { useEventColors } from '../composables/useEventColors'
 
 /**
  * Écran « Réglages » — port de Reglages.dc.html.
@@ -16,9 +18,50 @@ import { useActiveProject } from '../composables/useActiveProject'
  * Contrairement au mockup (état local, jamais persisté), ici « Enregistrer »
  * fait un vrai PATCH — les erreurs de validation viennent du backend
  * (PositiveIntegerField) plutôt que d'une validation dupliquée côté Vue.
+ *
+ * Chaque ligne de la liste renvoie vers `ProjetDetailView.vue` (2026-08-02,
+ * gestion des accès par projet) — c'est là que vivent maintenant le
+ * renommage, les dates de projet (retiré d'ici, voir `git log` pour
+ * l'ancienne édition en ligne `draftDates`/`saveProjectDates`) et la gestion
+ * des membres. Cette vue ne garde que la création de projet et les réglages
+ * globaux (buffers, format).
+ *
+ * Section « Couleurs » (2026-08-02, demande de Samuel : « les couleurs des
+ * bandes qui ne sont pas gérées dans une fiche [matériel, lieux]. Je pense
+ * surtout aux transports », étendu aux types de spectacle après confirmation)
+ * — transport + les 5 types de `Show.EVENT_TYPE_CHOICES`, seules couleurs de
+ * l'app qui n'ont pas déjà une fiche éditable dédiée (`Venue.color`,
+ * `MaterialCategory.color`). Volontairement absentes : les couleurs
+ * sémantiques (conflit rouge, à-approuver orange, statut OK vert) — les
+ * rendre personnalisables risquerait de casser la lisibilité plutôt que
+ * d'aider (décision actée avec Samuel avant implémentation). `ColorField`
+ * (nouveau composant partagé) évite une 3e copie du sélecteur déjà dupliqué
+ * sur `LieuDetailView.vue`/`CategoriesMaterielView.vue`. `refreshEventColors()`
+ * (`useEventColors.js`) est appelée après le PATCH pour que les CSS vars
+ * (`--transport`, `--event-*`) se mettent à jour partout dans l'app sans
+ * recharger la page.
  */
 
 const { projects, refreshProjects } = useActiveProject()
+const { refreshEventColors } = useEventColors()
+
+const COLOR_DEFAULTS = {
+  transport_color: 'oklch(0.64 0.21 340)',
+  event_color_rehearsal: 'oklch(0.8 0.13 85)',
+  event_color_performance: 'oklch(0.75 0.13 320)',
+  event_color_storage: 'rgba(var(--fg-rgb),.6)',
+  event_color_setup: 'oklch(0.75 0.13 165)',
+  event_color_teardown: 'oklch(0.7 0.11 255)',
+}
+
+const colorFields = [
+  { key: 'transport_color', label: 'Transport (déplacements confirmés)' },
+  { key: 'event_color_rehearsal', label: 'Répétition' },
+  { key: 'event_color_performance', label: 'Représentation' },
+  { key: 'event_color_storage', label: 'Entreposage' },
+  { key: 'event_color_setup', label: 'Montage' },
+  { key: 'event_color_teardown', label: 'Démontage' },
+]
 
 const loading = ref(false)
 const loadError = ref(null)
@@ -62,8 +105,17 @@ async function save() {
       default_transport_duration_minutes: Number(form.value.default_transport_duration_minutes),
       date_format: form.value.date_format,
       time_format: form.value.time_format,
+      transport_color: form.value.transport_color,
+      event_color_rehearsal: form.value.event_color_rehearsal,
+      event_color_performance: form.value.event_color_performance,
+      event_color_storage: form.value.event_color_storage,
+      event_color_setup: form.value.event_color_setup,
+      event_color_teardown: form.value.event_color_teardown,
     })
     showSaved.value = true
+    // Reflète les nouvelles couleurs immédiatement partout dans l'app (CSS
+    // vars sur <html>) sans attendre un rechargement de page.
+    await refreshEventColors()
   } catch (e) {
     saveError.value =
       e.data?.default_buffer_before_minutes?.[0] ??
@@ -92,52 +144,6 @@ const decoratedProjects = computed(() =>
     createdAtLabel: p.created_at ? dateFmt.format(new Date(p.created_at)) : '—',
   })),
 )
-
-// --- Dates de projet (2026-07-30) ---
-// `Project.start_date`/`end_date` existaient depuis le 2026-07-19 mais
-// n'étaient saisissables nulle part. `end_date` sert d'horizon au contrôle de
-// retour du matériel (voir transport_coherence.get_project_horizon) : sans
-// elle, l'app retombe sur la fin du dernier événement du projet.
-
-const projectDates = ref({})
-const projectDateErrors = ref({})
-const savingDates = ref({})
-
-function draftDates(project) {
-  if (!projectDates.value[project.id]) {
-    projectDates.value = {
-      ...projectDates.value,
-      [project.id]: {
-        start_date: project.start_date ?? '',
-        end_date: project.end_date ?? '',
-      },
-    }
-  }
-  return projectDates.value[project.id]
-}
-
-async function saveProjectDates(project) {
-  const draft = draftDates(project)
-  savingDates.value = { ...savingDates.value, [project.id]: true }
-  projectDateErrors.value = { ...projectDateErrors.value, [project.id]: null }
-  try {
-    await api.patch(`/projects/${project.id}/`, {
-      // Champ vidé = pas de date, donc `null` et non la chaîne vide.
-      start_date: draft.start_date || null,
-      end_date: draft.end_date || null,
-    })
-    await refreshProjects()
-  } catch (e) {
-    projectDateErrors.value = {
-      ...projectDateErrors.value,
-      [project.id]:
-        e.data?.end_date?.[0] ?? e.data?.start_date?.[0] ?? e.data?.detail ??
-        'Impossible d’enregistrer les dates.',
-    }
-  } finally {
-    savingDates.value = { ...savingDates.value, [project.id]: false }
-  }
-}
 
 const canAddProject = computed(() => newProjectName.value.trim().length > 0)
 
@@ -175,37 +181,15 @@ async function addProject() {
         <section class="section">
           <div class="section-title">Projets</div>
           <div class="project-list">
-            <div v-for="p in decoratedProjects" :key="p.id" class="project-row">
+            <RouterLink v-for="p in decoratedProjects" :key="p.id" :to="`/projets/${p.id}`" class="project-row">
               <span class="project-dot" :style="{ background: p.color }" />
               <div class="project-body">
                 <div class="project-top">
                   <div class="project-name">{{ p.name }}</div>
                   <div class="project-date">Créé le {{ p.createdAtLabel }}</div>
                 </div>
-                <div class="project-dates">
-                  <label class="project-field">
-                    <span class="project-field__label">Début</span>
-                    <input
-                      v-model="draftDates(p).start_date"
-                      type="date"
-                      class="input input--date"
-                      @change="saveProjectDates(p)"
-                    />
-                  </label>
-                  <label class="project-field">
-                    <span class="project-field__label">Fin</span>
-                    <input
-                      v-model="draftDates(p).end_date"
-                      type="date"
-                      class="input input--date"
-                      @change="saveProjectDates(p)"
-                    />
-                  </label>
-                  <span v-if="savingDates[p.id]" class="project-saving">Enregistrement…</span>
-                </div>
-                <div v-if="projectDateErrors[p.id]" class="error">{{ projectDateErrors[p.id] }}</div>
               </div>
-            </div>
+            </RouterLink>
             <div v-if="decoratedProjects.length === 0" class="row-empty">Aucun projet actif.</div>
           </div>
           <div class="create-card">
@@ -294,6 +278,24 @@ async function addProject() {
           </div>
         </section>
 
+        <section class="section">
+          <div class="section-title">Couleurs</div>
+          <div class="card">
+            <div class="color-field" v-for="f in colorFields" :key="f.key">
+              <label class="label">{{ f.label }}</label>
+              <ColorField
+                v-model="form[f.key]"
+                :default-value="COLOR_DEFAULTS[f.key]"
+              />
+            </div>
+            <div class="hint-text">
+              Couvre les bandes qui ne sont pas déjà réglables depuis une fiche
+              (contrairement aux lieux et aux catégories de matériel) — les
+              déplacements confirmés et les 5 types de spectacle/bloc.
+            </div>
+          </div>
+        </section>
+
         <div class="save-row">
           <div class="btn btn--enabled" :class="{ 'btn--disabled': saving }" @click="!saving && save()">Enregistrer</div>
           <div v-if="showSaved" class="saved">
@@ -317,7 +319,7 @@ async function addProject() {
 .hint {
   padding: 32px 40px;
   font: 500 13px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .hint--error {
@@ -334,7 +336,7 @@ async function addProject() {
   font: 700 12px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--fg-rgb), 0.45);
 }
 
 .card {
@@ -359,7 +361,15 @@ async function addProject() {
   align-items: flex-start;
   gap: 12px;
   padding: 12px 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(var(--fg-rgb), 0.05);
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.project-row:hover {
+  background: rgba(var(--fg-rgb), 0.04);
+  border-radius: var(--radius-notch-sm);
 }
 
 .project-row:last-child {
@@ -391,53 +401,23 @@ async function addProject() {
 .project-name {
   flex: 1;
   font: 600 13px system-ui;
-  color: #fff;
-}
-
-.project-dates {
-  display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.project-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.project-field__label {
-  font: 700 9.5px var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: rgba(255, 255, 255, 0.35);
-}
-
-.input--date {
-  width: 160px;
-}
-
-.project-saving {
-  font: 500 11px system-ui;
-  color: rgba(255, 255, 255, 0.35);
-  padding-bottom: 10px;
+  color: rgb(var(--fg-rgb));
 }
 
 .project-date {
   font: 400 11.5px system-ui;
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(var(--fg-rgb), 0.35);
 }
 
 .row-empty {
   font: 500 12.5px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
   padding: 10px;
 }
 
 .create-card {
   background: var(--bg-card);
-  border: 1px dashed rgba(255, 255, 255, 0.15);
+  border: 1px dashed rgba(var(--fg-rgb), 0.15);
   border-radius: var(--radius-notch-lg);
   padding: 14px 16px;
   display: flex;
@@ -449,7 +429,7 @@ async function addProject() {
   font: 700 10.5px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .create-row {
@@ -461,7 +441,7 @@ async function addProject() {
 
 .create-hint {
   font: 400 12px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
   line-height: 1.5;
 }
 
@@ -485,17 +465,17 @@ async function addProject() {
 
 .label {
   font: 500 12px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .input {
   box-sizing: border-box;
   padding: 10px 12px;
   border-radius: var(--radius-notch-sm);
-  background: #1b1f25;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--bg-row);
+  border: 1px solid rgba(var(--fg-rgb), 0.1);
   font: 500 13px system-ui;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .input--wide {
@@ -505,7 +485,7 @@ async function addProject() {
 
 .hint-text {
   font: 400 12px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
   line-height: 1.5;
 }
 
@@ -513,6 +493,17 @@ async function addProject() {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.color-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.color-field + .color-field {
+  padding-top: 12px;
+  border-top: 1px solid rgba(var(--fg-rgb), 0.05);
 }
 
 .save-row {
@@ -533,13 +524,13 @@ async function addProject() {
 }
 
 .btn--enabled {
-  color: #fff;
+  color: rgb(var(--fg-rgb));
   background: oklch(0.65 0.15 290 / 0.3);
 }
 
 .btn--disabled {
-  color: rgba(255, 255, 255, 0.3);
-  background: rgba(255, 255, 255, 0.06);
+  color: rgba(var(--fg-rgb), 0.3);
+  background: rgba(var(--fg-rgb), 0.06);
   cursor: default;
 }
 

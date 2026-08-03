@@ -3,7 +3,9 @@
 1. Authentification Google OAuth (django-allauth) : provisionne
    automatiquement l'`inventory.User` applicatif correspondant à un compte
    `django.contrib.auth.User` qui vient de se connecter (voir modèle
-   `User.django_user` dans `inventory/models.py`).
+   `User.django_user` dans `inventory/models.py`), puis active les accès par
+   projet (`ProjectMembership`) qui l'attendaient (voir point 2026-08-02
+   ci-dessous).
 2. Catégories de matériel : chaque nouveau `Project` reçoit les catégories
    par défaut (voir `MaterialCategory.DEFAULTS`), pour ne pas démarrer une
    production sur une liste vide.
@@ -15,7 +17,7 @@ from allauth.account.signals import user_logged_in
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
-from .models import MaterialCategory, Project
+from .models import MaterialCategory, Project, ProjectMembership
 from .models import User as InventoryUser
 
 
@@ -38,6 +40,14 @@ def provisionner_utilisateur_inventory(request, user, **kwargs):
     duplique pas l'`inventory.User` : `role='viewer'` n'est appliqué que par
     défaut à la création, jamais réécrit sur un compte déjà promu `admin` par
     Samuel via /admin/.
+
+    **Activation des invitations en attente** (2026-08-02, voir
+    `ProjectMembership` — modèle d'accès par projet, models.py) : ce bloc
+    n'est atteint que la toute première fois qu'un compte Google se lie à cet
+    `inventory.User` (la connexion suivante sort au `return` précédent) —
+    c'est exactement le moment où une invitation par email envoyée avant que
+    la personne n'ait de compte (`status='pending'`, voir
+    `ProjectMembershipViewSet.create`) doit passer à `status='active'`.
     """
     if not user.email:
         return
@@ -59,6 +69,10 @@ def provisionner_utilisateur_inventory(request, user, **kwargs):
         # les deux comptes sans toucher au `role` déjà en place.
         inventory_user.django_user = user
         inventory_user.save(update_fields=['django_user'])
+
+    inventory_user.project_memberships.filter(
+        status=ProjectMembership.STATUS_PENDING,
+    ).update(status=ProjectMembership.STATUS_ACTIVE)
 
 
 @receiver(post_save, sender=Project)

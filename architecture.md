@@ -14,10 +14,13 @@ Application web interne pour la gestion de l'inventaire de matériel de producti
 | Authentification | Google OAuth 2.0 | Plus simple et plus robuste qu'un login maison ; délègue la sécurité des mots de passe à Google |
 | Hébergement | Railway (PaaS) | Ionos écarté : l'hébergement web standard ne fait tourner Python qu'en CGI (confirmé via `info.py`), impraticable pour un vrai process Django/Gunicorn persistant. Railway offre déploiement Git automatique et MySQL managé sans gestion serveur (alternative envisagée : VPS Ionos avec gestion manuelle Nginx/Gunicorn/MySQL, écartée pour éviter la charge d'administration système) |
 
-## 3. Authentification
+## 3. Authentification et autorisation
 
 - Login via compte Google (OAuth 2.0) — pas de gestion de mots de passe custom.
-- Rôles : `admin` (accès complet), `viewer` (lecture seule) — extensible si besoin plus tard.
+- `User.role` (`admin`/`viewer`) est un rôle **global historique**, conservé
+  mais devenu **purement d'affichage** côté frontend (`UtilisateursView.vue`)
+  depuis le 2026-08-02 — il ne gate plus rien côté API. Ne pas le confondre
+  avec les rôles PAR PROJET ci-dessous, qui sont le contrôle réel.
 - Setup requis : projet Google Cloud, credentials OAuth, intégration frontend + backend (quelques heures de dev). ✅ Fait (2026-07-18).
 - **Librairies** : `django-allauth` (gère l'échange OAuth avec Google) + `dj-rest-auth`
   (expose des endpoints DRF — utilisateur courant, logout — pour le frontend Vue).
@@ -40,6 +43,80 @@ Application web interne pour la gestion de l'inventaire de matériel de producti
   `django.contrib.auth.User` créé par allauth se fait via le champ nullable
   `users.django_user_id` (voir `schema.md`) — ce lien est distinct du
   superutilisateur Django (`/admin/login/`), qui n'est pas concerné par ce flux.
+  Ce même signal active désormais aussi les invitations `pending` de la
+  personne qui vient de se connecter pour la première fois — voir le modèle
+  d'accès par projet ci-dessous.
+
+### 3bis. Accès par projet (multi-tenant, décision du 2026-08-02)
+
+Jusqu'au 2026-08-02, il n'y avait **aucune isolation multi-tenant réelle** :
+`REST_FRAMEWORK.DEFAULT_PERMISSION_CLASSES` ne contenait que
+`IsAuthenticated`, et `ProjectFilteredMixin` n'était qu'un filtre optionnel
+`?project=<id>` — n'importe quel compte provisionné (même `role='viewer'`)
+pouvait lire ET modifier tous les projets de tous les clients via l'API.
+Corrigé en vue de vendre des abonnements à d'autres directeurs
+techniques/compagnies : chaque `Project` a maintenant des membres, chacun
+avec un rôle.
+
+- **`ProjectMembership`** (`project_id` + `user_id`, voir `schema.md` section
+  13ter) relie un `User` à un `Project` avec un rôle parmi trois :
+  - `owner` : gère les accès du projet (`ProjectMembershipViewSet`) + édite
+    tout le reste.
+  - `editor` : édite tout SAUF la gestion des accès.
+  - `viewer` : lecture seule.
+
+  Un `status` (`pending`/`active`) distingue une invitation pas encore
+  « acceptée » (la personne ne s'est jamais connectée via Google) d'un accès
+  réellement utilisable — seul `status='active'` compte comme un accès pour
+  le contrôle ci-dessous. Pas d'envoi de courriel automatique (aucune infra
+  SMTP configurée) : l'invitation reste affichée « en attente » jusqu'au
+  premier login Google de l'email invité, qui l'active automatiquement (voir
+  le signal ci-dessus).
+
+- **`HasProjectAccess`** (`backend/inventory/permissions.py`) est la
+  permission DRF appliquée à tous les ViewSets isolés par projet (Venue,
+  Material, MaterialCategory, Technician, Show, Transport, ShowMaterial,
+  ShowTechnician, ProjectMembership, et Project lui-même). Elle résout le
+  projet concerné — directement (`project_id`) ou via une relation
+  (`show__project_id` pour ShowMaterial/ShowTechnician/Transport, qui n'ont
+  pas de FK `project` directe) — et vérifie un `ProjectMembership` actif avec
+  un rôle suffisant : `viewer` minimum en lecture (`GET`/`HEAD`/`OPTIONS`),
+  `editor` minimum en écriture, `owner` pour la gestion des accès
+  (`ProjectMembershipViewSet` et `Project.destroy`). Une LISTE ne renvoie
+  jamais un 403 : elle est simplement filtrée aux projets accessibles
+  (`ProjectMembershipQuerysetMixin`/`restrict_queryset_to_membership`) — un
+  `GET` détail sur un objet d'un projet inaccessible répond 404 (l'objet
+  n'apparaît jamais dans le queryset filtré), pas 403.
+
+- **`User.is_staff_global`** (BooleanField, distinct de `role`) court-circuite
+  entièrement ce contrôle — accès de dépannage/support réservé à
+  l'exploitant de la plateforme (Samuel), utile pour intervenir sur un
+  projet client sans en être `owner`. Un superutilisateur Django
+  (`is_superuser`, ex. via `createsuperuser`/`/admin/`) bénéficie du même
+  court-circuit : il a de toute façon un accès complet et non filtré à la
+  base via l'admin Django, le gater côté API serait de la sécurité de
+  façade — et c'est ce que la suite de tests backend utilise partout pour
+  s'authentifier.
+
+- **`ProjectViewSet`** : la liste ne renvoie que les projets où l'appelant a
+  un membership actif (tout, pour un compte staff/superutilisateur) — fini
+  la vue « tous projets confondus » pour un compte normal. `POST
+  /api/projects/` et `POST /api/projects/{id}/duplicate/` créent
+  automatiquement un `ProjectMembership(role='owner', status='active')` pour
+  l'appelant sur le projet obtenu — sinon personne n'aurait accès au projet
+  qu'il vient de créer.
+
+- **`UserViewSet`** (`/api/users/`, liste tous les comptes de la
+  plateforme) est réservé aux comptes staff (`IsStaffGlobal`) — la liste
+  complète des comptes, tous projets/clients confondus, ne doit pas fuiter
+  vers un client normal.
+
+- **Migration des données existantes** (`0020_project_access_data.py`) :
+  chaque `User` avec `role='admin'` reçoit `is_staff_global=True` (préserve
+  l'accès complet qu'il avait de facto via le bug `IsAuthenticated`-seul) ;
+  `samueltheriault@gmail.com` devient `is_staff_global=True` explicitement
+  (le seul utilisateur ayant réellement utilisé l'outil jusqu'ici) et
+  `owner` actif de chaque `Project` déjà existant.
 
 ## 4. Logique centrale — Détection de conflits
 
