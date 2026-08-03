@@ -1116,7 +1116,20 @@ class TransportSerializer(serializers.ModelSerializer):
 
 
 class SettingsSerializer(serializers.ModelSerializer):
-    """Sérialise le singleton `Settings` (voir `views.SettingsView` — pas de liste ni de création)."""
+    """Sérialise le singleton `Settings` (voir `views.SettingsView` — pas de liste ni de création).
+
+    `event_type_order` est stocké en CSV côté modèle mais exposé comme une
+    LISTE : c'est ce que le frontend manipule (glisser-déposer des lignes de
+    réglages, puis puces de filtre dans le même ordre). La conversion vit ici
+    plutôt que côté Vue, pour que la validation — pas de type inconnu, pas de
+    doublon — soit faite une seule fois, au bon endroit.
+    """
+
+    event_type_order = serializers.ListField(
+        child=serializers.ChoiceField(choices=Settings.EVENT_TYPE_ORDER_DEFAULT),
+        required=False,
+        allow_empty=False,
+    )
 
     class Meta:
         model = Settings
@@ -1125,4 +1138,29 @@ class SettingsSerializer(serializers.ModelSerializer):
             'default_transport_duration_minutes', 'date_format', 'time_format',
             'transport_color', 'event_color_rehearsal', 'event_color_performance',
             'event_color_storage', 'event_color_setup', 'event_color_teardown',
+            'event_type_order',
         ]
+
+    def validate_event_type_order(self, value):
+        """Refuse les doublons — un type ne peut pas occuper deux rangs.
+
+        Une liste INCOMPLÈTE est acceptée : `Settings.event_type_order_list`
+        rajoute les manquants à leur place canonique à la lecture. C'est
+        volontaire, pour qu'un client qui ignore un futur 7e type ne l'efface
+        pas en enregistrant l'ordre des six qu'il connaît.
+        """
+        if len(set(value)) != len(value):
+            raise serializers.ValidationError("Un même type ne peut pas apparaître deux fois.")
+        return value
+
+    def to_representation(self, instance):
+        """Renvoie l'ordre complet et assaini, jamais la chaîne CSV brute."""
+        data = super().to_representation(instance)
+        data['event_type_order'] = instance.event_type_order_list
+        return data
+
+    def update(self, instance, validated_data):
+        ordre = validated_data.pop('event_type_order', None)
+        if ordre is not None:
+            instance.event_type_order = ','.join(ordre)
+        return super().update(instance, validated_data)

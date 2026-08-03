@@ -168,14 +168,63 @@ class Settings(models.Model):
         default='oklch(0.7 0.11 255)',
         help_text="Couleur du type de bloc Démontage.",
     )
+    # Ordre d'affichage des types (2026-08-02, demande de Samuel : pouvoir le
+    # changer depuis les Réglages, ce qui réordonne aussi les puces de filtre
+    # du Tableau de bord et de Spectacles). Stocké en CSV plutôt qu'en table
+    # dédiée : c'est une préférence d'affichage globale à 6 valeurs, du même
+    # ordre de grandeur que `date_format` juste au-dessus.
+    #
+    # Chaîne vide = ordre par défaut. La lecture passe TOUJOURS par
+    # `event_type_order_list` : un type inconnu y est ignoré et un type
+    # manquant rajouté à sa place canonique, pour qu'une valeur écrite par une
+    # version antérieure (ou un futur 7e type) ne fasse jamais disparaître une
+    # ligne de l'écran.
+    event_type_order = models.CharField(
+        max_length=200,
+        blank=True,
+        default='',
+        help_text=(
+            "Ordre d'affichage des types, séparés par des virgules (ex. "
+            "'rehearsal,setup,performance,teardown,transport,storage'). Vide "
+            "= ordre par défaut."
+        ),
+    )
 
     class Meta:
         db_table = 'settings'
         verbose_name = 'Réglages'
         verbose_name_plural = 'Réglages'
 
+    # Ordre canonique : le déroulement réel d'une production (répétition,
+    # montage, représentation, démontage), puis les deux types qui ne sont pas
+    # des moments de plateau. Sert de défaut ET de référence pour compléter un
+    # ordre enregistré incomplet. `transport` n'est pas un `Show.event_type` —
+    # c'est un `Transport`, mais il partage la même liste de puces côté
+    # frontend, donc le même ordre.
+    EVENT_TYPE_ORDER_DEFAULT = (
+        'rehearsal', 'setup', 'performance', 'teardown', 'transport', 'storage',
+    )
+
     def __str__(self):
         return "Réglages de l'application"
+
+    @property
+    def event_type_order_list(self):
+        """Ordre d'affichage des types, toujours complet et sans doublon.
+
+        Les clés inconnues sont ignorées et les manquantes ajoutées à leur
+        place canonique : une valeur enregistrée par une version antérieure
+        (ou l'ajout d'un 7e type plus tard) ne peut donc pas faire disparaître
+        une ligne de l'écran de réglages ni une puce de filtre.
+        """
+        connus = list(self.EVENT_TYPE_ORDER_DEFAULT)
+        enregistres = [cle.strip() for cle in (self.event_type_order or '').split(',')]
+        ordre = []
+        for cle in enregistres:
+            if cle in connus and cle not in ordre:
+                ordre.append(cle)
+        ordre += [cle for cle in connus if cle not in ordre]
+        return ordre
 
     def save(self, *args, **kwargs):
         """Force une seule ligne : toujours pk=1, quel que soit l'appelant."""

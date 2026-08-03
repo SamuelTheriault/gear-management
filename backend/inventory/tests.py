@@ -4010,3 +4010,47 @@ class MaterialDistributionAPITests(TestCase):
         response = self.client.get(f'/api/materials/{self.rallonges.id}/distribution/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(response.data['stays'])
+
+
+class ProjectWindowAPITests(TestCase):
+    """Fenêtre du projet — `GET /api/projects/{id}/window/` (2026-08-02).
+
+    Exposée pour le Tableau de bord, qui borne sa timeline dessus au lieu de
+    suivre la semaine calendaire courante. La règle elle-même
+    (`get_project_window`) est déjà couverte par `ParcoursAPITests` : on
+    vérifie ici le contrat de l'endpoint, y compris le projet vide.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+
+    def test_the_project_dates_win_when_they_are_set(self):
+        self.project.start_date = _dt(0).date()
+        self.project.end_date = _dt(0, day=10).date()
+        self.project.save()
+        response = self.client.get(f'/api/projects/{self.project.id}/window/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['start'].date(), _dt(0).date())
+        self.assertEqual(response.data['end'].date(), _dt(0, day=10).date())
+
+    def test_without_dates_the_window_follows_the_events(self):
+        Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        response = self.client.get(f'/api/projects/{self.project.id}/window/')
+        self.assertEqual(response.data['start'], _dt(20))
+        self.assertEqual(response.data['end'], _dt(22))
+
+    def test_an_empty_project_has_no_window(self):
+        # Le Tableau de bord affiche alors un renvoi vers les Réglages plutôt
+        # qu'une piste vide.
+        response = self.client.get(f'/api/projects/{self.project.id}/window/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data['start'])
+        self.assertIsNone(response.data['end'])

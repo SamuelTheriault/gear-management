@@ -4,7 +4,7 @@ import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { useActiveProject } from '../composables/useActiveProject'
 import { useAuth } from '../composables/useAuth'
 import { useEscapeKey } from '../composables/useEscapeKey'
-import { useEventColors } from '../composables/useEventColors'
+import { useEventDisplay } from '../composables/useEventDisplay'
 import { useTheme } from '../composables/useTheme'
 
 /**
@@ -36,9 +36,9 @@ const { projects, activeProjectId, setActiveProject, loading: projectsLoading } 
 const { currentUser, logout } = useAuth()
 const { theme, toggleTheme } = useTheme()
 // Charge Settings et pose les CSS vars de couleur (--transport, --event-*)
-// dès l'entrée dans l'app — voir useEventColors.js. Rien d'autre à faire ici,
+// dès l'entrée dans l'app — voir useEventDisplay.js. Rien d'autre à faire ici,
 // le composable applique lui-même les variables sur <html>.
-useEventColors()
+useEventDisplay()
 
 // Tiroir mobile (<860px) : même contenu que la sidebar desktop, pas de liste
 // séparée. Fermé par défaut, ouvert via le bouton ☰ flottant, refermé au

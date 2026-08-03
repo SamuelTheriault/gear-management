@@ -1198,6 +1198,46 @@ défaut tout le parcours de la date de départ du projet à la date de fin ».
   matériel désactivé. Suite complète à **288 tests**, flake8 propre, aucune
   migration.
 
+### Tableau de bord borné aux dates du projet (2026-08-02)
+
+Demande de Samuel : le Tableau de bord ne doit plus suivre la semaine
+calendaire courante, mais toute la période du projet. Forme retenue avec lui :
+une piste continue avec filtre de dates.
+
+- `GET /api/projects/{id}/window/` expose `get_project_window` — même règle et
+  même source que les écrans Parcours et les chronologies de fiche.
+- La timeline passe d'un axe 0h-24h PAR JOUR à **un seul axe continu** sur la
+  fenêtre du projet, avec **une ligne par lieu**. Les journées se lisent sur la
+  graduation et sur les lignes verticales renforcées à minuit.
+- Les filtres jour/lieu/type sont conservés tels quels ; le filtre de jour sert
+  aussi de filtre de dates, puisque la fenêtre par défaut du zoom se resserre
+  sur ce qui reste visible.
+- Deux effets de bord assumés du passage à l'axe continu : un glisser
+  horizontal peut maintenant changer la date d'un événement, et la précision du
+  geste dépend du zoom (sur un projet de plusieurs semaines, un pixel vaut
+  beaucoup de minutes).
+- 3 tests (`ProjectWindowAPITests`). Suite complète à **332 tests**, flake8
+  propre, aucune migration.
+
+### Ordre des types réordonnable depuis les Réglages (2026-08-02)
+
+Demande de Samuel : changer l'ordre des libellés dans les Réglages doit changer
+l'ordre des puces de filtre, avec une poignée à quatre points en carré à droite
+de chaque ligne.
+
+- `Settings.event_type_order` (CSV, vide = défaut), migration `0024`. La
+  lecture passe toujours par `event_type_order_list`, qui complète et
+  dédoublonne — un ordre écrit par une version antérieure ne peut donc pas
+  faire disparaître une ligne. L'API expose une liste, pas la chaîne brute.
+- Le composable `useEventColors.js` devient `useEventDisplay.js` : il portait
+  déjà les couleurs venant de `Settings`, il porte maintenant l'ordre aussi —
+  même chargement, même singleton.
+- Réglages : glisser-déposer HTML5 natif, sans librairie. La poignée est une
+  grille CSS de 4 pastilles. Le séparateur « moments de plateau / le reste » a
+  été retiré : il aurait menti dès le premier réordonnancement.
+- 8 tests (`EventTypeOrderTests`). Suite complète à **340 tests**, flake8
+  propre.
+
 ## Fichiers produits
 
 - `schema.md` — structure complète de la base de données

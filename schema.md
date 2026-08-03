@@ -254,6 +254,11 @@ Table ajoutée le 2026-07-18 (hors des 8 tables initiales) — **singleton** : u
 | event_color_storage | VARCHAR(64) (default `rgba(var(--fg-rgb),.6)`) | Couleur du type de spectacle Entreposage |
 | event_color_setup | VARCHAR(64) (default `oklch(0.75 0.13 165)`) | Couleur du type de bloc Montage |
 | event_color_teardown | VARCHAR(64) (default `oklch(0.7 0.11 255)`) | Couleur du type de bloc Démontage |
+| event_type_order | VARCHAR(200), vide par défaut | Ordre d'affichage des types, en CSV (ex. `rehearsal,setup,performance,teardown,transport,storage`) — vide = ordre par défaut. Ajouté le 2026-08-02 |
+
+**Ordre des types (2026-08-02)** : `event_type_order` porte l'ordre dans lequel les types apparaissent — dans la section « Couleurs » des Réglages (où il se réordonne par glisser-déposer) ET dans les puces de filtre du Tableau de bord et de Spectacles. Stocké en CSV plutôt qu'en table dédiée : c'est une préférence d'affichage à six valeurs, du même ordre de grandeur que `date_format`. Exposé par l'API comme une **liste**, pas comme la chaîne brute.
+
+Toute lecture passe par `Settings.event_type_order_list`, qui garantit une liste complète et sans doublon : une clé inconnue est ignorée, une clé manquante rajoutée à sa place canonique. C'est ce qui empêche une valeur écrite par une version antérieure — ou l'arrivée d'un 7e type plus tard — de faire disparaître une ligne de réglages ou une puce de filtre. Côté écriture, `SettingsSerializer` refuse les doublons et les types inconnus, mais **accepte une liste incomplète**, pour qu'un client qui ignore un futur type ne l'efface pas en enregistrant l'ordre de ceux qu'il connaît.
 
 **Note technique** : les valeurs par défaut de `shows`/`transports` ci-dessus ne sont pas de simples constantes — elles sont lues dynamiquement depuis cette table à chaque création (voir `inventory/models.py`, callables `_default_buffer_before_minutes` etc.), pour que changer un réglage ici s'applique immédiatement aux nouvelles fiches, sans redéploiement.
 

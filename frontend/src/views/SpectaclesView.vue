@@ -5,6 +5,7 @@ import { api } from '../api/client'
 import { useActiveProject } from '../composables/useActiveProject'
 import { useChipFilter } from '../composables/useChipFilter'
 import { EVENT_TYPE_META } from '../constants/eventTypeMeta'
+import { useEventDisplay } from '../composables/useEventDisplay'
 
 /**
  * Liste des spectacles — port de Spectacles.dc.html, branché sur l'API réelle
@@ -102,6 +103,7 @@ const decorated = computed(() =>
 // useChipFilter.js). Trois groupes indépendants (jour, type, lieu), combinés
 // en ET.
 const dayFilter = useChipFilter()
+const { eventTypeOrder } = useEventDisplay()
 const typeFilter = useChipFilter()
 const venueFilter = useChipFilter()
 
@@ -127,7 +129,11 @@ const dayFilters = computed(() => [
 
 const typeFilters = computed(() => [
   { label: 'Tous', active: typeFilter.selected.value.size === 0, select: () => typeFilter.selectAll() },
-  ...['Répétition', 'Représentation', 'Entreposage', 'Montage', 'Démontage'].map((label) => ({
+  // Ordre enregistré dans les Réglages (2026-08-02, réordonnable par
+  // glisser-déposer). `transport` en est retiré : cet écran ne liste que des
+  // spectacles. Le filtre compare des LIBELLÉS, d'où le passage par
+  // `typeMeta`.
+  ...eventTypeOrder.value.filter((k) => k !== 'transport').map((k) => typeMeta[k].label).map((label) => ({
     label,
     active: typeFilter.isSelected(label),
     select: (event) => typeFilter.toggle(label, event),

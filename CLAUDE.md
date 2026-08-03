@@ -2389,3 +2389,115 @@ touchés (`SpectaclesView.vue`, `SpectacleDetailView.vue`,
 `MaterielDetailView.vue`, `DashboardView.vue`, `ReglagesView.vue`,
 `AppShell.vue`, `ColorField.vue`) compilent (`compileScript`/
 `compileTemplate`, `@vue/compiler-sfc`).
+
+## Mise à jour (2026-08-02, suite) — Tableau de bord borné au projet
+
+Demande de Samuel : « le dashboard principal ne devrait pas suivre la semaine
+en cours réel, ça devrait être un affichage comme les autres dashboards, on
+borne tout sur les dates spécifiées du projet ». Forme retenue
+(`AskUserQuestion`) : **une piste continue avec filtre de dates**, pas un
+sélecteur jour par jour façon Parcours.
+
+**Cette note remplace les trois notes du 2026-08-02 sur « Cette semaine »**
+(sous-lignes par lieu, filtres jour/lieu, défilement horizontal) partout où
+elles décrivent un découpage par jour — les filtres et le défilement restent,
+la structure par jour disparaît.
+
+- Nouveau `GET /api/projects/{id}/window/` (`ProjectViewSet.window`) : expose
+  `get_project_window` telle quelle. La règle « dates du projet, sinon du
+  premier au dernier événement » reste côté backend, comme pour les Parcours
+  et les chronologies de fiche — pas de réécriture en JS.
+- **Les positions ne sont plus des minutes DANS LA JOURNÉE mais des minutes
+  DEPUIS LE DÉBUT DE LA FENÊTRE.** `DAY_SPAN_MIN` (1440) disparaît au profit
+  de `windowBounds.span`. Tout ce qui en dépendait suit : `zoomLevel`,
+  `scrollFraction`, `blockStyle`, et la conversion pixel → minutes du
+  glisser-déposer.
+- `weekEntries`/`weekDays`/`weekWindow` deviennent `projectEntries`/
+  `venueRows`/`timeline`. Plus d'en-tête de jour ni d'espaceur côté piste
+  (`.dash-timeline__day-header`/`__day-spacer` supprimés) : **une ligne par
+  lieu** sur toute la période, les journées se lisant sur l'axe et sur les
+  lignes verticales renforcées à minuit (`--day`).
+- Le « filtre de dates » n'a demandé aucun mécanisme nouveau : les puces de
+  jour existantes restreignent les entrées, et `autoWindow` se resserre sur ce
+  qui reste — sélectionner un seul jour revient donc à s'y recentrer.
+- **Deux conséquences du passage à l'axe continu**, à connaître avant de
+  toucher au glisser-déposer : un glisser horizontal peut désormais changer la
+  DATE d'un événement (l'ancien axe 0h-24h l'interdisait par construction), et
+  un même geste en pixels vaut beaucoup plus de temps sur un projet long —
+  c'est le zoom qui redonne de la précision.
+- La carte s'appelle « Calendrier du projet » et affiche les bornes de la
+  fenêtre en tête. Sans dates ni événement, elle renvoie vers les Réglages
+  plutôt que d'afficher une piste vide.
+- **Puces de lieu remontées hors de la carte** (demande de Samuel, même
+  jour) : type et lieu forment deux rangées étiquetées en haut de page
+  (`.filters__row`/`.filters__label`), le filtre de JOUR reste dans la carte.
+  Ce n'est pas qu'esthétique — le jour ne concerne que la timeline, alors que
+  le type touche aussi « Spectacles à venir ».
+- `upcoming` (« Spectacles à venir ») reste relatif à MAINTENANT, volontairement
+  — c'est la seule partie de l'écran dont le sens est « ce qui arrive
+  bientôt », pas « ce que contient le projet ».
+
+Suite de tests : 332 (3 ajoutés, `ProjectWindowAPITests`), flake8 propre,
+aucune migration. Vérifié : `DashboardView.vue` compile (`compileScript` +
+`compileTemplate`) ; regroupement par lieu, voies indépendantes d'un transport
+présent sur deux lignes, positions relatives à la fenêtre, conversion du
+glisser à deux niveaux de zoom et graduation adaptative simulés en Node.
+
+## Mise à jour (2026-08-02, suite) — Ordre des types unifié
+
+Demande de Samuel : « les filtres dans le même ordre que les réglages de
+couleurs ». Nouvelle constante **`EVENT_TYPE_ORDER`**
+(`constants/eventTypeMeta.js`) : `rehearsal`, `setup`, `performance`,
+`teardown`, `transport`, `storage` — le déroulement réel d'une production,
+puis les deux types qui ne sont pas des moments de plateau.
+
+Les trois listes en dérivent maintenant au lieu de la recopier :
+`ReglagesView.vue` (section Couleurs, qui garde son séparateur avant
+`transport`), les puces de type du `DashboardView.vue` et celles de
+`SpectaclesView.vue` (qui retire `transport`, absent de cet écran).
+
+- Les **libellés** restent propres à chaque écran — pluriel sur le Tableau de
+  bord (« Répétitions », et « Spectacles » plutôt que « Représentation »),
+  singulier ailleurs. Seul l'ordre est partagé.
+- `SpectaclesView.vue` filtre sur des LIBELLÉS, pas des clés : il mappe
+  l'ordre via `EVENT_TYPE_META[k].label`.
+
+Frontend seulement, aucun changement backend.
+
+## Mise à jour (2026-08-02, suite) — Ordre des types réordonnable
+
+Demande de Samuel : pouvoir changer l'ordre des libellés depuis les Réglages,
+ce qui change aussi l'ordre des puces de filtre, avec une poignée « 4 petits
+points en carré » à droite de chaque ligne.
+
+- **`Settings.event_type_order`** (migration `0024_settings_event_type_order`,
+  additive) : CSV, vide = ordre par défaut. Toute lecture passe par
+  `Settings.event_type_order_list` — clé inconnue ignorée, clé manquante
+  rajoutée à sa place canonique (`EVENT_TYPE_ORDER_DEFAULT`). Ne pas lire le
+  champ brut ailleurs : c'est ce garde-fou qui empêche une valeur écrite par
+  une version antérieure, ou un futur 7e type, de faire disparaître une ligne.
+- **Exposé comme une LISTE**, pas comme la chaîne CSV : `SettingsSerializer`
+  convertit dans les deux sens (`to_representation`/`update`) et refuse les
+  doublons et les types inconnus. Une liste **incomplète est acceptée**
+  volontairement — un client qui ignore un futur type ne doit pas l'effacer en
+  enregistrant l'ordre des six qu'il connaît.
+- **`useEventColors.js` → `useEventDisplay.js`** : le composable porte
+  maintenant les couleurs ET l'ordre (`eventTypeOrder`), qui voyagent dans le
+  même singleton `Settings` — les séparer aurait voulu dire deux appels pour
+  la même ligne. `refreshEventColors()` devient `refreshEventDisplay()`.
+  Retombe sur `EVENT_TYPE_ORDER` tant que Settings n'a pas répondu, sinon les
+  puces de filtre apparaîtraient vides au premier rendu.
+- **`ReglagesView.vue`** : `colorFields` devient un computed piloté par
+  l'ordre ; glisser-déposer HTML5 natif (pas de librairie) sur toute la ligne,
+  avec la poignée 2×2 (`.drag-handle`, une grille CSS de 4 pastilles — pas une
+  image ni un caractère). Le brouillon `typeOrder` ne part qu'au clic sur
+  Enregistrer, comme les couleurs voisines, puis est re-seedé depuis la
+  réponse (c'est l'ordre assaini par le backend qui fait foi).
+- **Séparateur retiré** de la section Couleurs : il annonçait un regroupement
+  « moments de plateau / le reste » que Samuel peut maintenant défaire d'un
+  glisser — il aurait menti dès le premier réordonnancement.
+- `DashboardView.vue` et `SpectaclesView.vue` lisent `eventTypeOrder` au lieu
+  de la constante. `EVENT_TYPE_ORDER` reste le défaut et le repli.
+
+Suite de tests : 340 (8 ajoutés, `EventTypeOrderTests`), flake8 propre,
+migration `0024` **à appliquer** (`python manage.py migrate`).

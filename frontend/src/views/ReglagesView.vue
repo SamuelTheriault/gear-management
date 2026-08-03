@@ -2,9 +2,10 @@
 import { ref, computed, onMounted } from 'vue'
 import AppShell from '../components/AppShell.vue'
 import ColorField from '../components/ColorField.vue'
+import { EVENT_TYPE_ORDER } from '../constants/eventTypeMeta'
 import { api } from '../api/client'
 import { useActiveProject } from '../composables/useActiveProject'
-import { useEventColors } from '../composables/useEventColors'
+import { useEventDisplay } from '../composables/useEventDisplay'
 
 /**
  * Écran « Réglages » — port de Reglages.dc.html.
@@ -36,14 +37,14 @@ import { useEventColors } from '../composables/useEventColors'
  * rendre personnalisables risquerait de casser la lisibilité plutôt que
  * d'aider (décision actée avec Samuel avant implémentation). `ColorField`
  * (nouveau composant partagé) évite une 3e copie du sélecteur déjà dupliqué
- * sur `LieuDetailView.vue`/`CategoriesMaterielView.vue`. `refreshEventColors()`
- * (`useEventColors.js`) est appelée après le PATCH pour que les CSS vars
+ * sur `LieuDetailView.vue`/`CategoriesMaterielView.vue`. `refreshEventDisplay()`
+ * (`useEventDisplay.js`) est appelée après le PATCH pour que les CSS vars
  * (`--transport`, `--event-*`) se mettent à jour partout dans l'app sans
  * recharger la page.
  */
 
 const { projects, refreshProjects } = useActiveProject()
-const { refreshEventColors } = useEventColors()
+const { refreshEventDisplay } = useEventDisplay()
 
 const COLOR_DEFAULTS = {
   transport_color: 'oklch(0.64 0.21 340)',
@@ -59,19 +60,75 @@ const COLOR_DEFAULTS = {
 // dans l'ordre où ils se succèdent le plus souvent sur une fiche), puis un
 // séparateur, puis Transport/Entreposage (les deux qui n'ont pas de
 // contrepartie « bloc »).
-const colorFields = [
-  { key: 'event_color_rehearsal', label: 'Répétition' },
-  { key: 'event_color_setup', label: 'Montage' },
-  { key: 'event_color_performance', label: 'Représentation' },
-  { key: 'event_color_teardown', label: 'Démontage' },
-  { separator: true },
-  { key: 'transport_color', label: 'Transport (déplacements confirmés)' },
-  { key: 'event_color_storage', label: 'Entreposage' },
-]
+// Cette section est la référence VISUELLE de l'ordre des types dans l'app :
+// les puces de filtre du Tableau de bord et de Spectacles suivent la même
+// suite (2026-08-02, demande de Samuel). L'ordre lui-même vit dans
+// `EVENT_TYPE_ORDER` pour que les trois écrans ne puissent pas diverger — ne
+// pas le réécrire à la main ici.
+const COLOR_KEYS = {
+  rehearsal: { type: 'rehearsal', key: 'event_color_rehearsal', label: 'Répétition' },
+  setup: { type: 'setup', key: 'event_color_setup', label: 'Montage' },
+  performance: { type: 'performance', key: 'event_color_performance', label: 'Représentation' },
+  teardown: { type: 'teardown', key: 'event_color_teardown', label: 'Démontage' },
+  transport: { type: 'transport', key: 'transport_color', label: 'Transport (déplacements confirmés)' },
+  storage: { type: 'storage', key: 'event_color_storage', label: 'Entreposage' },
+}
+
+// L'ordre affiché est celui enregistré dans Settings (`event_type_order`),
+// réordonnable par glisser-déposer ci-dessous — plus la constante figée. Tant
+// que Settings n'a pas répondu, `useEventDisplay` retombe sur
+// `EVENT_TYPE_ORDER`, donc la liste n'est jamais vide.
+//
+// Le séparateur « moments de plateau / le reste » qui existait ici a été
+// retiré avec ce changement : il annonçait un regroupement que Samuel peut
+// maintenant défaire d'un glisser, il aurait donc menti dès le premier
+// réordonnancement.
+const colorFields = computed(() => typeOrder.value.map((type) => COLOR_KEYS[type]))
 
 const loading = ref(false)
 const loadError = ref(null)
 const form = ref(null)
+
+// --- Ordre des types (2026-08-02, demande de Samuel) ---
+//
+// Brouillon local : réordonner ne part en base qu'au clic sur Enregistrer,
+// comme les couleurs juste à côté. Seedé au chargement, puis piloté par le
+// glisser-déposer.
+const typeOrder = ref([...EVENT_TYPE_ORDER])
+const draggedType = ref(null)
+const dropTargetType = ref(null)
+
+function onTypeDragStart(type, event) {
+  draggedType.value = type
+  // `effectAllowed`/`setData` : sans eux, Firefox refuse de démarrer le
+  // glisser. La donnée elle-même ne sert pas (on garde l'état dans `ref`),
+  // mais il faut en poser une.
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('text/plain', type)
+}
+
+function onTypeDragOver(type) {
+  if (draggedType.value && draggedType.value !== type) dropTargetType.value = type
+}
+
+function onTypeDrop(type) {
+  const source = draggedType.value
+  dropTargetType.value = null
+  draggedType.value = null
+  if (!source || source === type) return
+  const liste = [...typeOrder.value]
+  const depuis = liste.indexOf(source)
+  const vers = liste.indexOf(type)
+  if (depuis === -1 || vers === -1) return
+  liste.splice(depuis, 1)
+  liste.splice(vers, 0, source)
+  typeOrder.value = liste
+}
+
+function onTypeDragEnd() {
+  draggedType.value = null
+  dropTargetType.value = null
+}
 
 const saving = ref(false)
 const saveError = ref(null)
@@ -91,6 +148,9 @@ async function loadSettings() {
   loadError.value = null
   try {
     form.value = await api.get('/settings/')
+    // Le backend garantit une liste complète et sans doublon — voir
+    // `Settings.event_type_order_list`.
+    typeOrder.value = [...form.value.event_type_order]
   } catch (e) {
     loadError.value = e
   } finally {
@@ -117,11 +177,15 @@ async function save() {
       event_color_storage: form.value.event_color_storage,
       event_color_setup: form.value.event_color_setup,
       event_color_teardown: form.value.event_color_teardown,
+      event_type_order: typeOrder.value,
     })
+    // Re-seed depuis la réponse plutôt que de garder le brouillon : c'est
+    // l'ordre assaini par le backend qui fait foi.
+    typeOrder.value = [...form.value.event_type_order]
     showSaved.value = true
     // Reflète les nouvelles couleurs immédiatement partout dans l'app (CSS
     // vars sur <html>) sans attendre un rechargement de page.
-    await refreshEventColors()
+    await refreshEventDisplay()
   } catch (e) {
     saveError.value =
       e.data?.default_buffer_before_minutes?.[0] ??
@@ -290,18 +354,36 @@ async function addProject() {
             <div class="hint-text">
               Couvre les bandes qui ne sont pas déjà réglables depuis une fiche
               (contrairement aux lieux et aux catégories de matériel) — les
-              5 types de spectacle/bloc et les déplacements confirmés.
+              5 types de spectacle/bloc et les déplacements confirmés. Glisse
+              une ligne pour changer l'ordre : les puces de filtre du Tableau
+              de bord et de Spectacles suivront le même.
             </div>
-            <template v-for="(f, i) in colorFields" :key="f.key ?? `sep-${i}`">
-              <div v-if="f.separator" class="color-field-separator" />
-              <div v-else class="color-field">
-                <label class="label">{{ f.label }}</label>
-                <ColorField
-                  v-model="form[f.key]"
-                  :default-value="COLOR_DEFAULTS[f.key]"
-                />
-              </div>
-            </template>
+            <div
+              v-for="f in colorFields"
+              :key="f.key"
+              class="color-field"
+              :class="{
+                'color-field--dragging': draggedType === f.type,
+                'color-field--drop': dropTargetType === f.type,
+              }"
+              draggable="true"
+              @dragstart="onTypeDragStart(f.type, $event)"
+              @dragover.prevent="onTypeDragOver(f.type)"
+              @drop.prevent="onTypeDrop(f.type)"
+              @dragend="onTypeDragEnd"
+            >
+              <label class="label">{{ f.label }}</label>
+              <ColorField
+                v-model="form[f.key]"
+                :default-value="COLOR_DEFAULTS[f.key]"
+              />
+              <!-- Poignée à 4 points en carré (demande de Samuel) : c'est le
+                   seul indice que la ligne se déplace. Toute la ligne est
+                   `draggable`, la poignée ne fait que l'annoncer. -->
+              <span class="drag-handle" title="Glisser pour changer l'ordre">
+                <span v-for="n in 4" :key="n" class="drag-handle__dot" />
+              </span>
+            </div>
           </div>
         </section>
 
@@ -504,10 +586,25 @@ async function addProject() {
   flex-wrap: wrap;
 }
 
+/* Ligne réordonnable (2026-08-02) : deux colonnes — le libellé et son
+   sélecteur de couleur à gauche, la poignée à droite. */
 .color-field {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    'label handle'
+    'field handle';
+  align-items: center;
+  gap: 8px 12px;
+  cursor: grab;
+}
+
+.color-field .label {
+  grid-area: label;
+}
+
+.color-field > :not(.label):not(.drag-handle) {
+  grid-area: field;
 }
 
 .color-field + .color-field {
@@ -515,13 +612,43 @@ async function addProject() {
   border-top: 1px solid rgba(var(--fg-rgb), 0.05);
 }
 
-/* Sépare les 4 types de spectacle (Répétition/Montage/Représentation/
-   Démontage) de Transport/Entreposage, qui n'ont pas de contrepartie
-   « bloc » — plus marqué que le simple filet entre deux couleurs d'un même
-   groupe (2026-08-02, demande de Samuel). */
-.color-field-separator {
-  height: 1px;
-  background: rgba(var(--fg-rgb), 0.12);
+.color-field--dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+}
+
+/* Trait d'insertion sur la ligne survolée pendant un glisser — plus lisible
+   qu'un simple changement de fond, on voit OÙ la ligne va atterrir. */
+.color-field--drop {
+  box-shadow: inset 0 2px 0 0 var(--accent);
+}
+
+/* Poignée à 4 points en carré (demande de Samuel) : une grille 2×2, pas une
+   image ni un caractère — ça suit la couleur du texte et reste net à
+   n'importe quelle densité d'écran. */
+.drag-handle {
+  grid-area: handle;
+  display: grid;
+  grid-template-columns: repeat(2, 4px);
+  gap: 3px;
+  padding: 6px;
+  border-radius: 4px;
+  cursor: grab;
+}
+
+.drag-handle:hover {
+  background: rgba(var(--fg-rgb), 0.06);
+}
+
+.drag-handle__dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgba(var(--fg-rgb), 0.35);
+}
+
+.color-field:hover .drag-handle__dot {
+  background: rgba(var(--fg-rgb), 0.55);
 }
 
 .save-row {

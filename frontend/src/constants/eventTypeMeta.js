@@ -5,7 +5,7 @@
 // couleurs des bandes qui ne sont pas gérées dans une fiche »).
 //
 // `color`/`bg` référencent les CSS custom properties posées par
-// `useEventColors.js` (`--event-rehearsal`, etc., voir aussi le repli
+// `useEventDisplay.js` (`--event-rehearsal`, etc., voir aussi le repli
 // statique dans style.css) plutôt que des valeurs oklch littérales : la
 // couleur RÉELLE vient du singleton `Settings`, modifiable depuis Réglages
 // sans toucher à ce fichier. `bg` reprend la même transparence (16%) que
@@ -63,3 +63,27 @@ export const TRANSPORT_META = {
   color: 'var(--transport)',
   bg: 'color-mix(in oklch, var(--transport) 16%, transparent)',
 }
+
+/**
+ * Ordre d'affichage canonique des types, transport compris (2026-08-02,
+ * demande de Samuel : « les filtres dans le même ordre que les réglages de
+ * couleurs »).
+ *
+ * L'ordre suit le déroulement réel d'une production — répétition, montage,
+ * représentation, démontage — puis les deux types qui ne sont pas des moments
+ * de plateau : le déplacement et l'entreposage. C'est celui de la section
+ * « Couleurs » des Réglages, qui en est la référence VISUELLE ; il vit ici
+ * pour que les écrans de filtre et cette section ne puissent pas diverger,
+ * plutôt que d'être recopié dans chacun.
+ *
+ * `transport` n'est pas un `Show.event_type` : les écrans qui ne listent que
+ * des spectacles (SpectaclesView) le filtrent de cette liste.
+ */
+export const EVENT_TYPE_ORDER = [
+  'rehearsal',
+  'setup',
+  'performance',
+  'teardown',
+  'transport',
+  'storage',
+]

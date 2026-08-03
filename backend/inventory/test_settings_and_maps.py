@@ -284,3 +284,97 @@ class SettingsAPITests(TestCase):
         self.assertEqual(settings_row.event_color_setup, 'oklch(0.6 0.2 120)')
         # Les autres couleurs ne sont pas touchées par un PATCH partiel.
         self.assertEqual(settings_row.event_color_teardown, 'oklch(0.7 0.11 255)')
+
+
+class EventTypeOrderTests(TestCase):
+    """Ordre d'affichage des types — `Settings.event_type_order` (2026-08-02).
+
+    Demande de Samuel : pouvoir réordonner les libellés depuis les Réglages,
+    ce qui réordonne aussi les puces de filtre du Tableau de bord et de
+    Spectacles.
+
+    Le point délicat couvert ici : l'ordre est stocké en CSV, mais toute
+    lecture passe par `event_type_order_list`, qui garantit une liste complète
+    et sans doublon. Une valeur écrite par une version antérieure — ou
+    l'arrivée d'un 7e type plus tard — ne doit jamais faire disparaître une
+    ligne de l'écran de réglages ni une puce de filtre.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+
+    def test_the_default_order_follows_the_production_flow(self):
+        settings = Settings.load()
+        self.assertEqual(settings.event_type_order, '')
+        self.assertEqual(
+            settings.event_type_order_list,
+            ['rehearsal', 'setup', 'performance', 'teardown', 'transport', 'storage'],
+        )
+
+    def test_a_missing_type_is_added_back_at_its_canonical_place(self):
+        settings = Settings.load()
+        settings.event_type_order = 'storage,transport'
+        settings.save()
+        # Les quatre absents reviennent, dans leur ordre canonique, derrière
+        # ce qui a été explicitement enregistré.
+        self.assertEqual(
+            settings.event_type_order_list,
+            ['storage', 'transport', 'rehearsal', 'setup', 'performance', 'teardown'],
+        )
+
+    def test_unknown_and_duplicated_keys_are_dropped(self):
+        settings = Settings.load()
+        settings.event_type_order = 'setup,cocktail,setup,rehearsal'
+        settings.save()
+        ordre = settings.event_type_order_list
+        self.assertEqual(ordre[:2], ['setup', 'rehearsal'])
+        self.assertNotIn('cocktail', ordre)
+        self.assertEqual(len(ordre), len(set(ordre)))
+        self.assertEqual(len(ordre), 6)
+
+    def test_the_api_exposes_a_list_not_the_raw_csv(self):
+        response = self.client.get('/api/settings/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data['event_type_order'],
+            ['rehearsal', 'setup', 'performance', 'teardown', 'transport', 'storage'],
+        )
+
+    def test_patching_the_order_persists_it(self):
+        nouvel_ordre = ['storage', 'transport', 'teardown', 'performance', 'setup', 'rehearsal']
+        response = self.client.patch(
+            '/api/settings/', {'event_type_order': nouvel_ordre}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['event_type_order'], nouvel_ordre)
+        self.assertEqual(Settings.load().event_type_order_list, nouvel_ordre)
+
+    def test_a_duplicate_is_refused(self):
+        response = self.client.patch(
+            '/api/settings/',
+            {'event_type_order': ['setup', 'setup', 'rehearsal']},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('event_type_order', response.data)
+
+    def test_an_unknown_type_is_refused(self):
+        response = self.client.patch(
+            '/api/settings/', {'event_type_order': ['cocktail']}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('event_type_order', response.data)
+
+    def test_the_other_settings_survive_an_order_change(self):
+        # Le PATCH partiel ne doit pas réinitialiser les couleurs voisines.
+        # `load()` d'abord : sans lui, la ligne singleton n'existe pas encore
+        # et l'`update()` ci-dessous ne toucherait rien.
+        settings = Settings.load()
+        settings.transport_color = '#ff0000'
+        settings.save()
+        self.client.patch(
+            '/api/settings/', {'event_type_order': ['storage']}, format='json',
+        )
+        self.assertEqual(Settings.load().transport_color, '#ff0000')

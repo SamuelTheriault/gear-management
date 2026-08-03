@@ -362,6 +362,19 @@ class ProjectViewSet(viewsets.ModelViewSet):
         issues = get_project_coherence_report(project)
         return Response({'issues': issues, 'issue_count': len(issues)})
 
+    @action(detail=True, methods=['get'])
+    def window(self, request, pk=None):
+        """Fenêtre temporelle du projet — `{start, end}`, ou `null` des deux côtés.
+
+        Dates saisies sur le projet si elles existent, sinon du premier au
+        dernier événement (voir `get_project_window`). Exposée telle quelle
+        depuis le 2026-08-02 pour le Tableau de bord, qui borne sa timeline
+        dessus : la règle vit côté backend, comme pour les écrans « Parcours »
+        et les chronologies de fiche, plutôt que d'être réécrite en JS.
+        """
+        window_start, window_end = get_project_window(self.get_object())
+        return Response({'start': window_start, 'end': window_end})
+
     @action(detail=True, methods=['get'], url_path='material-journey')
     def material_journey(self, request, pk=None):
         """Parcours du matériel dans le temps — écran « Parcours » du frontend.

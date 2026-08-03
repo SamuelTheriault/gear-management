@@ -1,7 +1,16 @@
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { api } from '../api/client'
+import { EVENT_TYPE_ORDER } from '../constants/eventTypeMeta'
 
 /**
+ * Réglages d'affichage des types d'événement : leurs COULEURS et leur ORDRE.
+ *
+ * S'appelait `useEventColors.js` jusqu'au 2026-08-02 ; renommé en y ajoutant
+ * l'ordre (demande de Samuel : le réordonner depuis les Réglages doit
+ * réordonner aussi les puces de filtre). Les deux voyagent dans le même
+ * singleton `Settings`, donc dans le même chargement — les séparer aurait
+ * voulu dire deux appels pour la même ligne de base.
+ *
  * Couleurs des bandes qui ne sont rattachées à aucune fiche éditable
  * (contrairement à `Venue.color`/`MaterialCategory.color`) — ajoutées le
  * 2026-08-02 à la demande de Samuel : « les options pour changer les couleur
@@ -53,7 +62,7 @@ function apply(values) {
   }
 }
 
-async function loadEventColors() {
+async function loadEventDisplay() {
   const data = await api.get('/settings/')
   settings.value = data
   apply(data)
@@ -67,18 +76,32 @@ async function loadEventColors() {
 // avant qu'une session existe.
 let loadPromise = null
 function ensureLoaded() {
-  if (!loadPromise) loadPromise = loadEventColors()
+  if (!loadPromise) loadPromise = loadEventDisplay()
   return loadPromise
 }
 
 /** Appelé après un PATCH réussi sur /api/settings/ (ReglagesView) pour que
- * les couleurs se reflètent immédiatement partout, sans recharger la page. */
-function refreshEventColors() {
-  loadPromise = loadEventColors()
+ * les couleurs ET l'ordre se reflètent immédiatement partout, sans recharger
+ * la page. */
+function refreshEventDisplay() {
+  loadPromise = loadEventDisplay()
   return loadPromise
 }
 
-export function useEventColors() {
+/**
+ * Ordre d'affichage des types, tel qu'enregistré dans les Réglages.
+ *
+ * Retombe sur `EVENT_TYPE_ORDER` (la constante par défaut) tant que Settings
+ * n'a pas répondu : sans ça, les puces de filtre apparaîtraient vides le
+ * temps du premier chargement. Le backend garantit une liste complète et sans
+ * doublon (voir `Settings.event_type_order_list`), le frontend n'a donc rien
+ * à assainir ici.
+ */
+const eventTypeOrder = computed(
+  () => settings.value?.event_type_order ?? EVENT_TYPE_ORDER,
+)
+
+export function useEventDisplay() {
   ensureLoaded()
-  return { settings, loaded, refreshEventColors }
+  return { settings, loaded, eventTypeOrder, refreshEventDisplay }
 }
