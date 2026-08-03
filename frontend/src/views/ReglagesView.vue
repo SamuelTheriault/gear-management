@@ -54,13 +54,19 @@ const COLOR_DEFAULTS = {
   event_color_teardown: 'oklch(0.7 0.11 255)',
 }
 
+// Ordre demandé par Samuel (2026-08-02, suite) : la séquence Montage →
+// Répétition/Représentation → Démontage d'abord (les 4 types de spectacle,
+// dans l'ordre où ils se succèdent le plus souvent sur une fiche), puis un
+// séparateur, puis Transport/Entreposage (les deux qui n'ont pas de
+// contrepartie « bloc »).
 const colorFields = [
-  { key: 'transport_color', label: 'Transport (déplacements confirmés)' },
   { key: 'event_color_rehearsal', label: 'Répétition' },
-  { key: 'event_color_performance', label: 'Représentation' },
-  { key: 'event_color_storage', label: 'Entreposage' },
   { key: 'event_color_setup', label: 'Montage' },
+  { key: 'event_color_performance', label: 'Représentation' },
   { key: 'event_color_teardown', label: 'Démontage' },
+  { separator: true },
+  { key: 'transport_color', label: 'Transport (déplacements confirmés)' },
+  { key: 'event_color_storage', label: 'Entreposage' },
 ]
 
 const loading = ref(false)
@@ -281,18 +287,21 @@ async function addProject() {
         <section class="section">
           <div class="section-title">Couleurs</div>
           <div class="card">
-            <div class="color-field" v-for="f in colorFields" :key="f.key">
-              <label class="label">{{ f.label }}</label>
-              <ColorField
-                v-model="form[f.key]"
-                :default-value="COLOR_DEFAULTS[f.key]"
-              />
-            </div>
             <div class="hint-text">
               Couvre les bandes qui ne sont pas déjà réglables depuis une fiche
               (contrairement aux lieux et aux catégories de matériel) — les
-              déplacements confirmés et les 5 types de spectacle/bloc.
+              5 types de spectacle/bloc et les déplacements confirmés.
             </div>
+            <template v-for="(f, i) in colorFields" :key="f.key ?? `sep-${i}`">
+              <div v-if="f.separator" class="color-field-separator" />
+              <div v-else class="color-field">
+                <label class="label">{{ f.label }}</label>
+                <ColorField
+                  v-model="form[f.key]"
+                  :default-value="COLOR_DEFAULTS[f.key]"
+                />
+              </div>
+            </template>
           </div>
         </section>
 
@@ -504,6 +513,15 @@ async function addProject() {
 .color-field + .color-field {
   padding-top: 12px;
   border-top: 1px solid rgba(var(--fg-rgb), 0.05);
+}
+
+/* Sépare les 4 types de spectacle (Répétition/Montage/Représentation/
+   Démontage) de Transport/Entreposage, qui n'ont pas de contrepartie
+   « bloc » — plus marqué que le simple filet entre deux couleurs d'un même
+   groupe (2026-08-02, demande de Samuel). */
+.color-field-separator {
+  height: 1px;
+  background: rgba(var(--fg-rgb), 0.12);
 }
 
 .save-row {
