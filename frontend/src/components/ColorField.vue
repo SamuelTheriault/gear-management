@@ -9,8 +9,11 @@
  * ne sont pas touchées (pas demandé, pas dans la portée de ce changement).
  *
  * Contrairement à `Venue.color`, ces couleurs ne sont jamais vides : pas de
- * puce « ✕ Automatique », mais un bouton ↺ optionnel (`defaultValue`) pour
- * revenir à la valeur d'origine du champ plutôt qu'à « rien ».
+ * puce « ✕ Automatique » comme sur `LieuDetailView.vue`. À la place, une
+ * puce « ✕ » TOUJOURS visible (`defaultValue`, 2026-08-02, demande de
+ * Samuel : « un bouton par ligne entre le carré de sélection et la première
+ * couleur ») remet le champ à sa valeur d'ORIGINE (celle du formulaire au
+ * chargement, pas une réinitialisation en base) plutôt qu'à « rien ».
  */
 import { VENUE_PALETTE } from '../constants/venuePalette'
 
@@ -38,13 +41,14 @@ function hexColor(c) {
     <span class="color-preview" :style="{ background: modelValue }" />
     <div class="swatches">
       <button
-        v-if="defaultValue && defaultValue !== modelValue"
+        v-if="defaultValue"
         type="button"
         class="swatch swatch--reset"
-        title="Revenir à la couleur d'origine"
+        :class="{ 'swatch--reset-inactive': modelValue === defaultValue }"
+        title="Réinitialiser à la couleur d'origine"
         @click="set(defaultValue)"
       >
-        ↺
+        ✕
       </button>
       <button
         v-for="color in palette"
@@ -106,6 +110,12 @@ function hexColor(c) {
   background: var(--bg-row);
   color: rgba(var(--fg-rgb), 0.45);
   font: 700 12px system-ui;
+}
+
+/* Déjà à la valeur d'origine — la puce reste cliquable (pas de v-if) mais
+   s'atténue pour indiquer qu'elle n'aurait aucun effet. */
+.swatch--reset-inactive {
+  opacity: 0.35;
 }
 
 .swatch--picker {
