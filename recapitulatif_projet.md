@@ -1141,6 +1141,103 @@ unitaires.
     exposition de `inherits_resources`. Suite complète à **266 tests**,
     flake8 propre, aucune migration.
 
+### Chronologie de la fiche matériel (2026-08-01)
+
+Demande de Samuel : « dans la fiche de chaque item matériel on va afficher en
+plus des assignations spectacle tous les éléments comme les montages,
+démontages, répétitions et les transports dans l'ordre chronologique », avec
+le même affichage à lignes cliquables que la fiche spectacle.
+
+- `get_material_schedule()` (`transport_coherence.py`) réunit trois sources :
+  les assignations (`ShowMaterial`), les blocs qui **héritent** du matériel de
+  leur événement (montage, démontage — ils n'ont pas d'assignation propre,
+  leurs entrées sont dérivées et marquées `inherited`), et les déplacements
+  (`TransportMaterial`). Exposé par `GET /api/materials/{id}/schedule/`.
+- Calculé côté backend délibérément : l'héritage des blocs est une règle
+  métier. La reproduire dans le Vue en ferait une deuxième implémentation à
+  maintenir.
+- Effet de bord bienvenu : le drapeau `conflict` vient maintenant de
+  `get_material_conflicts` restreint à ce matériel, au lieu d'un appel à
+  `GET /shows/{id}/conflicts/` par assignation depuis le navigateur.
+- Une proposition de transport sans heure part en fin de liste avec
+  `start: null` — la masquer cacherait exactement ce qu'il reste à compléter.
+- Bornée à la **fenêtre du projet** (`get_project_window`, la même que les
+  écrans « Parcours ») depuis le 2026-08-01 : la fiche affiche les dates de la
+  fenêtre en tête de carte, et annonce le nombre d'éléments écartés plutôt que
+  de les faire disparaître en silence.
+- 7 tests (`MaterialScheduleAPITests`). Suite complète à **277 tests**,
+  flake8 propre, aucune migration.
+
+### Répartition du matériel entre les lieux (2026-08-01)
+
+Demande de Samuel : « on a besoin d'implémenter un affichage pour le matériel
+avec plusieurs items qui se séparent en plusieurs lieux », puis « afficher par
+défaut tout le parcours de la date de départ du projet à la date de fin ».
+
+- `GET /api/materials/{id}/distribution/` rend `get_material_journey` +
+  `get_material_transports` sur la fenêtre du projet. **Pas de nouvel
+  algorithme** : c'est la même source que l'écran Parcours Matériel, les deux
+  ne peuvent donc pas se contredire. Le regroupement diffère — le Parcours
+  empile une ligne par *lane* pour tracer les bifurcations, la carte de la
+  fiche regroupe par **lieu**, ce qui répond à « où est mon stock, et depuis
+  quand ».
+- Côté fiche : une ligne par lieu, un segment par période de détention avec la
+  quantité écrite dedans, une ligne « En transit » pour les déplacements
+  confirmés, un axe en jours et un repère « maintenant » (affiché seulement
+  s'il tombe dans la fenêtre). Visible à partir de 2 exemplaires.
+- Contrairement au parcours project-wide, l'endpoint répond aussi pour un
+  matériel désactivé : on y arrive depuis sa fiche, qui reste consultable.
+- **Piste abandonnée** : une première version répondait à un instant donné
+  (`?at=`), avec une notion de « en transit » qui sortait le matériel de son
+  origine pendant le trajet — un écart volontaire avec le grand livre partagé
+  (`_ledger_before`, déplacement atomique à l'arrivée). Retirée le même jour au
+  profit de la vue par période ; c'est le point à réexaminer si l'idée revient.
+- 7 tests (`MaterialDistributionAPITests`) : fenêtre du projet, stock intact
+  avant tout transport, séparation entre deux lieux, transports renvoyés,
+  proposition non confirmée sans effet, projet sans dates ni événement,
+  matériel désactivé. Suite complète à **288 tests**, flake8 propre, aucune
+  migration.
+
+### Tableau de bord borné aux dates du projet (2026-08-02)
+
+Demande de Samuel : le Tableau de bord ne doit plus suivre la semaine
+calendaire courante, mais toute la période du projet. Forme retenue avec lui :
+une piste continue avec filtre de dates.
+
+- `GET /api/projects/{id}/window/` expose `get_project_window` — même règle et
+  même source que les écrans Parcours et les chronologies de fiche.
+- La timeline passe d'un axe 0h-24h PAR JOUR à **un seul axe continu** sur la
+  fenêtre du projet, avec **une ligne par lieu**. Les journées se lisent sur la
+  graduation et sur les lignes verticales renforcées à minuit.
+- Les filtres jour/lieu/type sont conservés tels quels ; le filtre de jour sert
+  aussi de filtre de dates, puisque la fenêtre par défaut du zoom se resserre
+  sur ce qui reste visible.
+- Deux effets de bord assumés du passage à l'axe continu : un glisser
+  horizontal peut maintenant changer la date d'un événement, et la précision du
+  geste dépend du zoom (sur un projet de plusieurs semaines, un pixel vaut
+  beaucoup de minutes).
+- 3 tests (`ProjectWindowAPITests`). Suite complète à **332 tests**, flake8
+  propre, aucune migration.
+
+### Ordre des types réordonnable depuis les Réglages (2026-08-02)
+
+Demande de Samuel : changer l'ordre des libellés dans les Réglages doit changer
+l'ordre des puces de filtre, avec une poignée à quatre points en carré à droite
+de chaque ligne.
+
+- `Settings.event_type_order` (CSV, vide = défaut), migration `0024`. La
+  lecture passe toujours par `event_type_order_list`, qui complète et
+  dédoublonne — un ordre écrit par une version antérieure ne peut donc pas
+  faire disparaître une ligne. L'API expose une liste, pas la chaîne brute.
+- Le composable `useEventColors.js` devient `useEventDisplay.js` : il portait
+  déjà les couleurs venant de `Settings`, il porte maintenant l'ordre aussi —
+  même chargement, même singleton.
+- Réglages : glisser-déposer HTML5 natif, sans librairie. La poignée est une
+  grille CSS de 4 pastilles. Le séparateur « moments de plateau / le reste » a
+  été retiré : il aurait menti dès le premier réordonnancement.
+- 8 tests (`EventTypeOrderTests`). Suite complète à **340 tests**, flake8
+  propre.
+
 ## Fichiers produits
 
 - `schema.md` — structure complète de la base de données

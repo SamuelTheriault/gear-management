@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api/client'
+import { useEscapeKey } from './useEscapeKey'
 
 /**
  * Suppression d'une fiche, avec confirmation — lieu, spectacle et transport
@@ -40,6 +41,13 @@ export function useSuppressionFiche({ endpoint, redirectTo }) {
     confirming.value = false
     deleteError.value = null
   }
+
+  // Échap ferme la confirmation, même geste que le clic sur le fond ou sur
+  // « Annuler » — les trois fiches qui utilisent ce composable (lieu,
+  // spectacle, transport) l'obtiennent donc gratuitement.
+  useEscapeKey(() => {
+    if (confirming.value) cancelDelete()
+  })
 
   async function confirmDelete(id) {
     deleting.value = true

@@ -184,13 +184,13 @@ const groups = computed(() => [
 
 .header__count {
   font: 600 12.5px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .hint {
   padding: 32px 40px;
   font: 500 13px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .hint--error {
@@ -203,14 +203,14 @@ const groups = computed(() => [
   border-radius: var(--radius-notch-lg);
   padding: 24px;
   font: 500 13px system-ui;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--fg-rgb), 0.55);
 }
 
 .group-title {
   font: 700 11px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--fg-rgb), 0.45);
   margin: 4px 0 10px;
 }
 
@@ -268,7 +268,7 @@ const groups = computed(() => [
 }
 
 .side {
-  background: #1b1f25;
+  background: var(--bg-row);
   border: 1px solid oklch(0.5 0.15 35 / 0.35);
   border-radius: 0 10px 0 10px;
   padding: 14px;
@@ -279,31 +279,31 @@ const groups = computed(() => [
 
 .side__title {
   font: 600 14px var(--font-mono);
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .side__context {
   font: 400 12px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .side__time {
   font: 500 12px system-ui;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--fg-rgb), 0.7);
   margin-top: 4px;
 }
 
 .side__link {
   margin-top: 8px;
   font: 600 11.5px system-ui;
-  color: #a5b4fc;
+  color: var(--link);
   text-decoration: none;
 }
 
 .overlay-bar {
   position: relative;
   height: 56px;
-  background: #1b1f25;
+  background: var(--bg-row);
   border-radius: var(--radius-notch-sm);
 }
 

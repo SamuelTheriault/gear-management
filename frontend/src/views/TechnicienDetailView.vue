@@ -20,6 +20,14 @@ import { useFicheEdition } from '../composables/useFicheEdition'
  * GET /api/shows/{id}/conflicts/ par spectacle assigné.
  * Transports assignés : GET /api/transports/?technician={id} (filtre ajouté
  * en même temps sur TransportViewSet).
+ *
+ * En-tête à avatar (`header__avatar`/`header__name`/`header__role`) plutôt
+ * que le simple `.header__title` des quatre autres fiches (Lieu, Matériel,
+ * Spectacle, Transport) — point 7 de l'audit ergonomie/navigation du
+ * 2026-07-31, tranché avec Samuel : choix assumé, pas une dérive à
+ * corriger. L'avatar aide à repérer un nom dans une liste de rendez-vous ;
+ * ça ne se justifie pas pour les quatre autres fiches, qui titrent une
+ * entité (lieu, matériel, spectacle, transport) plutôt qu'une personne.
  */
 
 const route = useRoute()
@@ -275,7 +283,7 @@ const decoratedTransports = computed(() =>
 .hint {
   padding: 32px 40px;
   font: 500 13px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .hint--error {
@@ -284,11 +292,11 @@ const decoratedTransports = computed(() =>
 
 .breadcrumb {
   font: 500 12px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .breadcrumb :deep(a) {
-  color: #a5b4fc;
+  color: var(--link);
   text-decoration: none;
 }
 
@@ -325,12 +333,12 @@ const decoratedTransports = computed(() =>
 
 .header__name {
   font: 700 19px var(--font-mono);
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .header__role {
   font: 400 13px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .contact-card {
@@ -340,19 +348,19 @@ const decoratedTransports = computed(() =>
   padding: 16px 14px;
   text-align: center;
   font: 600 14px system-ui;
-  color: #a5b4fc;
+  color: var(--link);
 }
 
 .card-title {
   font: 700 12px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: rgba(255, 255, 255, 0.65);
+  color: rgba(var(--fg-rgb), 0.65);
 }
 
 .card-text {
   font: 400 13.5px/1.6 system-ui;
-  color: rgba(255, 255, 255, 0.75);
+  color: rgba(var(--fg-rgb), 0.75);
   margin-top: 12px;
 }
 
@@ -368,7 +376,7 @@ const decoratedTransports = computed(() =>
   gap: 12px;
   padding: 14px;
   border-radius: 0 10px 0 10px;
-  background: #1b1f25;
+  background: var(--bg-row);
   min-height: 44px;
 }
 
@@ -386,19 +394,19 @@ const decoratedTransports = computed(() =>
 
 .row__body--flex {
   font: 500 13px system-ui;
-  color: rgba(255, 255, 255, 0.8);
+  color: rgba(var(--fg-rgb), 0.8);
 }
 
 .row__title {
   font: 600 14px system-ui;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
   text-decoration: none;
   display: block;
 }
 
 .row__subtitle {
   font: 400 12px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .row__conflict {
@@ -412,20 +420,20 @@ const decoratedTransports = computed(() =>
 .row__badge {
   font: 700 10px system-ui;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.55);
-  background: rgba(255, 255, 255, 0.08);
+  color: rgba(var(--fg-rgb), 0.55);
+  background: rgba(var(--fg-rgb), 0.08);
   padding: 3px 8px;
   border-radius: 0 6px 0 6px;
 }
 
 .row__time {
   font: 600 13px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .row-empty {
   font: 500 12.5px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
   padding: 10px 12px;
 }
 </style>

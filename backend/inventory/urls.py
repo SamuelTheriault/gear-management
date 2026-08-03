@@ -9,6 +9,7 @@ from . import views
 router = DefaultRouter()
 router.register(r'users', views.UserViewSet)
 router.register(r'projects', views.ProjectViewSet)
+router.register(r'project-memberships', views.ProjectMembershipViewSet)
 router.register(r'venues', views.VenueViewSet)
 router.register(r'material-categories', views.MaterialCategoryViewSet)
 router.register(r'materials', views.MaterialViewSet)

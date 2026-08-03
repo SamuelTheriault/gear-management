@@ -19,6 +19,7 @@ import TransportsView from '../views/TransportsView.vue'
 import TransportDetailView from '../views/TransportDetailView.vue'
 import ConflitsView from '../views/ConflitsView.vue'
 import CoherenceEmplacementsView from '../views/CoherenceEmplacementsView.vue'
+import ProjetDetailView from '../views/ProjetDetailView.vue'
 
 const routes = [
   { path: '/', name: 'dashboard', component: DashboardView },
@@ -46,6 +47,7 @@ const routes = [
   { path: '/conflits', name: 'conflits', component: ConflitsView },
   { path: '/coherence', name: 'coherence', component: CoherenceEmplacementsView },
   { path: '/reglages', name: 'reglages', component: ReglagesView },
+  { path: '/projets/:id', name: 'projet-detail', component: ProjetDetailView },
   { path: '/utilisateurs', name: 'utilisateurs', component: UtilisateursView },
   { path: '/login', name: 'login', component: LoginView },
   // Départements retiré le 2026-07-29 (modèle Department abandonné, voir

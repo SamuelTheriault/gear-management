@@ -186,12 +186,12 @@ async function addTechnician() {
 
 .page-count {
   font: 500 12px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .hint {
   font: 500 13px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .hint--error {
@@ -234,7 +234,7 @@ async function addTechnician() {
 
 .row__name {
   font: 600 14.5px var(--font-mono);
-  color: #fff;
+  color: rgb(var(--fg-rgb));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -242,7 +242,7 @@ async function addTechnician() {
 
 .row__role {
   font: 400 12px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -262,7 +262,7 @@ async function addTechnician() {
 
 .row__link {
   font: 600 11px system-ui;
-  color: #a5b4fc;
+  color: var(--link);
   cursor: pointer;
   white-space: nowrap;
   flex: none;
@@ -277,7 +277,7 @@ async function addTechnician() {
   gap: 10px;
   padding: 64px 20px;
   background: var(--bg-card);
-  border: 1px dashed rgba(255, 255, 255, 0.15);
+  border: 1px dashed rgba(var(--fg-rgb), 0.15);
   border-radius: var(--radius-notch-lg);
 }
 
@@ -285,12 +285,12 @@ async function addTechnician() {
   width: 40px;
   height: 40px;
   border-radius: 0 10px 0 10px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--fg-rgb), 0.06);
 }
 
 .empty__title {
   font: 600 13px system-ui;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(var(--fg-rgb), 0.6);
 }
 
 </style>

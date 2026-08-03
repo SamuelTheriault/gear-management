@@ -7,6 +7,7 @@ import AssignerTechnicienModal from '../components/AssignerTechnicienModal.vue'
 import { api } from '../api/client'
 import { useFicheEdition } from '../composables/useFicheEdition'
 import { useSuppressionFiche } from '../composables/useSuppressionFiche'
+import { EVENT_TYPE_META } from '../constants/eventTypeMeta'
 
 /**
  * Fiche spectacle — port de SpectacleDetail.dc.html, branché sur l'API réelle.
@@ -33,25 +34,26 @@ const showMaterials = ref([])
 const showTechnicians = ref([])
 const transports = ref([])
 const techniciansById = ref(new Map())
+// Catalogue complet du matériel du projet (2026-08-02, demande de Samuel) —
+// sert uniquement à retrouver `parent_material` pour indenter les composants
+// de kit dans « Matériel assigné » (ShowMaterialSerializer n'expose pas ce
+// champ, voir `materialsById`/`decoratedMaterials`).
+const materials = ref([])
 
 const loading = ref(false)
 const loadError = ref(null)
 
-const typeMeta = {
-  rehearsal: { label: 'Répétition', color: 'oklch(0.8 0.13 85)', bg: 'oklch(0.8 0.13 85 / .16)' },
-  performance: { label: 'Représentation', color: 'oklch(0.75 0.13 320)', bg: 'oklch(0.75 0.13 320 / .16)' },
-  storage: { label: 'Entreposage', color: 'rgba(255,255,255,.6)', bg: 'rgba(255,255,255,.08)' },
-  // Blocs rattachés (2026-07-31) — voir `Show.parent_show`.
-  setup: { label: 'Montage', color: 'oklch(0.75 0.13 165)', bg: 'oklch(0.75 0.13 165 / .16)' },
-  teardown: { label: 'Démontage', color: 'oklch(0.7 0.11 255)', bg: 'oklch(0.7 0.11 255 / .16)' },
-}
+// Couleurs personnalisables depuis Réglages (2026-08-02) — voir
+// constants/eventTypeMeta.js, source unique partagée entre cette fiche,
+// SpectaclesView.vue, MaterielDetailView.vue et DashboardView.vue.
+const typeMeta = EVENT_TYPE_META
 
 // Catégorie du matériel (voir MaterialCategory, models.py) — remplace la
 // couleur/nom de département (`department_color`/`department_name`), retirés
 // le 2026-07-29 avec le modèle `Department`. Depuis le 2026-07-30, le nom et
 // la couleur viennent de l'API (`material_category_name`/`_color` sur
 // ShowMaterialSerializer) au lieu d'une table codée en dur ici.
-const NO_CATEGORY = { label: 'Sans catégorie', color: 'rgba(255,255,255,.3)' }
+const NO_CATEGORY = { label: 'Sans catégorie', color: 'rgba(var(--fg-rgb),.3)' }
 
 const dateTimeFmt = new Intl.DateTimeFormat('fr-CA', {
   weekday: 'long',
@@ -69,19 +71,20 @@ function fmtTimeRange(startIso, endIso) {
 /**
  * Plage horaire d'un bloc rattaché, affichée dans la carte de résumé.
  *
- * La date n'est rappelée que lorsqu'elle diffère : de celle de l'événement
- * pour le début (un montage la veille), et de celle du début pour la fin (un
- * bloc à cheval sur minuit). Dans le cas courant — tout se passe le même jour
- * que l'événement — il ne reste que « 09:00 – 12:00 », lisible d'un coup
- * d'œil sous l'horaire prévu.
+ * La journée du début est TOUJOURS rappelée (2026-08-01, demande de Samuel :
+ * « comme il y a déjà pour la répétition » — une répétition tombe souvent un
+ * autre jour que l'événement et affichait donc déjà sa date ; montage,
+ * démontage et l'événement lui-même, eux, restaient muets dès qu'ils
+ * tombaient le même jour que l'événement, incohérent au premier coup d'œil
+ * dans une liste qui mélange les deux cas). La fin, elle, ne répète la
+ * journée que si elle diffère de celle du début (bloc à cheval sur minuit) —
+ * pas de raison de la doubler sinon.
  */
-function fmtBlockRange(startIso, endIso, refIso) {
+function fmtBlockRange(startIso, endIso) {
   const debut = new Date(startIso)
   const fin = new Date(endIso)
   const memeJour = (a, b) => a.toDateString() === b.toDateString()
-  const debutTexte = memeJour(debut, new Date(refIso))
-    ? timeFmt.format(debut)
-    : `${dayShortFmt.format(debut)} ${timeFmt.format(debut)}`
+  const debutTexte = `${dayShortFmt.format(debut)} ${timeFmt.format(debut)}`
   const finTexte = memeJour(fin, debut)
     ? timeFmt.format(fin)
     : `${dayShortFmt.format(fin)} ${timeFmt.format(fin)}`
@@ -110,7 +113,7 @@ async function loadShow() {
     const heriteDuParent = !!show.value.parent_show
       && show.value.event_type !== 'rehearsal'
     const resourceId = heriteDuParent ? show.value.parent_show : id
-    const [conflictsData, smData, stData, trData, parentData] = await Promise.all([
+    const [conflictsData, smData, stData, trData, parentData, matData] = await Promise.all([
       api.get(`/shows/${id}/conflicts/`),
       api.get('/show-materials/', { show: resourceId }),
       api.get('/show-technicians/', { show: resourceId }),
@@ -119,12 +122,14 @@ async function loadShow() {
       // pour afficher la même chronologie sur sa fiche, on va chercher les
       // blocs frères (et l'horaire de l'événement) sur le parent.
       show.value.parent_show ? api.get(`/shows/${show.value.parent_show}/`) : Promise.resolve(null),
+      api.get('/materials/', { project: show.value.project }),
     ])
     conflicts.value = conflictsData
     showMaterials.value = Array.isArray(smData) ? smData : (smData.results ?? [])
     showTechnicians.value = Array.isArray(stData) ? stData : (stData.results ?? [])
     transports.value = Array.isArray(trData) ? trData : (trData.results ?? [])
     parentShow.value = parentData
+    materials.value = Array.isArray(matData) ? matData : (matData.results ?? [])
 
     const techniciansData = await api.get('/technicians/', { project: show.value.project })
     const techniciansList = Array.isArray(techniciansData) ? techniciansData : (techniciansData.results ?? [])
@@ -154,6 +159,12 @@ const inherited = computed(
 const copiedFromEvent = computed(
   () => !!show.value?.parent_show && show.value.event_type === 'rehearsal',
 )
+
+// N'importe quel bloc (montage/démontage/répétition), tous types confondus —
+// contrairement à `inherited` ci-dessus, qui ne couvre que montage/démontage.
+// Sert au champ « Titre »/« Précision » du formulaire d'édition (2026-08-02) :
+// un bloc n'a plus de nom complet à saisir, voir `Show.display_title`.
+const isBlock = computed(() => !!show.value?.parent_show)
 
 const hasConflicts = computed(
   () =>
@@ -189,19 +200,50 @@ const technicianConflictIds = computed(
   () => new Set((conflicts.value.technician_conflicts ?? []).map((c) => c.technician_id)),
 )
 
-const decoratedMaterials = computed(() =>
-  showMaterials.value.map((sm) => {
+// `parent_material` par id de matériel — `ShowMaterialSerializer` ne
+// l'expose pas (voir la recherche du 2026-08-02), d'où le croisement avec le
+// catalogue complet chargé dans `loadShow`.
+const parentMaterialById = computed(() => new Map(materials.value.map((m) => [m.id, m.parent_material])))
+
+/**
+ * Sous-items de kit en retrait (2026-08-02, demande de Samuel) : même
+ * traitement que le panneau de sélection du Parcours Matériel — un
+ * composant n'est marqué `nested` (et déplacé juste après son kit) que si le
+ * kit parent est LUI AUSSI assigné à ce spectacle ; sinon il reste affiché à
+ * plat, orphelin plutôt que perdu.
+ */
+const decoratedMaterials = computed(() => {
+  const assignedIds = new Set(showMaterials.value.map((sm) => sm.material))
+  const items = showMaterials.value.map((sm) => {
     const meta = sm.material_category
       ? { label: sm.material_category_name, color: sm.material_category_color }
       : NO_CATEGORY
+    const parentId = parentMaterialById.value.get(sm.material) ?? null
     return {
       ...sm,
       catLabel: meta.label,
       catColor: meta.color,
       conflict: materialConflictIds.value.has(sm.material),
+      nested: parentId != null && assignedIds.has(parentId),
     }
-  }),
-)
+  })
+
+  const enfants = new Map()
+  items.forEach((it) => {
+    if (!it.nested) return
+    const parentId = parentMaterialById.value.get(it.material)
+    if (!enfants.has(parentId)) enfants.set(parentId, [])
+    enfants.get(parentId).push(it)
+  })
+
+  const ordonne = []
+  items.forEach((it) => {
+    if (it.nested) return
+    ordonne.push(it)
+    ;(enfants.get(it.material) ?? []).forEach((child) => ordonne.push(child))
+  })
+  return ordonne
+})
 
 const decoratedTechnicians = computed(() =>
   showTechnicians.value.map((st) => {
@@ -217,12 +259,26 @@ const decoratedTechnicians = computed(() =>
 
 const transportTypeLabel = { delivery: 'Livraison', pickup: 'Ramassage' }
 
+// Triés chronologiquement (2026-08-01, demande de Samuel) — l'API ne les
+// renvoie pas déjà triés. Une proposition sans `scheduled_datetime` (pas
+// encore complétée) va en fin de liste plutôt que de casser le tri, même
+// convention que la chronologie de la fiche matériel (2026-08-01, note
+// dédiée dans CLAUDE.md).
 const decoratedTransports = computed(() =>
-  transports.value.map((tr) => ({
-    ...tr,
-    typeLabel: transportTypeLabel[tr.transport_type] ?? tr.transport_type,
-    time: tr.scheduled_datetime ? timeFmt.format(new Date(tr.scheduled_datetime)) : 'à planifier',
-  })),
+  transports.value
+    .map((tr) => ({
+      ...tr,
+      typeLabel: transportTypeLabel[tr.transport_type] ?? tr.transport_type,
+      time: tr.scheduled_datetime
+        ? `${dayShortFmt.format(new Date(tr.scheduled_datetime))} ${timeFmt.format(new Date(tr.scheduled_datetime))}`
+        : 'à planifier',
+    }))
+    .sort((a, b) => {
+      if (!a.scheduled_datetime && !b.scheduled_datetime) return 0
+      if (!a.scheduled_datetime) return 1
+      if (!b.scheduled_datetime) return -1
+      return new Date(a.scheduled_datetime) - new Date(b.scheduled_datetime)
+    }),
 )
 
 // --- Édition de la fiche ---
@@ -257,7 +313,9 @@ const {
     buffer_after_minutes: s.buffer_after_minutes,
     notes: s.notes ?? '',
   }),
-  isValid: (d) => d.title.trim().length > 0 && !!d.start && !!d.end,
+  // Le titre reste requis pour un événement, mais devient une précision
+  // facultative sur un bloc (2026-08-02) — voir `isBlock`/`Show.display_title`.
+  isValid: (d) => (isBlock.value || d.title.trim().length > 0) && !!d.start && !!d.end,
   toPayload: (d) => ({
     title: d.title.trim(),
     venue: d.venue,
@@ -334,7 +392,7 @@ const decoratedPhases = computed(() => {
       position: new Date(p.start_datetime) < new Date(source.start_datetime) ? 'Avant' : 'Après',
       range: `${phaseFmt.format(new Date(p.start_datetime))} – ${phaseFmt.format(new Date(p.end_datetime))}`,
       // Version compacte pour la carte de résumé, en haut de la fiche.
-      summaryRange: fmtBlockRange(p.start_datetime, p.end_datetime, source.start_datetime),
+      summaryRange: fmtBlockRange(p.start_datetime, p.end_datetime),
       // Un montage/démontage puise dans les ressources de l'événement ; une
       // répétition rattachée a les siennes (voir `inherits_resources`, exposé
       // par l'API depuis le 2026-07-31).
@@ -370,9 +428,9 @@ const timelineEntries = computed(() => {
     title: source.title,
     start_datetime: source.start_datetime,
     range: `${phaseFmt.format(new Date(source.start_datetime))} – ${phaseFmt.format(new Date(source.end_datetime))}`,
-    // Comparée à elle-même, la date ne s'affiche jamais ici (même jour par
-    // définition) — juste l'heure, comme un bloc du même jour que l'événement.
-    summaryRange: fmtBlockRange(source.start_datetime, source.end_datetime, source.start_datetime),
+    // La journée s'affiche maintenant ici aussi (voir `fmtBlockRange`) —
+    // cohérent avec les blocs de la même liste.
+    summaryRange: fmtBlockRange(source.start_datetime, source.end_datetime),
   }
   return [...decoratedPhases.value, evenement].sort(
     (a, b) => new Date(a.start_datetime) - new Date(b.start_datetime),
@@ -401,13 +459,40 @@ function startAddPhase(kind) {
 
   phaseForm.value = {
     event_type: kind,
-    title: `${typeMeta[kind].label} — ${show.value.title}`,
+    // Précision optionnelle seulement (2026-08-02) — le nom du spectacle
+    // n'est plus recopié ici, voir `phasePreviewTitle` et `Show.display_title`
+    // côté backend, qui le relit dynamiquement sur le parent.
+    title: '',
     start: toLocalInput(debut),
     end: toLocalInput(fin),
   }
   phaseError.value = null
   addingPhase.value = true
 }
+
+/**
+ * Aperçu du titre affiché une fois le bloc créé — mime `Show.display_title`
+ * côté backend (2026-08-02) : le nom du spectacle n'est plus stocké en
+ * double dans le bloc, donc rien à relire tant qu'il n'existe pas encore.
+ */
+const phasePreviewTitle = computed(() => {
+  if (!phaseForm.value || !show.value) return ''
+  const label = typeMeta[phaseForm.value.event_type]?.label ?? phaseForm.value.event_type
+  const precision = phaseForm.value.title.trim()
+  return `${precision ? `${label} ${precision}` : label} — ${show.value.title}`
+})
+
+/**
+ * Même aperçu que `phasePreviewTitle`, pour le mode édition d'un bloc déjà
+ * créé (`fiche-edit-card`) — mêmes règles, sur `draft`/`show.parent_show_title`
+ * plutôt que `phaseForm`/`show.title`.
+ */
+const editPreviewTitle = computed(() => {
+  if (!isBlock.value || !draft.value || !show.value) return ''
+  const label = typeMeta[draft.value.event_type]?.label ?? draft.value.event_type
+  const precision = draft.value.title.trim()
+  return `${precision ? `${label} ${precision}` : label} — ${show.value.parent_show_title}`
+})
 
 function toLocalInput(date) {
   // `datetime-local` attend l'heure LOCALE : `toISOString()` renverrait UTC
@@ -462,7 +547,7 @@ const showAssignMateriel = ref(false)
 const showAssignTechnicien = ref(false)
 
 const showLabel = computed(() =>
-  show.value ? `${show.value.title} · ${dateTimeFmt.format(new Date(show.value.start_datetime))}` : '',
+  show.value ? `${show.value.display_title} · ${dateTimeFmt.format(new Date(show.value.start_datetime))}` : '',
 )
 
 async function onMaterielAssigned() {
@@ -503,13 +588,13 @@ async function onTechnicienAssigned(payload) {
         <template v-if="show.parent_show">
           <RouterLink :to="`/spectacles/${show.parent_show}`">{{ show.parent_show_title }}</RouterLink> /
         </template>
-        {{ show.title }}
+        {{ show.display_title }}
       </div>
 
       <div class="header">
         <div>
           <div class="header__top">
-            <h1 class="header__title">{{ show.title }}</h1>
+            <h1 class="header__title">{{ show.display_title }}</h1>
             <div class="header__type" :style="{ color: typeInfo.color, background: typeInfo.bg }">
               {{ typeInfo.label }}
             </div>
@@ -548,13 +633,19 @@ async function onTechnicienAssigned(payload) {
       <div v-if="editing" class="fiche-edit-card">
         <div class="fiche-grid">
           <label class="fiche-field fiche-field--wide">
-            <span class="fiche-label">Titre</span>
+            <!-- Un bloc n'a plus de nom complet à saisir (2026-08-02) : le
+                 nom du spectacle n'est plus dupliqué ici, seulement une
+                 précision facultative ajoutée après le type — voir
+                 `Show.display_title` côté backend et `editPreviewTitle`. -->
+            <span class="fiche-label">{{ isBlock ? 'Précision (optionnel)' : 'Titre' }}</span>
             <input
               v-model="draft.title"
               class="fiche-input"
+              :placeholder="isBlock ? 'ex. technique, costumes…' : ''"
               :class="{ 'fiche-input--error': fieldErrors.title }"
             />
             <span v-if="fieldErrors.title" class="fiche-error">{{ fieldErrors.title }}</span>
+            <span v-if="isBlock" class="fiche-hint">Aperçu : {{ editPreviewTitle }}</span>
           </label>
 
           <label class="fiche-field">
@@ -673,7 +764,7 @@ async function onTechnicienAssigned(payload) {
         <div>
           <div class="summary-label">Fenêtre effective</div>
           <div class="summary-value summary-value--accent">
-            {{ fmtTimeRange(show.effective_start, show.effective_end) }}
+            {{ fmtTimeRange(show.engagement_start, show.engagement_end) }}
           </div>
         </div>
         <div>
@@ -689,10 +780,14 @@ async function onTechnicienAssigned(payload) {
 
         <!-- Blocs rattachés, en ordre chronologique — et depuis le 2026-07-31,
              l'événement lui-même y figure aussi (`timelineEntries`), pas
-             seulement les blocs : l'horaire réellement mobilisé va du
-             premier bloc au dernier, pas seulement de la fenêtre effective
-             affichée à gauche, et situer les blocs par rapport à l'événement
-             se lit d'un coup d'œil sans remonter à « Horaire prévu ». -->
+             seulement les blocs : situer les blocs par rapport à l'événement
+             se lit d'un coup d'œil sans remonter à « Horaire prévu ». Depuis
+             le 2026-08-01, la « Fenêtre effective » affichée à gauche source
+             `engagement_start`/`engagement_end` (pas `effective_start`/`_end`)
+             et couvre donc déjà montage/démontage + buffer — mais PAS une
+             répétition rattachée, autonome (voir `Show.engagement_start` côté
+             backend) : cette liste peut donc encore déborder la fenêtre
+             affichée si une répétition est planifiée hors de ce créneau. -->
         <div class="summary-phases">
           <div class="summary-label">Blocs rattachés</div>
           <div
@@ -718,7 +813,7 @@ async function onTechnicienAssigned(payload) {
 
       <div v-if="confirming" class="fiche-confirm-backdrop" @click.self="cancelDelete">
         <div class="fiche-confirm">
-          <div class="fiche-confirm__title">Supprimer « {{ show.title }} » ?</div>
+          <div class="fiche-confirm__title">Supprimer « {{ show.display_title }} » ?</div>
           <p class="fiche-confirm__text">Cette action est définitive.</p>
           <template v-if="hasCascade">
             <p class="fiche-confirm__text">Seront supprimés en même temps :</p>
@@ -769,11 +864,19 @@ async function onTechnicienAssigned(payload) {
           </RouterLink>
         </div>
         <div class="row-list">
-          <div v-for="m in decoratedMaterials" :key="m.id" class="row">
+          <div
+            v-for="m in decoratedMaterials"
+            :key="m.id"
+            class="row row--compact"
+            :class="{ 'row--nested': m.nested }"
+          >
             <span class="row__dot" :style="{ background: m.catColor }" />
             <div class="row__body">
-              <div class="row__title">{{ m.material_name }}<span v-if="m.quantity > 1"> ×{{ m.quantity }}</span></div>
-              <div class="row__subtitle">{{ m.catLabel }}</div>
+              <div class="row__title">
+                {{ m.material_name }}
+                <span class="row__cat">· {{ m.catLabel }}</span>
+                <span v-if="m.quantity > 1" class="row__qty">({{ m.quantity }})</span>
+              </div>
             </div>
             <div v-if="m.conflict" class="row__conflict">CONFLIT</div>
             <div v-if="!inherited" class="row__remove" @click="removeMaterial(m.id)">✕</div>
@@ -878,8 +981,9 @@ async function onTechnicienAssigned(payload) {
         <div v-if="addingPhase" class="phase-form">
           <div class="fiche-grid">
             <label class="fiche-field fiche-field--wide">
-              <span class="fiche-label">Titre</span>
-              <input v-model="phaseForm.title" class="fiche-input" />
+              <span class="fiche-label">Précision (optionnel)</span>
+              <input v-model="phaseForm.title" class="fiche-input" placeholder="ex. technique, costumes…" />
+              <span class="fiche-hint">Aperçu : {{ phasePreviewTitle }}</span>
             </label>
             <label class="fiche-field">
               <span class="fiche-label">Type</span>
@@ -972,7 +1076,7 @@ async function onTechnicienAssigned(payload) {
 .hint {
   padding: 32px 40px;
   font: 500 13px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .hint--error {
@@ -981,11 +1085,11 @@ async function onTechnicienAssigned(payload) {
 
 .breadcrumb {
   font: 500 12px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .breadcrumb :deep(a) {
-  color: #a5b4fc;
+  color: var(--link);
   text-decoration: none;
 }
 
@@ -1014,7 +1118,7 @@ async function onTechnicienAssigned(payload) {
 
 .header__meta {
   font: 400 13px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
   margin-top: 6px;
 }
 
@@ -1065,22 +1169,22 @@ async function onTechnicienAssigned(payload) {
   font: 700 12px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: rgba(255, 255, 255, 0.65);
+  color: rgba(var(--fg-rgb), 0.65);
 }
 
 .card-action {
   font: 600 11.5px system-ui;
-  color: #a5b4fc;
+  color: var(--link);
   cursor: pointer;
 }
 
 .inherit-note {
   padding: 12px 16px;
   border-radius: 0 10px 0 10px;
-  background: rgba(155, 138, 239, 0.1);
-  border: 1px solid rgba(155, 138, 239, 0.25);
+  background: rgba(var(--accent-rgb), 0.1);
+  border: 1px solid rgba(var(--accent-rgb), 0.25);
   font: 400 12.5px/1.5 system-ui;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--fg-rgb), 0.7);
 }
 
 .phase-actions {
@@ -1107,7 +1211,7 @@ async function onTechnicienAssigned(payload) {
 .row__remove {
   flex: none;
   padding: 2px 8px;
-  color: rgba(255, 255, 255, 0.3);
+  color: rgba(var(--fg-rgb), 0.3);
   font: 600 13px system-ui;
   cursor: pointer;
 }
@@ -1119,7 +1223,7 @@ async function onTechnicienAssigned(payload) {
 .card-text {
   margin-top: 8px;
   font: 400 13px/1.6 system-ui;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(var(--fg-rgb), 0.7);
   white-space: pre-wrap;
 }
 
@@ -1133,12 +1237,12 @@ async function onTechnicienAssigned(payload) {
   font: 700 11px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--fg-rgb), 0.45);
 }
 
 .summary-value {
   font: 600 14px system-ui;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
   margin-top: 4px;
 }
 
@@ -1153,7 +1257,7 @@ async function onTechnicienAssigned(payload) {
   flex-direction: column;
   gap: 6px;
   padding-top: 14px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid rgba(var(--fg-rgb), 0.08);
 }
 
 .summary-phase {
@@ -1180,7 +1284,7 @@ async function onTechnicienAssigned(payload) {
 }
 
 .summary-phase--current {
-  background: rgba(155, 138, 239, 0.16);
+  background: rgba(var(--accent-rgb), 0.16);
 }
 
 .summary-phase__tag {
@@ -1197,7 +1301,7 @@ async function onTechnicienAssigned(payload) {
 .summary-phase__range {
   flex: none;
   font: 600 14px var(--font-mono);
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .summary-phase__title {
@@ -1207,7 +1311,7 @@ async function onTechnicienAssigned(payload) {
   text-overflow: ellipsis;
   white-space: nowrap;
   font: 400 13px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .row-list {
@@ -1222,15 +1326,15 @@ async function onTechnicienAssigned(payload) {
   gap: 12px;
   padding: 10px 12px;
   border-radius: var(--radius-notch-sm);
-  background: #1b1f25;
+  background: var(--bg-row);
 }
 
 /* Ligne de l'événement lui-même dans la chronologie « Montage, répétition,
    démontage » (2026-07-31) : pas un bloc, juste un repère — léger accent
    plutôt qu'un fond identique aux blocs, pour la distinguer d'un coup d'œil. */
 .row--event {
-  background: rgba(155, 138, 239, 0.08);
-  border: 1px solid rgba(155, 138, 239, 0.2);
+  background: rgba(var(--accent-rgb), 0.08);
+  border: 1px solid rgba(var(--accent-rgb), 0.2);
 }
 
 /* Ligne cliquable de la chronologie (2026-07-31, demande de Samuel) — toutes
@@ -1245,7 +1349,37 @@ async function onTechnicienAssigned(payload) {
    on est sur la fiche de l'événement lui-même. */
 .row--current {
   border-left: 3px solid var(--accent);
-  background: rgba(155, 138, 239, 0.14);
+  background: rgba(var(--accent-rgb), 0.14);
+}
+
+/* Matériel assigné (2026-08-01, demande de Samuel) : catégorie remontée à la
+   suite du titre plutôt qu'en sous-ligne (voir `.row__cat` ci-dessous), donc
+   la ligne tient sur une seule ligne de texte — le padding vertical est
+   réduit d'autant, sans toucher `.row` (partagé avec techniciens/blocs/
+   transports, qui gardent leur hauteur habituelle). */
+.row--compact {
+  padding: 6px 12px;
+}
+
+/* Composant de kit en retrait dans « Matériel assigné » (2026-08-02, demande
+   de Samuel) — même trait de raccordement que `.parcours-option--nested`
+   (Parcours Matériel) et `.kit-child` (inventaire) : indentation + tick
+   horizontal, sans toucher `.row`/`.row--compact` partagés avec les autres
+   listes de la fiche. */
+.row--nested {
+  position: relative;
+  margin-left: 18px;
+  border-left: 2px solid rgba(var(--accent-rgb), 0.25);
+}
+
+.row--nested::before {
+  content: '';
+  position: absolute;
+  left: -2px;
+  top: 50%;
+  width: 10px;
+  height: 2px;
+  background: rgba(var(--accent-rgb), 0.25);
 }
 
 .row__dot {
@@ -1274,17 +1408,32 @@ async function onTechnicienAssigned(payload) {
 
 .row__body--flex {
   font: 500 12.5px system-ui;
-  color: rgba(255, 255, 255, 0.75);
+  color: rgba(var(--fg-rgb), 0.75);
 }
 
 .row__title {
   font: 600 13px system-ui;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .row__subtitle {
   font: 400 11.5px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
+}
+
+/* Catégorie du matériel, à la suite du titre sur la même ligne (2026-08-01,
+   remplace l'ancienne sous-ligne `.row__subtitle`) — poids et couleur plus
+   discrets que le titre pour rester secondaire. */
+.row__cat {
+  font: 400 11.5px system-ui;
+  color: rgba(var(--fg-rgb), 0.5);
+}
+
+/* Quantité entre parenthèses, à la suite (2026-08-01, remplace le `×N`
+   accolé au titre). */
+.row__qty {
+  font: 600 12px system-ui;
+  color: rgba(var(--fg-rgb), 0.6);
 }
 
 .row__conflict {
@@ -1297,7 +1446,7 @@ async function onTechnicienAssigned(payload) {
 
 .row__remove {
   font: 700 12px system-ui;
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(var(--fg-rgb), 0.35);
   cursor: pointer;
   padding: 2px 6px;
   flex: none;
@@ -1306,20 +1455,20 @@ async function onTechnicienAssigned(payload) {
 .row__badge {
   font: 700 10px system-ui;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.55);
-  background: rgba(255, 255, 255, 0.08);
+  color: rgba(var(--fg-rgb), 0.55);
+  background: rgba(var(--fg-rgb), 0.08);
   padding: 2px 8px;
   border-radius: 0 6px 0 6px;
 }
 
 .row__time {
   font: 600 12px system-ui;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(var(--fg-rgb), 0.5);
 }
 
 .row-empty {
   font: 500 12.5px system-ui;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
   padding: 10px 12px;
 }
 

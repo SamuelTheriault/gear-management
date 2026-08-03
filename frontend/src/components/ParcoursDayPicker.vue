@@ -7,6 +7,12 @@
  *
  * Purement présentationnel — la logique (liste des jours, jour choisi,
  * navigation) vit dans `useParcours.js`, partagée par les deux vues.
+ *
+ * Depuis le 2026-08-02 (ajout du zoom), ce composant est posé à côté de
+ * `ZoomControls.vue` dans un conteneur commun `.parcours-toolbar` (classe
+ * globale, `style.css`) — c'est LUI qui porte désormais la séparation
+ * visuelle (bordure/marge basse) sur toute la largeur de la ligne, pas
+ * `.day-picker` qui ne couvrirait que sa propre portion.
  */
 defineProps({
   days: { type: Array, required: true },
@@ -47,9 +53,8 @@ const emit = defineEmits(['select', 'step'])
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-bottom: 10px;
-  margin-bottom: 6px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex: 1;
+  min-width: 220px;
 }
 
 .day-picker__nav {
@@ -57,9 +62,9 @@ const emit = defineEmits(['select', 'step'])
   width: 26px;
   height: 26px;
   border-radius: 0 6px 0 6px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.7);
+  background: rgba(var(--fg-rgb), 0.06);
+  border: 1px solid rgba(var(--fg-rgb), 0.12);
+  color: rgba(var(--fg-rgb), 0.7);
   font: 700 12px system-ui;
   cursor: pointer;
 }
@@ -81,15 +86,15 @@ const emit = defineEmits(['select', 'step'])
   padding: 5px 11px;
   border-radius: 0 6px 0 6px;
   font: 600 11.5px system-ui;
-  color: rgba(255, 255, 255, 0.55);
-  background: rgba(255, 255, 255, 0.05);
+  color: rgba(var(--fg-rgb), 0.55);
+  background: rgba(var(--fg-rgb), 0.05);
   cursor: pointer;
   white-space: nowrap;
   text-transform: capitalize;
 }
 
 .day-picker__chip--active {
-  background: rgba(155, 138, 239, 0.22);
+  background: rgba(var(--accent-rgb), 0.22);
   color: var(--accent);
   font-weight: 700;
 }

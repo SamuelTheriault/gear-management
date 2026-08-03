@@ -392,7 +392,7 @@ def validate_transport_window(show, transport_type, origin_venue, destination_ve
     if departure_show is not None and scheduled_datetime < departure_show.effective_end:
         return {
             'detail': (
-                f"Ce déplacement est prévu avant la fin de « {departure_show.title} » "
+                f"Ce déplacement est prévu avant la fin de « {departure_show.display_title} » "
                 f"({departure_show.effective_end:%Y-%m-%d %H:%M}, buffer inclus) — le matériel "
                 "n'est pas encore disponible à ce moment."
             ),
@@ -402,7 +402,7 @@ def validate_transport_window(show, transport_type, origin_venue, destination_ve
     if arrival_show is not None and transport_end > arrival_show.effective_start:
         return {
             'detail': (
-                f"Ce déplacement se termine après le début de « {arrival_show.title} » "
+                f"Ce déplacement se termine après le début de « {arrival_show.display_title} » "
                 f"({arrival_show.effective_start:%Y-%m-%d %H:%M}, buffer inclus) — le matériel "
                 "n'arriverait pas à temps."
             ),
@@ -414,14 +414,22 @@ def validate_transport_window(show, transport_type, origin_venue, destination_ve
 
 def serialize_reference_show(show):
     """Représentation compacte d'un spectacle de référence (départ/arrivée
-    d'un déplacement) — `None` si non applicable (ex. entrepôt)."""
+    d'un déplacement) — `None` si non applicable (ex. entrepôt).
+
+    `engagement_start`/`engagement_end` sont inclus en plus de
+    `effective_start`/`effective_end` : la fiche transport affiche, côté
+    arrivée, le début du bloc complet (montage compris) plutôt que le seul
+    début de l'événement — voir la note du 2026-08-02 dans CLAUDE.md.
+    """
     if show is None:
         return None
     return {
         'id': show.id,
-        'title': show.title,
+        'title': show.display_title,
         'effective_start': show.effective_start,
         'effective_end': show.effective_end,
+        'engagement_start': show.engagement_start,
+        'engagement_end': show.engagement_end,
     }
 
 
@@ -432,7 +440,7 @@ def serialize_material_conflict(show_material):
         'type': 'show_material',
         'show_material_id': sm.id,
         'show_id': sm.show_id,
-        'show_title': sm.show.title,
+        'show_title': sm.show.display_title,
         'show_start': sm.show.start_datetime,
         'show_end': sm.show.end_datetime,
         'material_id': sm.material_id,
@@ -445,7 +453,7 @@ def serialize_venue_conflict(show):
     return {
         'type': 'show',
         'show_id': show.id,
-        'show_title': show.title,
+        'show_title': show.display_title,
         'show_start': show.start_datetime,
         'show_end': show.end_datetime,
         'venue_id': show.venue_id,
@@ -591,7 +599,7 @@ def serialize_technician_conflict(obj):
             'type': 'transport',
             'transport_id': transport.id,
             'show_id': transport.show_id,
-            'show_title': transport.show.title,
+            'show_title': transport.show.display_title,
             'transport_type': transport.transport_type,
             'scheduled_datetime': transport.scheduled_datetime,
             'estimated_duration_minutes': transport.estimated_duration_minutes,
@@ -604,7 +612,7 @@ def serialize_technician_conflict(obj):
         'type': 'show_technician',
         'show_technician_id': st.id,
         'show_id': st.show_id,
-        'show_title': st.show.title,
+        'show_title': st.show.display_title,
         'show_start': st.show.start_datetime,
         'show_end': st.show.end_datetime,
         'technician_id': st.technician_id,

@@ -23,6 +23,7 @@ vérification.
 
 from datetime import timedelta
 
+from dj_rest_auth.serializers import UserDetailsSerializer
 from rest_framework import serializers
 
 from .conflicts import (
@@ -42,6 +43,7 @@ from .models import (
     Material,
     MaterialCategory,
     Project,
+    ProjectMembership,
     Settings,
     Show,
     ShowMaterial,
@@ -96,6 +98,59 @@ class UserSerializer(serializers.ModelSerializer):
         read_only_fields = ['created_at']
 
 
+class CurrentUserDetailsSerializer(UserDetailsSerializer):
+    """Étend le `/api/auth/user/` de dj-rest-auth (session courante) avec
+    `is_staff_global` et l'id du profil `inventory.User` lié (2026-08-02).
+
+    Sans ça, le frontend (voir `useAuth.js`) n'a aucun moyen de savoir si le
+    compte connecté a l'accès de dépannage plateforme (`HasProjectAccess`,
+    `permissions.py`) — nécessaire pour décider d'afficher les contrôles de
+    gestion des accès d'un projet (inviter/retirer/changer un rôle) même sur
+    un projet où ce compte n'a pas de `ProjectMembership` `owner`. `False`
+    par défaut si le compte Django n'a pas (encore) de profil applicatif
+    (`inventory_profile` absent — ex. superutilisateur créé hors du flux
+    Google, voir `permissions.resolve_inventory_user`).
+    """
+
+    is_staff_global = serializers.SerializerMethodField()
+    inventory_user_id = serializers.SerializerMethodField()
+
+    class Meta(UserDetailsSerializer.Meta):
+        fields = (*UserDetailsSerializer.Meta.fields, 'is_staff_global', 'inventory_user_id')
+
+    def get_is_staff_global(self, obj):
+        profile = getattr(obj, 'inventory_profile', None)
+        return bool(profile and profile.is_staff_global)
+
+    def get_inventory_user_id(self, obj):
+        profile = getattr(obj, 'inventory_profile', None)
+        return profile.id if profile else None
+
+
+class ProjectMembershipSerializer(serializers.ModelSerializer):
+    """Sérialise les accès par projet (voir `ProjectMembership`, models.py).
+
+    Lecture seule pour `user`/`status`/`invited_by` : la création (invitation
+    par email) et la modification (rôle, retrait) passent par des actions
+    dédiées de `ProjectMembershipViewSet` qui ne s'appuient pas sur
+    `.create()`/`.update()` de ce serializer (résolution d'un `User` par
+    email, garde du dernier owner — voir `views.py`). Ce serializer ne sert
+    donc qu'à représenter l'état d'un membership en lecture.
+    """
+
+    user_email = serializers.CharField(source='user.email', read_only=True)
+    user_name = serializers.CharField(source='user.name', read_only=True)
+    invited_by_email = serializers.CharField(source='invited_by.email', read_only=True, default=None)
+
+    class Meta:
+        model = ProjectMembership
+        fields = [
+            'id', 'project', 'user', 'user_email', 'user_name', 'role',
+            'status', 'invited_by', 'invited_by_email', 'created_at',
+        ]
+        read_only_fields = ['user', 'status', 'invited_by', 'created_at']
+
+
 class VenueSerializer(serializers.ModelSerializer):
     """Sérialise les lieux (salles, théâtres, sites de représentation, entrepôts), isolés par projet."""
 
@@ -105,7 +160,7 @@ class VenueSerializer(serializers.ModelSerializer):
         model = Venue
         fields = [
             'id', 'project', 'project_name', 'name', 'code', 'address', 'contact_name', 'contact_info', 'notes',
-            'is_storage', 'latitude', 'longitude',
+            'is_storage', 'latitude', 'longitude', 'color',
         ]
 
     def validate_code(self, value):
@@ -196,7 +251,7 @@ class MaterialSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'project', 'project_name', 'name', 'description',
             'category', 'category_name', 'category_color',
-            'parent_material', 'parent_material_name',
+            'parent_material', 'parent_material_name', 'is_kit_parent',
             'venue', 'venue_name',
             'ownership_status', 'quantity', 'is_active', 'notes', 'component_ids',
         ]
@@ -209,6 +264,16 @@ class MaterialSerializer(serializers.ModelSerializer):
                 "Le matériel parent doit avoir une quantité de 1 — un kit ne peut "
                 "pas lui-même être en plusieurs exemplaires."
             )
+        # `is_kit_parent` (2026-08-02, demande de Samuel) : un matériel doit être
+        # explicitement activé comme parent possible avant qu'un autre puisse le
+        # choisir — limite ce que montre le sélecteur « Fait partie du kit » côté
+        # frontend, et bloque ici toute tentative de contourner ce filtre par un
+        # appel API direct.
+        if value is not None and not value.is_kit_parent:
+            raise serializers.ValidationError(
+                "Ce matériel n'est pas activé comme parent de kit — coche "
+                "« Peut être un parent (kit) » sur sa fiche d'abord."
+            )
         return value
 
     def validate(self, attrs):
@@ -219,6 +284,7 @@ class MaterialSerializer(serializers.ModelSerializer):
         # quantity=1). Décision prise avec Samuel le 2026-07-19.
         quantity = attrs.get('quantity', getattr(self.instance, 'quantity', 1))
         parent_material = attrs.get('parent_material', getattr(self.instance, 'parent_material', None))
+        is_kit_parent = attrs.get('is_kit_parent', getattr(self.instance, 'is_kit_parent', False))
 
         if quantity > 1:
             if parent_material is not None:
@@ -233,6 +299,13 @@ class MaterialSerializer(serializers.ModelSerializer):
                     'quantity': (
                         "Un matériel utilisé comme kit (qui a des composants) doit "
                         "avoir une quantité de 1."
+                    ),
+                })
+            if is_kit_parent:
+                raise serializers.ValidationError({
+                    'is_kit_parent': (
+                        "Un matériel en plusieurs exemplaires ne peut pas être un "
+                        "parent de kit — la quantité doit être 1."
                     ),
                 })
 
@@ -255,6 +328,58 @@ class MaterialSerializer(serializers.ModelSerializer):
                 'category': "La catégorie doit appartenir au même projet.",
             })
         return attrs
+
+    def create(self, validated_data):
+        instance = super().create(validated_data)
+        if instance.parent_material_id:
+            _mirror_parent_show_material_assignments(instance)
+        return instance
+
+    def update(self, instance, validated_data):
+        # On ne mire les assignations que quand `parent_material` CHANGE vers
+        # une nouvelle valeur — pas à chaque PATCH d'un composant déjà
+        # rattaché (sinon retirer une assignation puis re-sauvegarder la
+        # fiche la ferait réapparaître).
+        previous_parent_id = instance.parent_material_id
+        instance = super().update(instance, validated_data)
+        if instance.parent_material_id and instance.parent_material_id != previous_parent_id:
+            _mirror_parent_show_material_assignments(instance)
+        return instance
+
+
+def _mirror_parent_show_material_assignments(material):
+    """Copie les assignations spectacle du parent sur un composant qui vient de
+    lui être rattaché (création avec `parent_material` renseigné, ou
+    rattachement ultérieur via le sélecteur « Fait partie du kit »).
+
+    Décision prise avec Samuel le 2026-08-02 : si le kit est déjà assigné à un
+    ou plusieurs spectacles au moment où on lui ajoute un composant, ce
+    dernier doit suivre par défaut plutôt que de rester invisible tant que
+    personne n'y pense — assignations complètes (pas seulement la position
+    physique), toujours à quantity=1 (un composant reste une unité unique,
+    voir Material.quantity). Ces `ShowMaterial` sont des lignes normales,
+    éditables/retirables ensuite exactement comme n'importe quelle
+    assignation existante (voir `SpectacleDetailView.vue`) — rien ne les
+    distingue après coup. Passe par l'ORM directement (pas
+    `ShowMaterialSerializer`) : les conflits que ça pourrait répliquer sont
+    déjà ceux du parent (accepté ou forcé), pas de nouveaux — ils restent
+    visibles et forçables comme d'habitude sur l'écran Conflits si le parent
+    avait lui-même été forcé sur un chevauchement.
+    """
+    already_assigned_show_ids = set(
+        ShowMaterial.objects.filter(material=material).values_list('show_id', flat=True)
+    )
+    parent_assignments = ShowMaterial.objects.filter(material_id=material.parent_material_id)
+    for assignment in parent_assignments:
+        if assignment.show_id in already_assigned_show_ids:
+            continue
+        ShowMaterial.objects.create(
+            show_id=assignment.show_id,
+            material=material,
+            quantity=1,
+            is_rental=assignment.is_rental,
+            rental_vendor=assignment.rental_vendor,
+        )
 
 
 class ShowSerializer(serializers.ModelSerializer):
@@ -279,6 +404,20 @@ class ShowSerializer(serializers.ModelSerializer):
     venue_name = serializers.CharField(source='venue.name', read_only=True)
     effective_start = serializers.DateTimeField(read_only=True)
     effective_end = serializers.DateTimeField(read_only=True)
+    # Fenêtre d'ENGAGEMENT (2026-08-01) : contrairement à `effective_start`/
+    # `effective_end` (le seul créneau de cet événement, buffers compris),
+    # celle-ci s'étend au montage/démontage rattachés — voir
+    # `Show.engagement_start`. Exposée pour que la fiche affiche la période
+    # réellement mobilisée plutôt que le seul créneau de l'événement ; ne
+    # remplace PAS effective_start/end, qui restent la référence pour le
+    # conflit de LIEU (`get_venue_conflicts`).
+    engagement_start = serializers.DateTimeField(read_only=True)
+    engagement_end = serializers.DateTimeField(read_only=True)
+    # Titre affiché (2026-08-02) : dynamique pour un bloc rattaché — voir
+    # `Show.display_title`. `title`, lui, reste modifiable (nom complet pour
+    # un événement, précision optionnelle pour un bloc) mais n'est plus ce
+    # qu'il faut afficher tel quel dès qu'un bloc est en jeu.
+    display_title = serializers.CharField(read_only=True)
     # Décompte de ce qui disparaîtrait avec le spectacle (2026-07-30) :
     # supprimer un `Show` supprime en cascade ses assignations ET ses
     # déplacements (FK en CASCADE). Le frontend l'annonce dans sa
@@ -293,10 +432,11 @@ class ShowSerializer(serializers.ModelSerializer):
     class Meta:
         model = Show
         fields = [
-            'id', 'project', 'project_name', 'title', 'venue', 'venue_name', 'event_type',
-            'start_datetime', 'end_datetime',
+            'id', 'project', 'project_name', 'title', 'display_title', 'venue', 'venue_name',
+            'event_type', 'start_datetime', 'end_datetime',
             'buffer_before_minutes', 'buffer_after_minutes',
-            'notes', 'effective_start', 'effective_end', 'deletion_impact',
+            'notes', 'effective_start', 'effective_end',
+            'engagement_start', 'engagement_end', 'deletion_impact',
             'parent_show', 'parent_show_title', 'phases', 'force',
         ]
 
@@ -311,7 +451,9 @@ class ShowSerializer(serializers.ModelSerializer):
         return [
             {
                 'id': phase.id,
-                'title': phase.title,
+                # Titre dynamique (voir `Show.display_title`) — cette liste
+                # n'est que de l'affichage en lecture seule, pas d'édition.
+                'title': phase.display_title,
                 'event_type': phase.event_type,
                 'start_datetime': phase.start_datetime,
                 'end_datetime': phase.end_datetime,
@@ -366,6 +508,20 @@ class ShowSerializer(serializers.ModelSerializer):
                         "Cet événement a déjà des blocs rattachés : il ne peut pas "
                         "devenir lui-même un bloc."
                     ),
+                })
+
+        # `title` obligatoire seulement pour un événement top-level (2026-08-02) :
+        # `Show.title` devient `blank=True` en base pour permettre à un bloc de
+        # n'en porter aucun — voir `Show.display_title`, qui le calcule depuis
+        # le titre COURANT de l'événement plutôt que d'en garder une copie
+        # figée. Le champ modèle seul (`blank=True`) rendrait `title`
+        # optionnel PARTOUT ; cette validation le garde requis là où il reste
+        # le nom réel.
+        if parent is None:
+            title = attrs.get('title', getattr(self.instance, 'title', None))
+            if not (title or '').strip():
+                raise serializers.ValidationError({
+                    'title': "Le titre est requis pour un événement (facultatif seulement sur un bloc rattaché).",
                 })
 
         start = attrs.get('start_datetime', getattr(self.instance, 'start_datetime', None))
@@ -475,7 +631,10 @@ class ShowMaterialSerializer(serializers.ModelSerializer):
     """Sérialise l'assignation de matériel à un spectacle, avec validation de conflit bloquante (voir `force`)."""
 
     force = serializers.BooleanField(write_only=True, required=False, default=False)
-    show_title = serializers.CharField(source='show.title', read_only=True)
+    # `show` peut être une répétition rattachée, autonome (voir `validate`
+    # ci-dessous) — `display_title` plutôt que `title` pour ne pas afficher
+    # une précision de bloc sans son contexte (2026-08-02, voir `Show.display_title`).
+    show_title = serializers.CharField(source='show.display_title', read_only=True)
     material_name = serializers.CharField(source='material.name', read_only=True)
     # Catégorie du matériel, dupliquée ici en lecture seule pour que le frontend puisse
     # colorer l'assignation sans requête supplémentaire (voir `Material.category` — a
@@ -572,7 +731,8 @@ class ShowTechnicianSerializer(serializers.ModelSerializer):
     """Sérialise l'assignation de techniciens à un spectacle, avec validation de conflit bloquante (voir `force`)."""
 
     force = serializers.BooleanField(write_only=True, required=False, default=False)
-    show_title = serializers.CharField(source='show.title', read_only=True)
+    # Même raison que `ShowMaterialSerializer.show_title` (2026-08-02).
+    show_title = serializers.CharField(source='show.display_title', read_only=True)
     technician_name = serializers.CharField(source='technician.name', read_only=True)
 
     class Meta:
@@ -675,7 +835,9 @@ class TransportSerializer(serializers.ModelSerializer):
     technicians = TransportTechnicianSerializer(
         many=True, source='transport_technicians', required=False,
     )
-    show_title = serializers.CharField(source='show.title', read_only=True)
+    # `show` (« desservi » par ce transport) peut être n'importe quel Show, blocs
+    # compris — `display_title` plutôt que `title` (2026-08-02, voir `Show.display_title`).
+    show_title = serializers.CharField(source='show.display_title', read_only=True)
     origin_venue_name = serializers.CharField(source='origin_venue.name', read_only=True)
     destination_venue_name = serializers.CharField(source='destination_venue.name', read_only=True)
     # Code court (voir Venue.code) pour un affichage compact départ/arrivée
@@ -954,11 +1116,51 @@ class TransportSerializer(serializers.ModelSerializer):
 
 
 class SettingsSerializer(serializers.ModelSerializer):
-    """Sérialise le singleton `Settings` (voir `views.SettingsView` — pas de liste ni de création)."""
+    """Sérialise le singleton `Settings` (voir `views.SettingsView` — pas de liste ni de création).
+
+    `event_type_order` est stocké en CSV côté modèle mais exposé comme une
+    LISTE : c'est ce que le frontend manipule (glisser-déposer des lignes de
+    réglages, puis puces de filtre dans le même ordre). La conversion vit ici
+    plutôt que côté Vue, pour que la validation — pas de type inconnu, pas de
+    doublon — soit faite une seule fois, au bon endroit.
+    """
+
+    event_type_order = serializers.ListField(
+        child=serializers.ChoiceField(choices=Settings.EVENT_TYPE_ORDER_DEFAULT),
+        required=False,
+        allow_empty=False,
+    )
 
     class Meta:
         model = Settings
         fields = [
             'default_buffer_before_minutes', 'default_buffer_after_minutes',
             'default_transport_duration_minutes', 'date_format', 'time_format',
+            'transport_color', 'event_color_rehearsal', 'event_color_performance',
+            'event_color_storage', 'event_color_setup', 'event_color_teardown',
+            'event_type_order',
         ]
+
+    def validate_event_type_order(self, value):
+        """Refuse les doublons — un type ne peut pas occuper deux rangs.
+
+        Une liste INCOMPLÈTE est acceptée : `Settings.event_type_order_list`
+        rajoute les manquants à leur place canonique à la lecture. C'est
+        volontaire, pour qu'un client qui ignore un futur 7e type ne l'efface
+        pas en enregistrant l'ordre des six qu'il connaît.
+        """
+        if len(set(value)) != len(value):
+            raise serializers.ValidationError("Un même type ne peut pas apparaître deux fois.")
+        return value
+
+    def to_representation(self, instance):
+        """Renvoie l'ordre complet et assaini, jamais la chaîne CSV brute."""
+        data = super().to_representation(instance)
+        data['event_type_order'] = instance.event_type_order_list
+        return data
+
+    def update(self, instance, validated_data):
+        ordre = validated_data.pop('event_type_order', None)
+        if ordre is not None:
+            instance.event_type_order = ','.join(ordre)
+        return super().update(instance, validated_data)

@@ -10,6 +10,15 @@
       rel="stylesheet"
     />
     <title>RégiStock</title>
+    <script>
+      // Anti-flash (2026-08-02) : lit la préférence de thème AVANT le premier
+      // rendu Vue, pour ne jamais afficher un sombre-qui-devient-clair (ou
+      // l'inverse) au chargement — voir useTheme.js, même clé localStorage.
+      try {
+        var t = localStorage.getItem('registock-theme')
+        if (t === 'light') document.documentElement.setAttribute('data-theme', 'light')
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="app"></div>

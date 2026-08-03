@@ -20,11 +20,76 @@
      `LoginView.vue`, identique au pixel près) — pas un fond de carte, mais
      la même teinte, donc la même variable. */
   --accent: #d0c8f0;
+  --accent-rgb: 155, 138, 239;
+  --link: #a5b4fc;
+  --bg-page: #0b0d10;
   --bg-card: #161a1f;
+  --bg-row: #1b1f25;
+  --bg-deep: #0e1013;
   --border-card: rgba(255, 255, 255, 0.07);
   --radius-notch-lg: 0 12px 0 12px;
   --radius-notch-sm: 0 8px 0 8px;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  /* Bloc de transport confirmé (Dashboard « Cette semaine » et transit du
+     Parcours Matériel, 2026-08-02, demande de Samuel) — fuchsia plutôt que
+     `--accent` (mauve), qui se confondait avec certaines couleurs de lieu du
+     Parcours (même famille de teinte, ex. Salon 58). Volontairement fixe
+     entre les deux thèmes, même logique que les couleurs de statut/
+     catégorie ci-dessous : un transport reste identifiable partout dans
+     l'app, peu importe le thème ou l'écran. */
+  --transport: oklch(0.64 0.21 340);
+
+  /* Couleurs des types de spectacle/bloc (2026-08-02, suite, demande de
+     Samuel : personnalisables depuis Réglages, comme --transport ci-dessus).
+     Valeurs de repli STATIQUES ici, identiques aux défauts de `Settings`
+     (backend/inventory/models.py) — `useEventColors.js` les écrase par
+     `setProperty()` une fois le singleton chargé ; ce repli évite juste un
+     flash de var manquante pendant ce court instant. Ne pas dupliquer les
+     valeurs ailleurs : `constants/eventTypeMeta.js` référence ces variables
+     par nom, jamais par valeur. */
+  --event-rehearsal: oklch(0.8 0.13 85);
+  --event-performance: oklch(0.75 0.13 320);
+  --event-storage: rgba(var(--fg-rgb), 0.6);
+  --event-setup: oklch(0.75 0.13 165);
+  --event-teardown: oklch(0.7 0.11 255);
+
+  /* -------------------------------------------------------------------------
+     Texte/bordures « sur fond sombre » (2026-08-02, ajout du thème clair,
+     demande de Samuel). Toute la palette de texte de l'app est un seul blanc
+     à opacité variable (`rgba(255, 255, 255, .05)` à `.85` selon le rôle) —
+     jamais une couleur de texte distincte par rôle. Plutôt que des dizaines
+     de tokens par opacité, UNE seule variable porte le triplet RGB
+     (`--fg-rgb`) ; chaque `rgba(255, 255, 255, X)` du code devient
+     `rgba(var(--fg-rgb), X)`, l'opacité d'origine ne bouge pas. Le thème
+     clair n'a donc qu'à réassigner ce triplet vers un texte sombre pour que
+     toute la hiérarchie d'opacités (déjà éprouvée) continue de fonctionner
+     telle quelle sur fond clair. */
+  --fg-rgb: 255, 255, 255;
+}
+
+/* -----------------------------------------------------------------------
+   Thème clair (2026-08-02) — activé en posant `data-theme="light"` sur
+   `<html>` (voir `useTheme.js` ; script anti-flash dans `index.html` qui lit
+   la préférence AVANT le premier rendu). Ne touche QUE les tokens
+   structurels ci-dessus (fonds/texte/bordures/accent/liens) — les couleurs
+   de statut/catégorie (conflits, types de spectacle, catégories de
+   matériel, badges de transport) restent en `oklch(...)` codées en dur,
+   inchangées entre les deux thèmes pour cette première version. Certaines
+   pourraient perdre en lisibilité sur fond clair (pensées pour contraster
+   sur fond sombre) — à ajuster au cas par cas une fois vu en conditions
+   réelles plutôt que deviné à l'aveugle ici.
+   ------------------------------------------------------------------------ */
+:root[data-theme='light'] {
+  color-scheme: light;
+  --accent: #6d4fd6;
+  --accent-rgb: 109, 79, 214;
+  --link: #4338ca;
+  --bg-page: #eef0f3;
+  --bg-card: #ffffff;
+  --bg-row: #f3f4f7;
+  --bg-deep: #eceef2;
+  --border-card: rgba(11, 13, 16, 0.1);
+  --fg-rgb: 15, 18, 22;
 }
 
 *,
@@ -35,6 +100,7 @@
 
 body {
   margin: 0;
+  background: var(--bg-page);
 }
 
 #app {
@@ -61,8 +127,8 @@ body {
 
 .fiche-btn {
   border: 0;
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.75);
+  background: rgba(var(--fg-rgb), 0.08);
+  color: rgba(var(--fg-rgb), 0.75);
   font: 600 11.5px system-ui;
   padding: 8px 14px;
   border-radius: var(--radius-notch-sm);
@@ -123,7 +189,7 @@ body {
   font: 700 11px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(var(--fg-rgb), 0.45);
 }
 
 .fiche-input {
@@ -131,10 +197,10 @@ body {
   width: 100%;
   padding: 9px 12px;
   border-radius: var(--radius-notch-sm);
-  background: #1b1f25;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--bg-row);
+  border: 1px solid rgba(var(--fg-rgb), 0.12);
   font: 500 13.5px system-ui;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .fiche-input--code {
@@ -157,6 +223,30 @@ body {
   border-color: oklch(0.6 0.15 35);
 }
 
+/* Case à cocher d'un fiche-field (ex. « Peut être un parent (kit) »,
+   2026-08-02) — même hauteur/police qu'un .fiche-input pour aligner la
+   colonne, sans reprendre son fond/sa bordure. */
+.fiche-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 0;
+  font: 500 13px system-ui;
+  color: rgb(var(--fg-rgb));
+  cursor: pointer;
+}
+
+.fiche-checkbox input[type='checkbox'] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.fiche-checkbox input[type='checkbox']:disabled {
+  cursor: not-allowed;
+}
+
 .fiche-error {
   font: 500 11.5px system-ui;
   color: oklch(0.78 0.16 35);
@@ -164,7 +254,7 @@ body {
 
 .fiche-hint {
   font: 500 11.5px system-ui;
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(var(--fg-rgb), 0.35);
 }
 
 /* Zone de suppression, en bas du formulaire d'édition et séparée du reste :
@@ -181,7 +271,7 @@ body {
 
 .fiche-danger__hint {
   font: 400 11.5px system-ui;
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(var(--fg-rgb), 0.35);
   flex: 1;
   min-width: 180px;
 }
@@ -201,7 +291,7 @@ body {
   width: 100%;
   max-width: 440px;
   background: var(--bg-card);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(var(--fg-rgb), 0.12);
   border-radius: var(--radius-notch-lg);
   padding: 20px;
   display: flex;
@@ -211,13 +301,13 @@ body {
 
 .fiche-confirm__title {
   font: 700 15px var(--font-mono);
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .fiche-confirm__text {
   margin: 0;
   font: 400 13px/1.5 system-ui;
-  color: rgba(255, 255, 255, 0.65);
+  color: rgba(var(--fg-rgb), 0.65);
 }
 
 .fiche-confirm__list {
@@ -263,14 +353,14 @@ body {
   font: 700 27px/1.2 var(--font-mono);
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .header__title {
   margin: 0;
   font: 700 27px/1.2 var(--font-mono);
   letter-spacing: 0.04em;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .chip {
@@ -279,14 +369,52 @@ body {
   font: 600 12px system-ui;
   cursor: pointer;
   background: transparent;
-  color: rgba(255, 255, 255, 0.55);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(var(--fg-rgb), 0.55);
+  border: 1px solid rgba(var(--fg-rgb), 0.12);
 }
 
 .chip--active {
   background: rgba(155, 138, 239, 0.18);
   color: var(--accent);
   border-color: rgba(155, 138, 239, 0.4);
+}
+
+/* Contrôles de zoom (2026-08-02, demande de Samuel) — partagés par
+   `ZoomControls.vue`, utilisé sur le Tableau de bord et les deux écrans
+   Parcours. `.zoom-btn--reset` est plus large (libellé complet) que les
+   boutons +/-, volontairement carrés et compacts. */
+.zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.zoom-btn {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 0 6px 0 6px;
+  border: 1px solid var(--border-card);
+  background: rgba(var(--fg-rgb), 0.04);
+  color: rgba(var(--fg-rgb), 0.7);
+  font: 600 13px system-ui;
+  cursor: pointer;
+}
+
+.zoom-btn:hover:not(:disabled) {
+  background: rgba(155, 138, 239, 0.16);
+  color: var(--accent);
+  border-color: rgba(155, 138, 239, 0.4);
+}
+
+.zoom-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.zoom-btn--reset {
+  padding: 0 12px;
+  font: 600 11px system-ui;
 }
 
 /* Fond assombri commun à toutes les modales d'assignation/suppression de
@@ -327,7 +455,7 @@ body {
 
 .add-form {
   background: var(--bg-card);
-  border: 1px dashed rgba(255, 255, 255, 0.15);
+  border: 1px dashed rgba(var(--fg-rgb), 0.15);
   border-radius: var(--radius-notch-lg);
   padding: 14px 16px;
   display: flex;
@@ -339,7 +467,7 @@ body {
   font: 700 10.5px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .add-form__row {
@@ -397,7 +525,7 @@ body {
   font: 700 9.5px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .add-form__input {
@@ -405,10 +533,10 @@ body {
   box-sizing: border-box;
   padding: 10px 12px;
   border-radius: var(--radius-notch-sm);
-  background: #1b1f25;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--bg-row);
+  border: 1px solid rgba(var(--fg-rgb), 0.1);
   font: 500 13px system-ui;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
 }
 
 .add-form__input--code {
@@ -432,8 +560,8 @@ body {
 }
 
 .add-form__submit--disabled {
-  color: rgba(255, 255, 255, 0.35);
-  background: rgba(255, 255, 255, 0.08);
+  color: rgba(var(--fg-rgb), 0.35);
+  background: rgba(var(--fg-rgb), 0.08);
   cursor: not-allowed;
 }
 
@@ -500,7 +628,7 @@ body {
   align-items: center;
   gap: 8px;
   padding-bottom: 6px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(var(--fg-rgb), 0.06);
 }
 
 .parcours-picker__title {
@@ -508,12 +636,12 @@ body {
   font: 700 10.5px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(var(--fg-rgb), 0.4);
 }
 
 .parcours-picker__link {
   font: 600 10.5px system-ui;
-  color: #a5b4fc;
+  color: var(--link);
   cursor: pointer;
   background: none;
   border: 0;
@@ -534,7 +662,7 @@ body {
   height: 16px;
   flex: none;
   border-radius: 0 4px 0 4px;
-  border: 1.5px solid rgba(255, 255, 255, 0.3);
+  border: 1.5px solid rgba(var(--fg-rgb), 0.3);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -551,7 +679,7 @@ body {
   flex: 1;
   min-width: 0;
   font: 500 12.5px system-ui;
-  color: rgba(255, 255, 255, 0.8);
+  color: rgba(var(--fg-rgb), 0.8);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -576,11 +704,78 @@ body {
      la première ligne. */
 }
 
+/* Ligne commune au sélecteur de journée et aux contrôles de zoom
+   (2026-08-02) — porte la séparation visuelle (bordure basse) que
+   `.day-picker` portait seul avant l'ajout du zoom, désormais sur toute la
+   largeur puisque deux composants se partagent la ligne. */
+.parcours-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-bottom: 10px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid rgba(var(--fg-rgb), 0.06);
+}
+
+/* Étiquette + zone défilante (2026-08-02, ajout du défilement horizontal
+   sous zoom, demande de Samuel) : avant, chaque ligne était `.parcours-row`
+   (étiquette + piste dans un même flex row), et l'axe compensait la largeur
+   de l'étiquette par `margin-left: 150px`. Maintenant l'étiquette et la
+   piste sont dans deux COLONNES parallèles — `.parcours-labels` (fixe, ne
+   défile jamais) et `.parcours-scroll` (un seul conteneur `overflow-x:
+   auto` pour l'axe ET toutes les pistes, qui défilent donc ensemble comme
+   un seul bloc) — pour que le zoom puisse élargir `.parcours-scroll__content`
+   sans étirer l'étiquette. `.parcours-labels__spacer` compense la hauteur de
+   l'axe (aucune étiquette ne lui correspond) ; le `gap` des deux colonnes
+   doit rester identique pour que les lignes s'alignent visuellement. */
+.parcours-timeline {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+}
+
+.parcours-labels {
+  width: 150px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.parcours-labels__spacer {
+  height: 18px;
+}
+
+.parcours-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  /* `overflow-y: hidden` explicite (2026-08-02, bug signalé par Samuel) —
+     sans lui, `overflow-x: auto` fait passer `overflow-y` à `auto` aussi
+     (règle CSS standard), ce qui transforme ce conteneur en une DEUXIÈME
+     zone de défilement vertical, indépendante de la page et de
+     `.parcours-labels` (simple `<div>`, pas un conteneur de scroll) : la
+     molette/le trackpad au-dessus des pistes se faisait alors capter ici au
+     lieu de faire défiler la page — les noms de matériel/technicien à
+     gauche restaient immobiles pendant que les pistes bougeaient (ou
+     l'inverse). En figeant `overflow-y` à `hidden`, seul le défilement
+     horizontal reste local à cette colonne ; le défilement vertical
+     retombe sur la page, qui fait bouger étiquettes et pistes ensemble
+     (siblings du même flux normal dans `.parcours-timeline`). */
+  overflow-y: hidden;
+}
+
+.parcours-scroll__content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 420px;
+}
+
 .parcours-axis {
   position: relative;
   height: 18px;
-  margin-left: 150px;
-  min-width: 420px;
 }
 
 /* Lignes de référence verticales dans chaque piste, alignées sur l'axe
@@ -591,7 +786,7 @@ body {
   top: 0;
   bottom: 0;
   width: 1px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--fg-rgb), 0.06);
 }
 
 .parcours-axis__tick {
@@ -599,20 +794,13 @@ body {
   top: 0;
   transform: translateX(-50%);
   font: 500 10px var(--font-mono);
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(var(--fg-rgb), 0.35);
   white-space: nowrap;
 }
 
-.parcours-row {
-  display: flex;
-  align-items: stretch;
-  gap: 0;
-  min-width: 570px;
-}
-
 .parcours-row__label {
-  width: 150px;
-  flex: none;
+  width: 100%;
+  min-height: 46px;
   padding-right: 10px;
   display: flex;
   flex-direction: column;
@@ -621,7 +809,7 @@ body {
 
 .parcours-row__name {
   font: 600 12px system-ui;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -629,7 +817,7 @@ body {
 
 .parcours-row__meta {
   font: 400 10.5px system-ui;
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(var(--fg-rgb), 0.35);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -637,9 +825,9 @@ body {
 
 .parcours-track {
   position: relative;
-  flex: 1;
+  width: 100%;
   min-height: 46px;
-  background: #1b1f25;
+  background: var(--bg-row);
   border-radius: 0 6px 0 6px;
 }
 
@@ -652,7 +840,7 @@ body {
   align-items: center;
   padding: 0 6px;
   font: 500 10.5px system-ui;
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(var(--fg-rgb), 0.85);
   white-space: nowrap;
   cursor: default;
   /* Pas d'overflow:hidden ici (2026-07-31) : l'info-bulle au survol (enfant,
@@ -680,8 +868,8 @@ body {
   max-width: 240px;
   padding: 10px 12px;
   border-radius: var(--radius-notch-sm);
-  background: #0e1013;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--bg-deep);
+  border: 1px solid rgba(var(--fg-rgb), 0.12);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   opacity: 0;
   visibility: hidden;
@@ -698,19 +886,19 @@ body {
 
 .parcours-tooltip__title {
   font: 700 12px system-ui;
-  color: #fff;
+  color: rgb(var(--fg-rgb));
   margin-bottom: 4px;
 }
 
 .parcours-tooltip__time {
   font: 600 11px system-ui;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(var(--fg-rgb), 0.55);
   margin-bottom: 6px;
 }
 
 .parcours-tooltip__line {
   font: 500 11.5px system-ui;
-  color: rgba(255, 255, 255, 0.75);
+  color: rgba(var(--fg-rgb), 0.75);
   line-height: 1.4;
 }
 
@@ -720,18 +908,39 @@ body {
    maintenant sur une bonne partie du segment de séjour, chevauchement
    volontaire (« posé PAR-DESSUS »). Son info-bulle réutilise
    `.parcours-tooltip`, ancrée sur le marqueur lui-même plutôt que sur le
-   séjour. */
+   séjour.
+
+   Bleu depuis le 2026-08-02 (demande de Samuel) : il partageait `var(--accent)`
+   avec le bloc de transit, les deux étaient devenus indistinguables. Le bleu
+   est volontairement plus CLAIR (0.72) que les couleurs de lieu des séjours
+   (toutes autour de 0.52-0.55, dont un bleu-vert) — sinon le marqueur se
+   fondrait dans le séjour qu'il recouvre. */
 .parcours-mark {
   position: absolute;
   bottom: 2px;
   height: 15px;
   border-radius: 3px;
-  background: var(--accent);
+  background: oklch(0.72 0.15 250);
   cursor: default;
+  display: flex;
+  align-items: center;
+  padding: 0 5px;
 }
 
 .parcours-mark:hover {
-  background: #e4defa;
+  background: oklch(0.82 0.12 250);
+}
+
+/* Titre du spectacle écrit dans la bande (2026-08-02, demande de Samuel) :
+   son propre `overflow` plutôt que sur `.parcours-mark`, qui rognerait
+   l'info-bulle — même pattern que `.parcours-seg__label`. Texte sombre :
+   le bleu du marqueur est clair, c'est ce qui le fait ressortir du séjour. */
+.parcours-mark__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 600 10px system-ui;
+  color: #101828;
 }
 
 .parcours-mark:hover .parcours-tooltip {
@@ -739,36 +948,72 @@ body {
   visibility: visible;
 }
 
-/* Marqueur de transport confirmé (2026-07-31, demande de Samuel : « on
-   ajoute les transports confirmés » sur le Parcours Matériel) — symétrique
-   au marqueur d'assignation : posé au-DESSUS du segment de séjour plutôt
-   qu'en dessous, pour distinguer d'un coup d'œil « requis par un spectacle »
-   (bas, lavande clair) de « en cours de déplacement » (haut, bleu). Couvre
-   la fenêtre du transport lui-même (`scheduled_datetime` → `effective_end`),
-   pas seulement son arrivée — voir `get_material_transports`. Même couleur
-   que « Déplacement » sur le Parcours Technicien, pour la cohérence entre
-   les deux écrans. */
-.parcours-transport {
+/* Bloc de transit (2026-08-01, révisé — remplace l'ancien liseré fin
+   `.parcours-transport`) : un transport confirmé occupe maintenant sa vraie
+   durée prévue DANS la ligne (lane) où se trouvait le matériel juste avant,
+   au même niveau que `.parcours-seg`. Le séjour qui le précède sur cette
+   même lane est raccourci pour s'arrêter à son départ (voir
+   `departureTrim` dans `ParcoursMaterielView.vue`), les deux ne se
+   chevauchent donc plus. Couleur CONSTANTE (`var(--transport)`, pas dérivée
+   du lieu) avec une bordure pointillée pour le distinguer d'un séjour —
+   même code couleur que les transports confirmés sur le Dashboard
+   (`.dash-timeline__block--transport`), à la demande de Samuel
+   (2026-08-01, suite) : un transport reste un transport, peu importe où il
+   mène. Couleur passée de `--accent` à `--transport` (fuchsia, 2026-08-02) : se
+   confondait avec `--accent` (mauve) sous le thème clair, notamment avec
+   des lieux du Parcours dans la même famille de teinte (ex. Salon 58). */
+.parcours-transit {
   position: absolute;
-  top: 2px;
-  height: 6px;
-  border-radius: 3px;
-  background: oklch(0.5 0.1 250);
+  top: 8px;
+  bottom: 8px;
+  border-radius: 0 5px 0 5px;
+  border: 1px dashed rgba(0, 0, 0, 0.25);
+  background: var(--transport);
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  font: 600 10.5px system-ui;
+  color: #211c33;
+  white-space: nowrap;
   cursor: default;
 }
 
-.parcours-transport:hover {
-  background: oklch(0.58 0.1 250);
+.parcours-transit:hover {
+  background: oklch(0.72 0.18 340);
 }
 
-.parcours-transport:hover .parcours-tooltip {
+.parcours-transit:hover .parcours-tooltip {
   opacity: 1;
   visibility: visible;
+}
+
+/* Connecteur en équerre entre deux lanes d'un même matériel (2026-08-01,
+   remplace la bande courbe SVG initiale — demande de Samuel : partir du
+   bloc de transit, comme le raccordement des kits dans l'inventaire, plutôt
+   qu'une courbe). `.parcours-lane-trunk` est le tronc vertical (largeur
+   fixe), `.parcours-lane-branch` la branche horizontale qui mène à la lane
+   de destination — sa largeur est délibérément fixée à `LANE_HEIGHT` (22px,
+   voir le composant), pas une bande qui traverserait toute la piste.
+   `pointer-events: none` : un connecteur est décoratif, jamais une cible de
+   survol. */
+.parcours-lane-trunk {
+  position: absolute;
+  width: 2px;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.parcours-lane-branch {
+  position: absolute;
+  width: 22px;
+  height: 2px;
+  opacity: 0.55;
+  pointer-events: none;
 }
 
 .parcours-empty {
   padding: 28px 8px;
   text-align: center;
   font: 500 12.5px system-ui;
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(var(--fg-rgb), 0.35);
 }

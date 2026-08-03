@@ -220,6 +220,11 @@ REST_AUTH = {
     'SESSION_LOGIN': True,
     'USE_JWT': False,
     'TOKEN_MODEL': None,
+    # Expose `is_staff_global` (accès de dépannage plateforme, voir
+    # inventory/permissions.py) sur GET /api/auth/user/ — le frontend en a
+    # besoin pour savoir si le compte connecté peut gérer les accès d'un
+    # projet même sans y être `owner` (2026-08-02).
+    'USER_DETAILS_SERIALIZER': 'inventory.serializers.CurrentUserDetailsSerializer',
 }
 
 # --- Google Routes API (calcul du temps de trajet, inventory/maps.py) ---
