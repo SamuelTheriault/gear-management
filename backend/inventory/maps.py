@@ -1,12 +1,13 @@
 """
 Intégration Google Routes API — estime le temps de trajet entre deux lieux
-(Venue) ayant des coordonnées GPS, pour pré-remplir automatiquement
-`Transport.estimated_duration_minutes` (voir `TransportSerializer.validate`).
+(Venue) ayant des coordonnées GPS, pour pré-remplir automatiquement la durée
+d'un segment de tournée (`TransportStop.travel_minutes_from_previous` — voir
+`TransportSerializer.validate`).
 
 Décision du 2026-07-18 : utiliser l'endpoint "Compute Routes" (un trajet
 simple, une origine et une destination) plutôt que "Compute Route Matrix"
-(plusieurs origines/destinations) — un `Transport` a toujours exactement un
-lieu de départ et un lieu d'arrivée, donc ça tombe dans le SKU "Essentials"
+(plusieurs origines/destinations) — un segment de tournée relie toujours
+exactement deux arrêts consécutifs, donc ça tombe dans le SKU "Essentials"
 de l'API Routes, avec 10 000 requêtes gratuites par mois (juillet 2026),
 largement suffisant à l'échelle d'un directeur technique freelance.
 Documentation : https://developers.google.com/maps/documentation/routes

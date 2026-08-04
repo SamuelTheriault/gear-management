@@ -40,7 +40,7 @@ import threading
 
 from django.db import transaction
 
-from .models import Material, ShowMaterial, Transport, TransportMaterial
+from .models import Material, ShowMaterial, Transport, TransportMaterial, TransportStop
 
 try:  # estimation optionnelle de durée (dégradation silencieuse — voir maps.py)
     from .maps import estimate_travel_minutes
@@ -64,22 +64,29 @@ def is_regenerating():
 
 def _confirmed_material_events(material):
     """Déplacements CONFIRMÉS et horodatés transportant `material`, triés par
-    heure d'arrivée (`effective_end`). Base de la timeline de position."""
+    heure d'arrivée (`effective_end`). Base de la timeline de position.
+
+    Tournées multi-arrêts (2026-08-04) : l'unité est la LIGNE de matériel —
+    origine = lieu de son arrêt de chargement, destination = lieu de son arrêt
+    de déchargement, arrivée = arrivée de la tournée à ce dernier (même
+    logique que `transport_coherence._material_events`).
+    """
     lines = (
         TransportMaterial.objects.filter(
             material=material,
             transport__status=Transport.STATUS_CONFIRMED,
             transport__scheduled_datetime__isnull=False,
         )
-        .select_related('transport')
+        .select_related('transport', 'load_stop', 'unload_stop')
+        .prefetch_related('transport__stops')
     )
     events = []
     for line in lines:
         transport = line.transport
         events.append({
-            'effective_end': transport.effective_end,
-            'origin_id': transport.origin_venue_id,
-            'destination_id': transport.destination_venue_id,
+            'effective_end': transport.arrival_at(line.unload_stop),
+            'origin_id': line.load_stop.venue_id,
+            'destination_id': line.unload_stop.venue_id,
             'quantity': line.quantity,
         })
     events.sort(key=lambda event: event['effective_end'])
@@ -173,18 +180,23 @@ def _needed_moves_for_material(material, confirmed_cover):
 
 def _build_confirmed_cover(project):
     """Ensemble `{(show_id, material_id)}` des livraisons déjà couvertes par un
-    transport confirmé (destination = lieu du spectacle desservi)."""
+    transport confirmé.
+
+    Tournées (2026-08-04) : la livraison est couverte si la LIGNE de ce
+    matériel décharge au lieu du spectacle desservi — pas la destination
+    finale de la tournée, qui peut continuer vers d'autres arrêts.
+    """
     cover = set()
     lines = (
         TransportMaterial.objects.filter(
             transport__status=Transport.STATUS_CONFIRMED,
             transport__show__project=project,
         )
-        .select_related('transport', 'transport__show')
+        .select_related('transport', 'transport__show', 'unload_stop')
     )
     for line in lines:
         transport = line.transport
-        if transport.destination_venue_id == transport.show.venue_id:
+        if line.unload_stop.venue_id == transport.show.venue_id:
             cover.add((transport.show_id, line.material_id))
     return cover
 
@@ -216,13 +228,18 @@ def regenerate_project_proposals(project):
                     group['lines'][material.id] = move['quantity']
 
             # 2. Propositions existantes du projet, indexées par la même clé.
+            # `origin_venue` est dérivé du premier arrêt depuis la refonte en
+            # tournées (2026-08-04) — d'où le prefetch des arrêts.
             existing = {}
             existing_qs = (
                 Transport.objects.filter(status=Transport.STATUS_TO_APPROVE, show__project=project)
                 .select_related('show')
+                .prefetch_related('stops')
             )
             for transport in existing_qs:
-                existing[(transport.show_id, transport.origin_venue_id)] = transport
+                first_stop = transport.first_stop
+                origin_id = first_stop.venue_id if first_stop is not None else None
+                existing[(transport.show_id, origin_id)] = transport
 
             counts = {'created': 0, 'updated': 0, 'deleted': 0}
 
@@ -232,24 +249,32 @@ def regenerate_project_proposals(project):
                     transport.delete()
                     counts['deleted'] += 1
 
-            # 4. Crée/actualise les propositions souhaitées.
+            # 4. Crée/actualise les propositions souhaitées — des tournées
+            # simples à 2 arrêts (origine → lieu du spectacle). Fusionner des
+            # propositions en une vraie tournée multi-arrêts reste une action
+            # manuelle de Samuel (décision du 2026-08-04, phase ultérieure).
             for key, group in desired.items():
                 show = group['show']
                 origin_id = group['origin_id']
                 transport = existing.get(key)
                 if transport is None:
                     duration = estimate_travel_minutes_by_id(origin_id, show.venue_id)
-                    create_kwargs = {
-                        'show': show,
-                        'transport_type': Transport.TYPE_DELIVERY,
-                        'status': Transport.STATUS_TO_APPROVE,
-                        'origin_venue_id': origin_id,
-                        'destination_venue_id': show.venue_id,
-                        'scheduled_datetime': None,
-                    }
-                    if duration is not None:
-                        create_kwargs['estimated_duration_minutes'] = duration
-                    transport = Transport.objects.create(**create_kwargs)
+                    if duration is None:
+                        from .models import Settings
+                        duration = Settings.load().default_transport_duration_minutes
+                    transport = Transport.objects.create(
+                        show=show,
+                        status=Transport.STATUS_TO_APPROVE,
+                        scheduled_datetime=None,
+                    )
+                    TransportStop.objects.create(
+                        transport=transport, venue_id=origin_id, order=0,
+                        travel_minutes_from_previous=0,
+                    )
+                    TransportStop.objects.create(
+                        transport=transport, venue_id=show.venue_id, order=1,
+                        travel_minutes_from_previous=duration,
+                    )
                     counts['created'] += 1
                 else:
                     # Conserve la ligne (et l'heure/technicien éventuellement déjà
@@ -277,15 +302,38 @@ def estimate_travel_minutes_by_id(origin_venue_id, destination_venue_id):
 def _sync_transport_lines(transport, desired_lines):
     """Aligne les lignes `TransportMaterial` d'un transport sur `desired_lines`
     (`{material_id: quantity}`) : met à jour les quantités, ajoute le manquant,
-    supprime le superflu."""
+    supprime le superflu.
+
+    Tournées (2026-08-04) : les lignes d'une proposition couvrent toujours la
+    tournée entière — chargement au premier arrêt, déchargement au dernier.
+    Si Samuel a ajouté des arrêts intermédiaires à une proposition avant de la
+    confirmer, le resync réaligne quand même chargement/déchargement sur les
+    extrémités : une proposition ne dessert qu'UN spectacle (sa raison
+    d'être), le découpage fin par arrêt est un geste manuel post-confirmation.
+    """
+    first_stop = transport.first_stop
+    last_stop = transport.last_stop
     existing = {line.material_id: line for line in transport.transport_materials.all()}
     for material_id, quantity in desired_lines.items():
         line = existing.get(material_id)
         if line is None:
-            TransportMaterial.objects.create(transport=transport, material_id=material_id, quantity=quantity)
-        elif line.quantity != quantity:
-            line.quantity = quantity
-            line.save(update_fields=['quantity'])
+            TransportMaterial.objects.create(
+                transport=transport, material_id=material_id, quantity=quantity,
+                load_stop=first_stop, unload_stop=last_stop,
+            )
+        else:
+            update_fields = []
+            if line.quantity != quantity:
+                line.quantity = quantity
+                update_fields.append('quantity')
+            if line.load_stop_id != first_stop.id:
+                line.load_stop = first_stop
+                update_fields.append('load_stop')
+            if line.unload_stop_id != last_stop.id:
+                line.unload_stop = last_stop
+                update_fields.append('unload_stop')
+            if update_fields:
+                line.save(update_fields=update_fields)
     for material_id, line in existing.items():
         if material_id not in desired_lines:
             line.delete()

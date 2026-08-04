@@ -9,9 +9,10 @@ tables d'association/engagement (`ShowMaterialSerializer`,
 possibilité de forcer via le champ `force` (décision prise avec Samuel le
 2026-07-17 — voir recapitulatif_projet.md).
 
-`TransportSerializer` pré-remplit aussi `estimated_duration_minutes` via
-l'API Google Routes (`inventory/maps.py`) quand le client ne le fournit pas
-explicitement et que les deux venues ont des coordonnées GPS.
+`TransportSerializer` pré-remplit aussi la durée de chaque segment de tournée
+(`TransportStop.travel_minutes_from_previous`) via l'API Google Routes
+(`inventory/maps.py`) quand le client ne la fournit pas explicitement et que
+les deux lieux du segment ont des coordonnées GPS.
 
 Isolation par projet (voir `Project` dans models.py) : `Venue`, `Material`,
 `Technician` et `Show` portent chacun un FK `project` obligatoire. Le helper
@@ -51,6 +52,7 @@ from .models import (
     Technician,
     Transport,
     TransportMaterial,
+    TransportStop,
     TransportTechnician,
     User,
     Venue,
@@ -828,17 +830,66 @@ class ShowTechnicianSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class TransportStopSerializer(serializers.ModelSerializer):
+    """Sérialise un arrêt de tournée (voir `TransportStop`, models.py —
+    tournées multi-arrêts du 2026-08-04).
+
+    Utilisée en écriture imbriquée dans `TransportSerializer.stops` : l'ordre
+    d'un arrêt est sa POSITION dans la liste envoyée (`order` est dérivé,
+    lecture seule), et `travel_minutes_from_previous` est optionnel — absent,
+    le segment est estimé via Google Routes, sinon le défaut de `Settings`
+    (voir `TransportSerializer.validate`). `arrival_datetime` (dérivée de
+    l'heure de départ + le cumul des segments, voir `Transport.arrival_at`)
+    est exposée pour afficher la séquence sans recalcul côté client.
+    """
+
+    venue_name = serializers.CharField(source='venue.name', read_only=True)
+    venue_code = serializers.CharField(source='venue.code', read_only=True, default='')
+    is_storage = serializers.BooleanField(source='venue.is_storage', read_only=True)
+    arrival_datetime = serializers.DateTimeField(read_only=True)
+
+    class Meta:
+        model = TransportStop
+        fields = [
+            'id', 'venue', 'venue_name', 'venue_code', 'is_storage', 'order',
+            'travel_minutes_from_previous', 'arrival_datetime',
+        ]
+        extra_kwargs = {
+            'order': {'read_only': True},
+            'travel_minutes_from_previous': {'required': False},
+        }
+
+
 class TransportMaterialSerializer(serializers.ModelSerializer):
     """Sérialise une ligne « matériel transporté » d'un `Transport` (voir
     `TransportMaterial`, models.py). Utilisée en écriture imbriquée dans
     `TransportSerializer.materials` et exposée en lecture avec le nom du
-    matériel pour l'affichage."""
+    matériel pour l'affichage.
+
+    Tournées multi-arrêts (2026-08-04) : chaque ligne porte sa PORTION de la
+    séquence — `load_stop_order`/`unload_stop_order`, la position (0-indexée)
+    des arrêts de chargement et de déchargement dans la tournée. À l'écriture
+    ces deux champs sont optionnels : absents, la ligne couvre la tournée
+    entière (chargement au premier arrêt, déchargement au dernier) — ce qui
+    garde l'ancien contrat `{material, quantity}` fonctionnel tel quel.
+    `source='load_stop.order'` fait la traversée en lecture ; en écriture la
+    valeur arrive sous `{'load_stop': {'order': n}}` dans `validated_data`,
+    dénormalisée par `TransportSerializer._normalized_material_lines`.
+    """
 
     material_name = serializers.CharField(source='material.name', read_only=True)
+    load_stop_order = serializers.IntegerField(source='load_stop.order', required=False, min_value=0)
+    unload_stop_order = serializers.IntegerField(source='unload_stop.order', required=False, min_value=0)
+    load_venue_name = serializers.CharField(source='load_stop.venue.name', read_only=True, default='')
+    unload_venue_name = serializers.CharField(source='unload_stop.venue.name', read_only=True, default='')
 
     class Meta:
         model = TransportMaterial
-        fields = ['id', 'material', 'material_name', 'quantity']
+        fields = [
+            'id', 'material', 'material_name', 'quantity',
+            'load_stop_order', 'unload_stop_order',
+            'load_venue_name', 'unload_venue_name',
+        ]
 
 
 class TransportTechnicianSerializer(serializers.ModelSerializer):
@@ -860,26 +911,48 @@ class TransportTechnicianSerializer(serializers.ModelSerializer):
 
 
 class TransportSerializer(serializers.ModelSerializer):
-    """Sérialise un déplacement (livraison/ramassage) de matériel, avec
-    validation de conflit bloquante sur les techniciens affectés (voir `force`).
+    """Sérialise une tournée de matériel (séquence d'arrêts), avec validation
+    de conflit bloquante sur les techniciens affectés (voir `force`).
 
     Chaque technicien affecté à un `Transport` est croisé avec ses engagements
-    `ShowTechnician` ET ses autres déplacements — voir `conflicts.py`.
+    `ShowTechnician` ET ses autres déplacements — voir `conflicts.py`. Sa
+    fenêtre d'engagement couvre toute la tournée (départ du premier arrêt →
+    arrivée au dernier).
+
+    **Arrêts** (`stops`, tournées multi-arrêts du 2026-08-04) : liste ordonnée
+    de `{venue, travel_minutes_from_previous?}` — la position dans la liste
+    fait foi (`order` est dérivé). Obligatoire à la création (≥ 2 arrêts),
+    remplacement intégral de la séquence en mise à jour, inchangée si omise.
+    Les arrêts existants sont mis à jour EN PLACE par position (mêmes ids) —
+    les lignes de matériel qui pointent ces arrêts survivent à une simple
+    retouche de lieu ou de durée. Une durée de segment absente est estimée
+    via Google Routes (repli : défaut de `Settings`) ; en mise à jour, un
+    segment dont le couple de lieux n'a pas changé garde sa durée actuelle
+    (même règle que l'ancienne non-réestimation sur PATCH sans rapport).
+
+    **Compat ancien contrat A → B** : `origin_venue`/`destination_venue`
+    restent acceptés en écriture SANS `stops` — à la création, ils créent une
+    tournée à 2 arrêts ; en mise à jour, ils retouchent le lieu du premier/
+    dernier arrêt (sans toucher aux arrêts intermédiaires). En lecture, ce
+    sont les lieux dérivés des premier/dernier arrêts.
+    `estimated_duration_minutes` (lecture : durée TOTALE, somme des segments)
+    n'est plus un champ éditable qu'au travers de ce chemin de compat — voir
+    `validate` ; le glisser-redimensionner du Dashboard en dépend.
 
     Les techniciens sont gérés en écriture imbriquée via `technicians` (liste
-    de `{technician}`), même pattern que `materials` : depuis le 2026-07-30 un
-    déplacement peut en mobiliser plusieurs (l'ancien champ unique
-    `Transport.technician` a disparu). Fournir `technicians` lors d'une mise à
-    jour remplace intégralement la liste ; l'omettre la laisse inchangée.
+    de `{technician}`) : depuis le 2026-07-30 un déplacement peut en mobiliser
+    plusieurs. Fournir `technicians` lors d'une mise à jour remplace
+    intégralement la liste ; l'omettre la laisse inchangée.
 
     Le matériel transporté est géré en écriture imbriquée via `materials`
-    (liste de `{material, quantity}`) — voir `TransportMaterial` et
-    `transport_coherence.py`. Fournir `materials` lors d'une mise à jour
-    remplace intégralement la liste des lignes du transport ; l'omettre la
-    laisse inchangée.
+    (liste de `{material, quantity, load_stop_order?, unload_stop_order?}`) —
+    voir `TransportMaterialSerializer` et `transport_coherence.py`. Fournir
+    `materials` lors d'une mise à jour remplace intégralement la liste des
+    lignes du transport ; l'omettre la laisse inchangée.
     """
 
     force = serializers.BooleanField(write_only=True, required=False, default=False)
+    stops = TransportStopSerializer(many=True, required=False)
     materials = TransportMaterialSerializer(many=True, source='transport_materials', required=False)
     technicians = TransportTechnicianSerializer(
         many=True, source='transport_technicians', required=False,
@@ -887,12 +960,27 @@ class TransportSerializer(serializers.ModelSerializer):
     # `show` (« desservi » par ce transport) peut être n'importe quel Show, blocs
     # compris — `display_title` plutôt que `title` (2026-08-02, voir `Show.display_title`).
     show_title = serializers.CharField(source='show.display_title', read_only=True)
-    origin_venue_name = serializers.CharField(source='origin_venue.name', read_only=True)
-    destination_venue_name = serializers.CharField(source='destination_venue.name', read_only=True)
+    # Lecture : lieux dérivés des premier/dernier arrêts (propriétés du
+    # modèle). Écriture : chemin de compat ancien contrat — voir docstring.
+    origin_venue = serializers.PrimaryKeyRelatedField(
+        queryset=Venue.objects.all(), required=False, allow_null=True,
+    )
+    destination_venue = serializers.PrimaryKeyRelatedField(
+        queryset=Venue.objects.all(), required=False, allow_null=True,
+    )
+    origin_venue_name = serializers.CharField(source='origin_venue.name', read_only=True, default='')
+    destination_venue_name = serializers.CharField(source='destination_venue.name', read_only=True, default='')
     # Code court (voir Venue.code) pour un affichage compact départ/arrivée
     # (ex. "CHAP -> Salle principale") — vide si le lieu n'a pas de code.
     origin_venue_code = serializers.CharField(source='origin_venue.code', read_only=True, default='')
     destination_venue_code = serializers.CharField(source='destination_venue.code', read_only=True, default='')
+    # Durée TOTALE de la tournée (somme des segments) — la clé garde son nom
+    # historique pour le frontend (Dashboard, listes). Lecture seule : la
+    # durée s'édite segment par segment via `stops` (ou via le chemin de
+    # compat, voir `validate`).
+    estimated_duration_minutes = serializers.IntegerField(
+        source='total_duration_minutes', read_only=True,
+    )
     # Noms des techniciens affectés, à plat — évite au frontend de recomposer
     # la chaîne d'affichage à partir de `technicians` dans chaque liste.
     technician_names = serializers.SerializerMethodField()
@@ -920,7 +1008,7 @@ class TransportSerializer(serializers.ModelSerializer):
     class Meta:
         model = Transport
         fields = [
-            'id', 'show', 'show_title', 'transport_type', 'status',
+            'id', 'show', 'show_title', 'status', 'stops',
             'origin_venue', 'origin_venue_name', 'origin_venue_code',
             'destination_venue', 'destination_venue_name', 'destination_venue_code',
             'scheduled_datetime', 'estimated_duration_minutes', 'effective_end',
@@ -939,13 +1027,13 @@ class TransportSerializer(serializers.ModelSerializer):
 
     def get_departure_show(self, obj):
         departure_show, _arrival_show = get_transport_reference_shows(
-            obj.show, obj.transport_type, obj.origin_venue, obj.destination_venue,
+            obj.show, obj.origin_venue, obj.destination_venue,
         )
         return serialize_reference_show(departure_show)
 
     def get_arrival_show(self, obj):
         _departure_show, arrival_show = get_transport_reference_shows(
-            obj.show, obj.transport_type, obj.origin_venue, obj.destination_venue,
+            obj.show, obj.origin_venue, obj.destination_venue,
         )
         return serialize_reference_show(arrival_show)
 
@@ -958,20 +1046,263 @@ class TransportSerializer(serializers.ModelSerializer):
         return any(
             get_transport_conflicts(
                 obj.scheduled_datetime,
-                obj.estimated_duration_minutes,
+                obj.total_duration_minutes,
                 tt.technician,
                 exclude_id=obj.id,
             )
             for tt in obj.transport_technicians.all()
         )
 
-    def validate(self, attrs):
-        origin = attrs.get('origin_venue', getattr(self.instance, 'origin_venue', None))
-        destination = attrs.get('destination_venue', getattr(self.instance, 'destination_venue', None))
-        if origin and destination and origin.id == destination.id:
-            raise serializers.ValidationError({
-                'destination_venue': "Doit être différent du lieu de départ.",
+    def _plan_from_request(self, attrs, legacy_duration):
+        """Résout la séquence d'arrêts visée par la requête.
+
+        Retourne `(plan, dirty)` : `plan` est une liste de dicts
+        `{'venue': Venue, 'travel': int|None}` (None = durée à estimer), et
+        `dirty` indique si la séquence doit être resynchronisée en base
+        (arrêts fournis, ou chemin de compat origin/destination). Trois cas :
+        `stops` fourni (remplacement intégral), champs de compat fournis
+        (création 2 arrêts / retouche premier-dernier arrêt), sinon la
+        séquence actuelle telle quelle (aucune écriture).
+        """
+        stops_data = attrs.pop('stops', None)
+        legacy_origin_given = 'origin_venue' in attrs
+        legacy_destination_given = 'destination_venue' in attrs
+        legacy_origin = attrs.pop('origin_venue', None)
+        legacy_destination = attrs.pop('destination_venue', None)
+
+        current_stops = list(self.instance.ordered_stops) if self.instance is not None else []
+
+        if stops_data is not None:
+            plan = [
+                {'venue': s['venue'], 'travel': s.get('travel_minutes_from_previous')}
+                for s in stops_data
+            ]
+            return plan, True
+
+        if legacy_origin_given or legacy_destination_given:
+            if self.instance is None:
+                if legacy_origin is None or legacy_destination is None:
+                    raise serializers.ValidationError({
+                        'stops': (
+                            "Fournis la séquence d'arrêts (`stops`), ou les deux champs "
+                            "origin_venue/destination_venue pour un simple A → B."
+                        ),
+                    })
+                if legacy_origin.id == legacy_destination.id:
+                    raise serializers.ValidationError({
+                        'destination_venue': "Doit être différent du lieu de départ.",
+                    })
+                return (
+                    [
+                        {'venue': legacy_origin, 'travel': 0},
+                        {'venue': legacy_destination, 'travel': legacy_duration},
+                    ],
+                    True,
+                )
+            # Mise à jour par le chemin de compat : on retouche le lieu du
+            # premier/dernier arrêt, sans toucher aux arrêts intermédiaires.
+            # Un segment dont le lieu change réellement voit sa durée remise à
+            # None → réestimée par `_resolve_travel_times` (même règle que
+            # l'ancienne réestimation sur changement d'origine/destination) ;
+            # un lieu renvoyé identique (l'ancienne fiche renvoie tout le
+            # formulaire) ne réestime rien.
+            plan = [
+                {'venue': s.venue, 'travel': s.travel_minutes_from_previous}
+                for s in current_stops
+            ]
+            if plan:
+                if (
+                    legacy_origin_given and legacy_origin is not None
+                    and legacy_origin.id != plan[0]['venue'].id
+                ):
+                    plan[0] = {'venue': legacy_origin, 'travel': 0}
+                    if len(plan) > 1:
+                        plan[1] = {'venue': plan[1]['venue'], 'travel': None}
+                if (
+                    legacy_destination_given and legacy_destination is not None
+                    and legacy_destination.id != plan[-1]['venue'].id
+                ):
+                    plan[-1] = {'venue': legacy_destination, 'travel': None}
+            return plan, True
+
+        plan = [
+            {'venue': s.venue, 'travel': s.travel_minutes_from_previous}
+            for s in current_stops
+        ]
+        return plan, False
+
+    def _apply_legacy_duration(self, plan, legacy_duration, dirty):
+        """Applique une durée totale envoyée par l'ancien contrat
+        (`estimated_duration_minutes` en écriture, sans `stops`).
+
+        Sur une tournée à 2 arrêts, c'est sans ambiguïté : la durée de
+        l'unique segment. Au-delà, impossible de savoir quel segment ajuster —
+        on refuse SEULEMENT si la valeur change réellement quelque chose, pour
+        qu'un PATCH de l'ancien frontend qui renvoie la durée inchangée (sa
+        fiche renvoie tout le formulaire) continue de passer.
+        """
+        if legacy_duration is None or not plan:
+            return dirty
+        if len(plan) == 2:
+            if plan[1]['travel'] != legacy_duration:
+                plan[1]['travel'] = legacy_duration
+                return True
+            return dirty
+        known = [p['travel'] for p in plan if p['travel'] is not None]
+        if len(known) == len(plan) and sum(known) == legacy_duration:
+            return dirty
+        raise serializers.ValidationError({
+            'estimated_duration_minutes': (
+                "Cette tournée a plus de 2 arrêts : la durée totale est la somme des "
+                "segments — ajuste `travel_minutes_from_previous` arrêt par arrêt (liste `stops`)."
+            ),
+        })
+
+    def _resolve_travel_times(self, plan, dirty):
+        """Complète les durées de segment manquantes du plan.
+
+        Premier arrêt : toujours 0. Segment inchangé (même couple de lieux à
+        la même position qu'avant) : garde sa durée actuelle — même règle que
+        l'ancienne non-réestimation sur un PATCH sans rapport (revue de code
+        du 2026-07-18). Sinon : estimation Google Routes, repli sur le défaut
+        de `Settings`.
+        """
+        if not dirty:
+            return
+        current_stops = list(self.instance.ordered_stops) if self.instance is not None else []
+        for i, p in enumerate(plan):
+            if i == 0:
+                p['travel'] = 0
+                continue
+            if p['travel'] is not None:
+                continue
+            if (
+                i < len(current_stops)
+                and current_stops[i - 1].venue_id == plan[i - 1]['venue'].id
+                and current_stops[i].venue_id == p['venue'].id
+            ):
+                p['travel'] = current_stops[i].travel_minutes_from_previous
+                continue
+            estimated = estimate_travel_minutes(plan[i - 1]['venue'], p['venue'])
+            if estimated is None:
+                estimated = Settings.load().default_transport_duration_minutes
+            p['travel'] = estimated
+
+    def _normalized_material_lines(self, material_lines, plan, show):
+        """Valide et normalise les lignes de matériel en dicts
+        `{'material', 'quantity', 'load': index, 'unload': index}`.
+
+        Défauts (compat ancien contrat `{material, quantity}`) : chargement au
+        premier arrêt, déchargement au dernier. La quantité est vérifiée PAR
+        LIGNE contre le stock possédé — pas en somme par matériel : deux
+        lignes du même matériel peuvent décrire un relais (A → B puis B → C)
+        des mêmes unités physiques dans la même tournée, c'est le rapport de
+        cohérence qui juge le réalisme spatial (voir transport_coherence.py).
+        """
+        plan_len = len(plan)
+        normalized = []
+        seen = set()
+        for line in material_lines:
+            material = line['material']
+            if show is not None and not _same_project(show, material):
+                raise serializers.ValidationError({
+                    'materials': f"Le matériel « {material.name} » appartient à un autre projet que le déplacement.",
+                })
+            load = (line.get('load_stop') or {}).get('order')
+            unload = (line.get('unload_stop') or {}).get('order')
+            if load is None:
+                load = 0
+            if unload is None:
+                unload = plan_len - 1
+            if load >= plan_len or unload >= plan_len:
+                raise serializers.ValidationError({
+                    'materials': (
+                        f"« {material.name} » référence un arrêt inexistant "
+                        f"(la tournée a {plan_len} arrêts, positions 0 à {plan_len - 1})."
+                    ),
+                })
+            if load >= unload:
+                raise serializers.ValidationError({
+                    'materials': (
+                        f"« {material.name} » : l'arrêt de chargement doit précéder "
+                        "l'arrêt de déchargement dans la séquence."
+                    ),
+                })
+            key = (material.id, load, unload)
+            if key in seen:
+                raise serializers.ValidationError({
+                    'materials': (
+                        f"Le matériel « {material.name} » est listé deux fois sur la même "
+                        "portion de tournée — regroupe la quantité sur une seule ligne."
+                    ),
+                })
+            seen.add(key)
+            quantity = line.get('quantity', 1)
+            if quantity > material.quantity:
+                raise serializers.ValidationError({
+                    'materials': (
+                        f"Quantité transportée ({quantity}) supérieure à la quantité "
+                        f"totale possédée de « {material.name} » ({material.quantity})."
+                    ),
+                })
+            normalized.append({
+                'material': material, 'quantity': quantity,
+                'load': load, 'unload': unload,
             })
+        return normalized
+
+    def validate(self, attrs):
+        show = attrs.get('show', getattr(self.instance, 'show', None))
+
+        # Durée envoyée par l'ancien contrat (le champ déclaré est en lecture
+        # seule — la valeur se lit dans le payload brut). Ignorée si `stops`
+        # est fourni : la séquence fait foi.
+        legacy_duration = None
+        if (
+            isinstance(self.initial_data, dict)
+            and 'estimated_duration_minutes' in self.initial_data
+            and 'stops' not in self.initial_data
+            and self.initial_data['estimated_duration_minutes'] is not None
+        ):
+            try:
+                legacy_duration = int(self.initial_data['estimated_duration_minutes'])
+            except (TypeError, ValueError):
+                raise serializers.ValidationError({
+                    'estimated_duration_minutes': "Un nombre entier de minutes est attendu.",
+                })
+            # Le chemin moderne (`stops`) est protégé par le validateur
+            # `min_value=0` généré pour `travel_minutes_from_previous`
+            # (PositiveIntegerField) — ce chemin de compat écrit directement
+            # dans le plan sans repasser par ce serializer, donc sans ce
+            # garde-fou. Revue code-reviewer du 2026-08-04 : une valeur
+            # négative passait silencieusement et corrompait `arrival_at`.
+            if legacy_duration < 0:
+                raise serializers.ValidationError({
+                    'estimated_duration_minutes': "Doit être un nombre de minutes positif.",
+                })
+
+        plan, stops_dirty = self._plan_from_request(attrs, legacy_duration)
+
+        if len(plan) < 2:
+            raise serializers.ValidationError({
+                'stops': (
+                    "Une tournée doit avoir au moins 2 arrêts — fournis la liste `stops` "
+                    "(ou origin_venue/destination_venue pour un simple A → B)."
+                ),
+            })
+
+        stops_dirty = self._apply_legacy_duration(plan, legacy_duration, stops_dirty)
+
+        # Deux arrêts consécutifs au même lieu n'ont pas de sens (un même lieu
+        # peut en revanche revenir plus loin — tournée aller-retour).
+        for prev, cur in zip(plan, plan[1:]):
+            if prev['venue'].id == cur['venue'].id:
+                raise serializers.ValidationError({
+                    'stops': (
+                        f"Deux arrêts consécutifs au même lieu (« {cur['venue'].name} ») — "
+                        "retire l'un des deux."
+                    ),
+                })
 
         # Un déplacement confirmé doit avoir une heure. Une proposition
         # ('to_approve') peut rester sans heure tant qu'elle n'est pas complétée
@@ -983,14 +1314,14 @@ class TransportSerializer(serializers.ModelSerializer):
                 'scheduled_datetime': "Obligatoire pour un déplacement confirmé (heure prévue du déplacement).",
             })
 
-        # Isolation par projet (voir Project, models.py) : le spectacle, les
-        # deux lieux et le technicien (si fourni) doivent tous appartenir au
-        # même projet.
-        show = attrs.get('show', getattr(self.instance, 'show', None))
-        if not _same_project(show, origin, destination):
-            raise serializers.ValidationError(
-                "Le spectacle et les lieux d'un déplacement doivent tous appartenir au même projet."
-            )
+        # Isolation par projet (voir Project, models.py) : le spectacle, tous
+        # les lieux d'arrêt et les techniciens/matériel fournis doivent
+        # appartenir au même projet.
+        for p in plan:
+            if not _same_project(show, p['venue']):
+                raise serializers.ValidationError(
+                    "Le spectacle et les lieux d'un déplacement doivent tous appartenir au même projet."
+                )
 
         # Techniciens affectés (écriture imbriquée, plusieurs possibles depuis
         # le 2026-07-30) : même projet que le déplacement, et pas de doublon
@@ -1013,66 +1344,36 @@ class TransportSerializer(serializers.ModelSerializer):
                     })
                 seen_technician_ids.add(technician.id)
 
-        # Lignes de matériel transporté (écriture imbriquée) : chaque matériel
-        # doit appartenir au même projet que le spectacle, ne pas apparaître en
-        # double dans la même requête (une seule ligne par matériel, cf.
-        # unique_together), et ne pas dépasser la quantité totale possédée
-        # (transporter 25 rallonges quand on en possède 20 est une erreur de
-        # données, pas un arbitrage — non overridable par `force`).
-        material_lines = attrs.get('transport_materials', None)
+        # Complète les durées de segment manquantes (estimation Google Routes,
+        # segment inchangé conservé, repli sur le défaut de Settings) — voir
+        # `_resolve_travel_times`.
+        self._resolve_travel_times(plan, stops_dirty)
+
+        # Lignes de matériel transporté (écriture imbriquée) : validation et
+        # normalisation vers des index d'arrêts — voir
+        # `_normalized_material_lines`. La quantité par ligne ne peut pas
+        # dépasser la quantité totale possédée (transporter 25 rallonges quand
+        # on en possède 20 est une erreur de données, pas un arbitrage — non
+        # overridable par `force`).
+        material_lines = attrs.pop('transport_materials', None)
         if material_lines is not None:
-            seen_material_ids = set()
-            for line in material_lines:
-                material = line['material']
-                if show is not None and not _same_project(show, material):
+            attrs['_material_lines'] = self._normalized_material_lines(material_lines, plan, show)
+        elif self.instance is not None and stops_dirty:
+            # La séquence change sans que les lignes soient refournies : les
+            # lignes existantes doivent encore pointer des arrêts valides —
+            # sinon la CASCADE de la FK les supprimerait en silence.
+            for line in self.instance.transport_materials.select_related('load_stop', 'unload_stop'):
+                if line.load_stop.order >= len(plan) or line.unload_stop.order >= len(plan):
                     raise serializers.ValidationError({
-                        'materials': f"Le matériel « {material.name} » appartient à un autre projet que le déplacement.",
-                    })
-                if material.id in seen_material_ids:
-                    raise serializers.ValidationError({
-                        'materials': f"Le matériel « {material.name} » est listé deux fois — regroupe la quantité sur une seule ligne.",
-                    })
-                seen_material_ids.add(material.id)
-                if line.get('quantity', 1) > material.quantity:
-                    raise serializers.ValidationError({
-                        'materials': (
-                            f"Quantité transportée ({line['quantity']}) supérieure à la quantité "
-                            f"totale possédée de « {material.name} » ({material.quantity})."
+                        'stops': (
+                            "Impossible de retirer un arrêt encore utilisé par une ligne de "
+                            "matériel (chargement ou déchargement) — retire ou refournis "
+                            "`materials` dans la même requête."
                         ),
                     })
 
-        # Auto-estimation via Google Routes : seulement si le client n'a pas
-        # explicitement fourni de durée, et que les deux venues ont des
-        # coordonnées GPS. Sinon estimate_travel_minutes renvoie None et on
-        # garde la valeur déjà présente dans attrs (fournie par le client, ou
-        # le défaut Settings.default_transport_duration_minutes appliqué par
-        # le champ du modèle).
-        #
-        # À la création (self.instance is None) : on estime dès que le client
-        # ne fournit pas de durée explicite.
-        # À la mise à jour (PATCH/PUT) : on ne réestime QUE si l'origine ou la
-        # destination a réellement changé dans cette requête — sinon un PATCH
-        # qui ne touche ni au trajet ni à la durée (ex. changer `notes` ou
-        # `technician`) écraserait silencieusement une durée déjà correcte
-        # (éventuellement corrigée à la main) par un nouvel appel réseau à
-        # chaque édition. Trouvé en revue de code (2026-07-18) avant le merge.
-        no_explicit_duration = 'estimated_duration_minutes' not in self.initial_data
-        if self.instance is None:
-            should_estimate = no_explicit_duration
-        else:
-            origin_changed = (
-                'origin_venue' in self.initial_data and origin and origin.id != self.instance.origin_venue_id
-            )
-            destination_changed = (
-                'destination_venue' in self.initial_data
-                and destination and destination.id != self.instance.destination_venue_id
-            )
-            should_estimate = no_explicit_duration and (origin_changed or destination_changed)
-
-        if should_estimate and origin and destination:
-            estimated = estimate_travel_minutes(origin, destination)
-            if estimated is not None:
-                attrs['estimated_duration_minutes'] = estimated
+        attrs['_stops_plan'] = plan
+        attrs['_stops_dirty'] = stops_dirty
 
         force = attrs.pop('force', False)
         # Techniciens à vérifier : ceux fournis dans la requête si `technicians`
@@ -1085,10 +1386,8 @@ class TransportSerializer(serializers.ModelSerializer):
         else:
             technicians = []
         scheduled_datetime = attrs.get('scheduled_datetime', getattr(self.instance, 'scheduled_datetime', None))
-        duration = attrs.get(
-            'estimated_duration_minutes',
-            getattr(self.instance, 'estimated_duration_minutes', None),
-        )
+        # Durée totale de la tournée = somme des segments du plan résolu.
+        duration = sum(p['travel'] or 0 for p in plan)
 
         if technicians and scheduled_datetime and duration and not force:
             exclude_id = self.instance.id if self.instance else None
@@ -1114,14 +1413,14 @@ class TransportSerializer(serializers.ModelSerializer):
                 })
 
         # Fenêtre départ/arrivée (décision Samuel du 2026-07-30, voir
-        # conflicts.py) : le déplacement doit avoir lieu entre la fin
-        # effective du spectacle de départ et le début effectif du spectacle
-        # d'arrivée (déduits automatiquement — voir `get_transport_reference_shows`).
-        # Même pattern bloquant + `force` que le conflit de technicien ci-dessus.
-        transport_type = attrs.get('transport_type', getattr(self.instance, 'transport_type', None))
-        if show and origin and destination and not force:
+        # conflicts.py) : la tournée doit avoir lieu entre la fin effective du
+        # spectacle de départ (au PREMIER arrêt) et le début effectif du
+        # spectacle d'arrivée (au DERNIER arrêt) — les arrêts intermédiaires
+        # ne bornent rien. Même pattern bloquant + `force` que le conflit de
+        # technicien ci-dessus.
+        if show and not force:
             violation = validate_transport_window(
-                show, transport_type, origin, destination, scheduled_datetime, duration,
+                show, plan[0]['venue'], plan[-1]['venue'], scheduled_datetime, duration,
             )
             if violation:
                 raise serializers.ValidationError({
@@ -1131,32 +1430,87 @@ class TransportSerializer(serializers.ModelSerializer):
                 })
         return attrs
 
+    def _sync_stops(self, transport, plan):
+        """Aligne les arrêts en base sur le plan résolu, EN PLACE par position :
+        un arrêt existant garde son id (les lignes de matériel qui le pointent
+        survivent), les positions en trop sont supprimées, les manquantes
+        créées. Retourne la liste fraîche des arrêts, indexée par position."""
+        existing = list(transport.stops.order_by('order'))
+        for index, p in enumerate(plan):
+            if index < len(existing):
+                stop = existing[index]
+                update_fields = []
+                if stop.venue_id != p['venue'].id:
+                    stop.venue = p['venue']
+                    update_fields.append('venue')
+                if stop.travel_minutes_from_previous != p['travel']:
+                    stop.travel_minutes_from_previous = p['travel']
+                    update_fields.append('travel_minutes_from_previous')
+                if update_fields:
+                    stop.save(update_fields=update_fields)
+            else:
+                existing.append(TransportStop.objects.create(
+                    transport=transport, venue=p['venue'], order=index,
+                    travel_minutes_from_previous=p['travel'],
+                ))
+        while len(existing) > len(plan):
+            existing.pop().delete()
+        return existing
+
     def create(self, validated_data):
-        """Crée le déplacement puis ses lignes de matériel transporté (le cas
-        échéant). `transport_materials` est retiré des données du modèle avant
-        `super().create()` car ce sont des lignes d'une table liée, pas des
-        champs de `Transport`."""
-        material_lines = validated_data.pop('transport_materials', [])
+        """Crée la tournée, puis ses arrêts, puis ses lignes de matériel et ses
+        affectations de techniciens. Les clés privées `_stops_plan`/
+        `_material_lines` (posées par `validate`) et les listes imbriquées
+        sont retirées des données du modèle avant `super().create()`."""
+        plan = validated_data.pop('_stops_plan')
+        validated_data.pop('_stops_dirty', None)
+        material_lines = validated_data.pop('_material_lines', [])
         technician_lines = validated_data.pop('transport_technicians', [])
         transport = super().create(validated_data)
+        stops = [
+            TransportStop.objects.create(
+                transport=transport, venue=p['venue'], order=index,
+                travel_minutes_from_previous=p['travel'],
+            )
+            for index, p in enumerate(plan)
+        ]
         for line in material_lines:
-            TransportMaterial.objects.create(transport=transport, **line)
+            TransportMaterial.objects.create(
+                transport=transport, material=line['material'], quantity=line['quantity'],
+                load_stop=stops[line['load']], unload_stop=stops[line['unload']],
+            )
         for line in technician_lines:
             TransportTechnician.objects.create(transport=transport, **line)
         return transport
 
     def update(self, instance, validated_data):
-        """Met à jour le déplacement. Si `materials` est fourni, remplace
-        intégralement les lignes de matériel transporté ; s'il est absent, les
-        laisse inchangées (permet un PATCH qui ne touche qu'aux notes ou au
-        technicien sans effacer la liste)."""
-        material_lines = validated_data.pop('transport_materials', None)
+        """Met à jour la tournée. Si `stops` (ou le chemin de compat) est
+        fourni, resynchronise la séquence d'arrêts (voir `_sync_stops`) ; si
+        `materials` est fourni, remplace intégralement les lignes — supprimées
+        AVANT la resynchronisation des arrêts (une ligne ne doit jamais
+        pointer un arrêt en cours de suppression), recréées après sur les
+        arrêts frais. Omettre une liste la laisse inchangée (permet un PATCH
+        qui ne touche qu'aux notes sans effacer le reste)."""
+        plan = validated_data.pop('_stops_plan', None)
+        stops_dirty = validated_data.pop('_stops_dirty', False)
+        material_lines = validated_data.pop('_material_lines', None)
         technician_lines = validated_data.pop('transport_technicians', None)
         transport = super().update(instance, validated_data)
+
         if material_lines is not None:
             transport.transport_materials.all().delete()
+
+        if stops_dirty and plan is not None:
+            stops = self._sync_stops(transport, plan)
+        else:
+            stops = list(transport.stops.order_by('order'))
+
+        if material_lines is not None:
             for line in material_lines:
-                TransportMaterial.objects.create(transport=transport, **line)
+                TransportMaterial.objects.create(
+                    transport=transport, material=line['material'], quantity=line['quantity'],
+                    load_stop=stops[line['load']], unload_stop=stops[line['unload']],
+                )
         if technician_lines is not None:
             transport.transport_technicians.all().delete()
             for line in technician_lines:

@@ -507,14 +507,19 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 TransportTechnician.objects
                 .filter(technician=technician, transport__show__project=project,
                         transport__scheduled_datetime__isnull=False)
-                .select_related('transport', 'transport__origin_venue', 'transport__destination_venue')
+                .select_related('transport')
+                .prefetch_related('transport__stops__venue')
             ):
                 transport = tt.transport
+                # Tournées multi-arrêts (2026-08-04) : le libellé enchaîne TOUS
+                # les arrêts — le technicien fait la tournée entière, pas un
+                # segment.
+                stops = transport.ordered_stops
                 engagements.append({
                     'kind': 'transport',
                     'id': transport.id,
-                    'label': f"{transport.origin_venue.name} → {transport.destination_venue.name}",
-                    'venue_name': transport.destination_venue.name,
+                    'label': ' → '.join(stop.venue.name for stop in stops),
+                    'venue_name': stops[-1].venue.name if stops else '',
                     'start': transport.scheduled_datetime,
                     'end': transport.effective_end,
                     'conflict': ('transport', transport.id, technician.id) in en_conflit,
@@ -550,10 +555,10 @@ class VenueViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewset
     """CRUD standard sur les lieux, filtrable par projet (`?project=<id>`).
 
     Suppression (décision de Samuel du 2026-07-30) : **refusée** tant que le
-    lieu est référencé. `Show.venue` et les deux FK de `Transport` sont en
-    `PROTECT` — sans traitement, Django lèverait un `ProtectedError` que DRF
-    rendrait en 500. On vérifie donc en amont pour renvoyer un 400 lisible,
-    avec le décompte de ce qui bloque.
+    lieu est référencé. `Show.venue` et `TransportStop.venue` (les arrêts de
+    tournée, depuis le 2026-08-04) sont en `PROTECT` — sans traitement, Django
+    lèverait un `ProtectedError` que DRF rendrait en 500. On vérifie donc en
+    amont pour renvoyer un 400 lisible, avec le décompte de ce qui bloque.
 
     `Material.venue` est en `SET_NULL` côté modèle, mais depuis que le lieu
     d'origine est obligatoire (2026-07-30) le laisser vider silencieusement le
@@ -570,10 +575,10 @@ class VenueViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewset
         venue = self.get_object()
         blocages = {
             'shows': venue.shows.count(),
-            'transports': (
-                Transport.objects.filter(origin_venue=venue).count()
-                + Transport.objects.filter(destination_venue=venue).count()
-            ),
+            # Tournées multi-arrêts (2026-08-04) : un lieu bloque dès qu'il est
+            # un arrêt de n'importe quelle tournée — `distinct()` pour ne pas
+            # compter deux fois une tournée qui y repasse (aller-retour).
+            'transports': Transport.objects.filter(stops__venue=venue).distinct().count(),
             'materials': venue.materials.count(),
         }
         if any(blocages.values()):
@@ -928,8 +933,14 @@ class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
 
     queryset = (
         Transport.objects
-        .select_related('show', 'origin_venue', 'destination_venue')
-        .prefetch_related('transport_materials__material', 'transport_technicians__technician')
+        .select_related('show')
+        .prefetch_related(
+            'stops__venue',
+            'transport_materials__material',
+            'transport_materials__load_stop__venue',
+            'transport_materials__unload_stop__venue',
+            'transport_technicians__technician',
+        )
         .all()
     )
     serializer_class = TransportSerializer
@@ -966,29 +977,48 @@ class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='material-availability')
     def material_availability(self, request, pk=None):
-        """Matériel présent au lieu de DÉPART de ce transport, à son heure de départ.
+        """Matériel présent à un ARRÊT de cette tournée, à l'heure d'arrivée du
+        camion à cet arrêt.
 
         Sert la modale « ajouter du matériel » du frontend (demande de Samuel
         du 2026-07-30) : on ne charge dans un camion que ce qui se trouve
-        réellement au point de départ. La position vient du grand livre de
+        réellement au point de chargement. La position vient du grand livre de
         `transport_coherence.py` (entrepôt du matériel + transports confirmés
         antérieurs), pas d'une simple comparaison avec `Material.venue` — sinon
         du matériel déjà déplacé en salle apparaîtrait encore disponible à son
         entrepôt.
 
-        Réponse : `{'at': <iso|null>, 'origin_venue': <id>, 'materials': [...]}`,
-        chaque entrée portant `available` (quantité présente sur place). Le
-        matériel à `available: 0` est renvoyé quand même — le frontend affiche
-        tout l'inventaire et grise ce qui n'est pas disponible.
+        Tournées multi-arrêts (2026-08-04) : `?stop=<position>` choisit
+        l'arrêt de chargement (0-indexé). Sans paramètre, le premier arrêt —
+        exactement l'ancien comportement « lieu de départ », ce qui garde la
+        modale actuelle du frontend fonctionnelle telle quelle.
+
+        Réponse : `{'at': <iso|null>, 'stop_order': <n>, 'origin_venue': <id>,
+        'materials': [...]}`, chaque entrée portant `available` (quantité
+        présente sur place). Le matériel à `available: 0` est renvoyé quand
+        même — le frontend affiche tout l'inventaire et grise ce qui n'est pas
+        disponible.
 
         `at` vaut `null` quand le transport n'a pas encore d'heure (proposition
         auto non complétée) : la position n'est alors pas calculable et tout le
         stock est renvoyé comme disponible.
         """
         transport = self.get_object()
+        stops = transport.ordered_stops
+        stop_param = request.query_params.get('stop')
+        try:
+            stop_index = int(stop_param) if stop_param is not None else 0
+        except ValueError:
+            return Response({'detail': "Paramètre `stop` invalide (position 0-indexée attendue)."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if not stops or not (0 <= stop_index < len(stops)):
+            return Response({'detail': f"Arrêt inexistant (la tournée a {len(stops)} arrêts)."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        stop = stops[stop_index]
+        at = transport.arrival_at(stop)
         rows = get_venue_material_availability(
-            transport.origin_venue,
-            at=transport.scheduled_datetime,
+            stop.venue,
+            at=at,
             project=transport.show.project,
             # Un transport ne doit pas se décompter lui-même : sinon rouvrir la
             # modale d'un transport déjà rempli montrerait son propre
@@ -996,9 +1026,10 @@ class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
             exclude_transport=transport,
         )
         return Response({
-            'at': transport.scheduled_datetime,
-            'origin_venue': transport.origin_venue_id,
-            'origin_venue_name': transport.origin_venue.name,
+            'at': at,
+            'stop_order': stop.order,
+            'origin_venue': stop.venue_id,
+            'origin_venue_name': stop.venue.name,
             'materials': [
                 {
                     'id': row['material'].id,

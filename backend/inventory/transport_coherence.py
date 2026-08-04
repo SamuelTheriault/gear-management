@@ -24,11 +24,17 @@ Modèle de suivi (timeline par matériel) — un « grand livre » de positions 
   `Material.venue` (le « bercail »). Si `Material.venue` est vide, l'origine est
   inconnue et on ne peut rien vérifier → une seule issue `origine_inconnue` par
   matériel, plutôt que d'inonder le rapport de faux positifs.
-- Chaque `Transport` transportant q unités du lieu O au lieu D déplace q unités
-  de O vers D. Un transport est considéré « arrivé » (matériel présent à
-  destination) à la fin de sa fenêtre : `effective_end` = scheduled_datetime +
-  estimated_duration_minutes (voir Transport). C'est donc `effective_end` qui
-  fait foi pour décider si le matériel est déjà en place à un instant donné.
+- Depuis la refonte en tournées multi-arrêts (2026-08-04), l'unité de
+  déplacement est la LIGNE de matériel (`TransportMaterial`), pas la tournée :
+  chaque ligne déplace q unités du lieu de son arrêt de chargement
+  (`load_stop`) vers celui de son arrêt de déchargement (`unload_stop`). Le
+  matériel quitte son origine à l'ARRIVÉE de la tournée à l'arrêt de
+  chargement (`Transport.arrival_at(load_stop)` — c'est là qu'il monte dans le
+  camion, il doit y être disponible à cet instant) et est considéré « arrivé »
+  à destination à l'arrivée à l'arrêt de déchargement. Pour une tournée à 2
+  arrêts (le cas migré depuis l'ancien modèle A → B), ces deux instants sont
+  exactement l'ancien couple `scheduled_datetime`/`effective_end` — aucun
+  changement de comportement.
 
 3. « Tout est-il rentré à la fin ? » — ajouté le 2026-07-30 à la demande de
    Samuel. À la fin du projet (voir `get_project_horizon`), chaque matériel
@@ -60,11 +66,14 @@ from .models import Material, Show, ShowMaterial, Transport, TransportMaterial, 
 def _material_events(material):
     """Événements de déplacement d'un matériel, triés chronologiquement.
 
-    Un événement = un dict décrivant un `Transport` qui transporte `material` :
-    l'objet transport, son heure de départ (`scheduled`), sa fin de fenêtre
-    (`effective_end`, = arrivée), les lieux d'origine/destination et la quantité.
-    Trié par `effective_end` (ordre dans lequel le matériel « arrive » quelque
-    part), ce qui est l'ordre pertinent pour reconstruire les positions.
+    Un événement = un dict décrivant une LIGNE de tournée (`TransportMaterial`)
+    qui transporte `material` : l'objet transport, l'instant où le matériel
+    quitte son origine (`scheduled` = arrivée de la tournée à l'arrêt de
+    chargement), l'instant où il est livré (`effective_end` = arrivée à
+    l'arrêt de déchargement), les lieux de chargement/déchargement et la
+    quantité. Trié par `effective_end` (ordre dans lequel le matériel
+    « arrive » quelque part), ce qui est l'ordre pertinent pour reconstruire
+    les positions.
     """
     # Timeline AUTORITATIVE : seuls les transports confirmés ET horodatés
     # comptent comme des déplacements réels. Une proposition auto
@@ -77,17 +86,25 @@ def _material_events(material):
             transport__status=Transport.STATUS_CONFIRMED,
             transport__scheduled_datetime__isnull=False,
         )
-        .select_related('transport', 'transport__origin_venue', 'transport__destination_venue', 'transport__show')
+        .select_related(
+            'transport', 'transport__show',
+            'load_stop__venue', 'unload_stop__venue',
+        )
+        # `arrival_at` cumule les segments de la tournée : le prefetch évite
+        # une requête par ligne dans la boucle ci-dessous.
+        .prefetch_related('transport__stops')
     )
     events = []
     for line in lines:
         transport = line.transport
         events.append({
             'transport': transport,
-            'scheduled': transport.scheduled_datetime,
-            'effective_end': transport.effective_end,
-            'origin_id': transport.origin_venue_id,
-            'destination_id': transport.destination_venue_id,
+            'scheduled': transport.arrival_at(line.load_stop),
+            'effective_end': transport.arrival_at(line.unload_stop),
+            'origin_id': line.load_stop.venue_id,
+            'origin_venue': line.load_stop.venue,
+            'destination_id': line.unload_stop.venue_id,
+            'destination_venue': line.unload_stop.venue,
             'quantity': line.quantity,
         })
     events.sort(key=lambda event: event['effective_end'])
@@ -95,11 +112,17 @@ def _material_events(material):
 
 
 def get_material_transports(material, window_start, window_end):
-    """Transports **confirmés** qui déplacent `material`, dont la fenêtre
-    croise `[window_start, window_end]` — ajouté le 2026-07-31 à la demande
-    de Samuel, pour les superposer sur le Parcours Matériel (fenêtre du
-    déplacement lui-même, pas seulement son arrivée comme `_material_events`
-    le fait pour reconstruire les séjours).
+    """Portions de tournées **confirmées** qui déplacent `material`, dont la
+    fenêtre croise `[window_start, window_end]` — ajouté le 2026-07-31 à la
+    demande de Samuel, pour les superposer sur le Parcours Matériel (fenêtre
+    du déplacement lui-même, pas seulement son arrivée comme
+    `_material_events` le fait pour reconstruire les séjours).
+
+    Depuis les tournées multi-arrêts (2026-08-04), chaque entrée est la
+    PORTION de tournée qui concerne ce matériel : de son arrêt de chargement à
+    son arrêt de déchargement — `origin_venue_*`/`destination_venue_*` et
+    `start`/`end` portent sur cette portion, pas sur la tournée entière (le
+    camion peut continuer sa route sans ce matériel à bord).
 
     Même filtre que `_material_events` (confirmé + horodaté seulement — une
     proposition à approuver n'a pas encore déplacé quoi que ce soit) mais
@@ -116,9 +139,9 @@ def get_material_transports(material, window_start, window_end):
             'show_id': transport.show_id,
             'show_title': transport.show.display_title,
             'origin_venue_id': event['origin_id'],
-            'origin_venue_name': transport.origin_venue.name,
+            'origin_venue_name': event['origin_venue'].name,
             'destination_venue_id': event['destination_id'],
-            'destination_venue_name': transport.destination_venue.name,
+            'destination_venue_name': event['destination_venue'].name,
             'quantity': event['quantity'],
             'start': event['scheduled'],
             'end': event['effective_end'],
@@ -348,8 +371,11 @@ def _pending_proposal_for(material, show):
         Transport.objects.filter(
             status=Transport.STATUS_TO_APPROVE,
             show=show,
-            destination_venue_id=show.venue_id,
+            # Tournées (2026-08-04) : la proposition couvre la livraison si SA
+            # LIGNE pour ce matériel décharge au lieu du spectacle — pas la
+            # destination finale de la tournée, qui peut continuer plus loin.
             transport_materials__material=material,
+            transport_materials__unload_stop__venue_id=show.venue_id,
         )
         .first()
     )
@@ -455,26 +481,31 @@ def _serialize_return_issue(material, horizon, a_la_maison, ailleurs, venues_par
 
 
 def _serialize_origin_issue(material, event, available):
-    """Issue : un transport part d'un lieu où le matériel n'est pas (assez) présent."""
+    """Issue : une tournée charge le matériel à un lieu où il n'est pas (assez) présent.
+
+    `origin_venue_*` et l'heure du message portent sur l'ARRÊT DE CHARGEMENT
+    de la ligne concernée (tournées multi-arrêts, 2026-08-04), pas sur le
+    point de départ de la tournée entière.
+    """
     transport = event['transport']
     return {
         'type': 'origine_incoherente',
         'transport_id': transport.id,
-        'transport_type': transport.transport_type,
         'scheduled_datetime': transport.scheduled_datetime,
         'show_id': transport.show_id,
         'show_title': transport.show.display_title,
         'material_id': material.id,
         'material_name': material.name,
-        'origin_venue_id': transport.origin_venue_id,
-        'origin_venue_name': transport.origin_venue.name,
+        'origin_venue_id': event['origin_id'],
+        'origin_venue_name': event['origin_venue'].name,
         'quantite_demandee': event['quantity'],
         'quantite_disponible': max(available, 0),
         'detail': (
-            f"Le déplacement prévu à {transport.scheduled_datetime:%Y-%m-%d %H:%M} "
-            f"prétend transporter {event['quantity']} × « {material.name} » depuis "
-            f"« {transport.origin_venue.name} », mais seulement {max(available, 0)} y "
-            f"est/sont disponible(s) à ce moment (aucun transport antérieur ne l'y amène)."
+            f"La tournée qui passe à « {event['origin_venue'].name} » à "
+            f"{event['scheduled']:%Y-%m-%d %H:%M} prétend y charger "
+            f"{event['quantity']} × « {material.name} », mais seulement "
+            f"{max(available, 0)} y est/sont disponible(s) à ce moment "
+            f"(aucun transport antérieur ne l'y amène)."
         ),
     }
 
@@ -821,9 +852,15 @@ def get_material_schedule(material, window_start=None, window_end=None):
                 'conflict': False,
             })
 
+    # Tournées (2026-08-04) : chaque ligne est la PORTION qui concerne ce
+    # matériel — de son arrêt de chargement à son arrêt de déchargement, avec
+    # les heures d'arrivée dérivées à ces deux arrêts. Une proposition sans
+    # heure garde `start`/`end` à None (arrival_at renvoie None sans
+    # scheduled_datetime).
     transport_materials = (
         TransportMaterial.objects.filter(material_id=material.id)
-        .select_related('transport', 'transport__origin_venue', 'transport__destination_venue')
+        .select_related('transport', 'load_stop__venue', 'unload_stop__venue')
+        .prefetch_related('transport__stops')
     )
     for tm in transport_materials:
         transport = tm.transport
@@ -831,13 +868,12 @@ def get_material_schedule(material, window_start=None, window_end=None):
             'kind': 'transport',
             'id': transport.id,
             'title': (
-                f"{transport.origin_venue.name} → {transport.destination_venue.name}"
+                f"{tm.load_stop.venue.name} → {tm.unload_stop.venue.name}"
             ),
-            'transport_type': transport.transport_type,
             'status': transport.status,
-            'start': transport.scheduled_datetime,
-            'end': transport.effective_end,
-            'venue_name': transport.destination_venue.name,
+            'start': transport.arrival_at(tm.load_stop),
+            'end': transport.arrival_at(tm.unload_stop),
+            'venue_name': tm.unload_stop.venue.name,
             'quantity': tm.quantity,
             'inherited': False,
             'parent_title': None,

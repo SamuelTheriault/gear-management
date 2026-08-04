@@ -119,7 +119,7 @@ class Settings(models.Model):
     )
     default_transport_duration_minutes = models.PositiveIntegerField(
         default=60,
-        help_text="Valeur proposée par défaut pour estimated_duration_minutes à la création d'un Transport.",
+        help_text="Durée de segment par défaut (TransportStop.travel_minutes_from_previous) quand l'estimation Google Routes n'est pas disponible.",
     )
     date_format = models.CharField(max_length=3, choices=DATE_FORMAT_CHOICES, default=DATE_FORMAT_DMY)
     time_format = models.CharField(max_length=3, choices=TIME_FORMAT_CHOICES, default=TIME_FORMAT_24H)
@@ -927,23 +927,33 @@ class ShowTechnician(models.Model):
 
 
 class Transport(models.Model):
-    """Livraison ou ramassage de matériel entre deux lieux, pour un spectacle donné.
+    """Tournée de matériel : une séquence ordonnée d'arrêts (voir `TransportStop`),
+    pour un spectacle donné.
 
     Table ajoutée le 2026-07-18 (hors des 8 tables initiales de schema.md) suite
     à un besoin exprimé par Samuel : tracer QUAND le matériel se déplace vers/depuis
-    un lieu de spectacle et QUEL technicien s'en charge. Un `Transport` a sa propre
-    fenêtre de temps (`scheduled_datetime` + `estimated_duration_minutes`), utilisée
-    pour la détection de conflit du technicien assigné — au même titre qu'un
-    `ShowTechnician` (voir `conflicts.py`, `get_transport_conflicts` et
-    `get_technician_conflicts`, qui vérifient désormais l'un contre l'autre).
-    """
+    un lieu de spectacle et QUEL(S) technicien(s) s'en chargent.
 
-    TYPE_DELIVERY = 'delivery'
-    TYPE_PICKUP = 'pickup'
-    TRANSPORT_TYPE_CHOICES = [
-        (TYPE_DELIVERY, 'Livraison'),
-        (TYPE_PICKUP, 'Ramassage'),
-    ]
+    **Refonte en tournées multi-arrêts (2026-08-04, décision de Samuel)** :
+    l'ancien modèle « lieu A → lieu B » (`origin_venue`/`destination_venue` +
+    `estimated_duration_minutes`) est remplacé par une liste ordonnée d'arrêts
+    (`TransportStop`) — arrêt 1 on ramasse du matériel, arrêt 2 on en ajoute,
+    arrêt 3 on décharge, etc. Chaque ligne de matériel (`TransportMaterial`)
+    pointe son arrêt de chargement ET de déchargement : « quel matériel monte
+    où et descend où » est une donnée stockée, pas une reconstruction. Un
+    ancien transport A → B est simplement une tournée à 2 arrêts (voir la
+    migration `0025_transport_stops`). `transport_type` (livraison/ramassage)
+    a été retiré en même temps — Samuel n'en voyait pas l'utilité, et il
+    n'avait plus de sens au niveau d'une tournée.
+
+    Horaire (décision de Samuel du 2026-08-04) : UNE heure d'ancrage
+    (`scheduled_datetime`, le départ du premier arrêt) + une durée par segment
+    (`TransportStop.travel_minutes_from_previous`, trajet + chargement) — les
+    heures d'arrivée aux arrêts sont dérivées (`arrival_at`), et décaler toute
+    la tournée reste un seul champ à changer (le glisser-déposer du Dashboard
+    en dépend). La fenêtre d'engagement des techniciens couvre toute la
+    tournée : `[scheduled_datetime, effective_end]` — voir `conflicts.py`.
+    """
 
     STATUS_CONFIRMED = 'confirmed'
     STATUS_TO_APPROVE = 'to_approve'
@@ -973,36 +983,15 @@ class Transport(models.Model):
         related_name='transports',
         help_text="Spectacle desservi par ce déplacement.",
     )
-    transport_type = models.CharField(max_length=10, choices=TRANSPORT_TYPE_CHOICES)
-    origin_venue = models.ForeignKey(
-        Venue,
-        on_delete=models.PROTECT,
-        related_name='transports_from',
-        help_text="Lieu de départ (souvent un entrepôt pour une livraison).",
-    )
-    destination_venue = models.ForeignKey(
-        Venue,
-        on_delete=models.PROTECT,
-        related_name='transports_to',
-        help_text="Lieu d'arrivée (souvent le lieu du spectacle pour une livraison).",
-    )
     scheduled_datetime = models.DateTimeField(
         null=True,
         blank=True,
         help_text=(
-            "Heure prévue du déplacement. Nullable depuis le 2026-07-24 : une "
-            "proposition auto (status='to_approve') n'a pas encore d'heure "
-            "tant que l'utilisateur ne l'a pas complétée. Obligatoire pour un "
-            "déplacement 'confirmed' (imposé par TransportSerializer)."
-        ),
-    )
-    estimated_duration_minutes = models.PositiveIntegerField(
-        default=_default_transport_duration_minutes,
-        help_text=(
-            "Durée estimée du déplacement (trajet + chargement/déchargement). "
-            "Pré-remplie automatiquement via l'API Google Routes si les deux "
-            "venues ont des coordonnées GPS (voir TransportSerializer et "
-            "inventory/maps.py) ; sinon, valeur par défaut tirée de Settings."
+            "Heure de départ de la tournée (départ du premier arrêt). Nullable "
+            "depuis le 2026-07-24 : une proposition auto (status='to_approve') "
+            "n'a pas encore d'heure tant que l'utilisateur ne l'a pas "
+            "complétée. Obligatoire pour un déplacement 'confirmed' (imposé "
+            "par TransportSerializer)."
         ),
     )
     # Le champ `technician` (FK unique) a été remplacé le 2026-07-30 par la
@@ -1015,27 +1004,161 @@ class Transport(models.Model):
         ordering = ['scheduled_datetime']
 
     def __str__(self):
-        return f"{self.get_transport_type_display()} — {self.show} ({self.origin_venue} → {self.destination_venue})"
+        stops = self.ordered_stops
+        trajet = ' → '.join(str(stop.venue) for stop in stops) if stops else '(sans arrêt)'
+        return f"Tournée — {self.show} ({trajet})"
+
+    @property
+    def ordered_stops(self):
+        """Arrêts de la tournée, triés par `order`.
+
+        Trie en Python plutôt qu'en SQL pour profiter du cache de
+        `prefetch_related('stops__venue')` quand il est présent (listes,
+        serializers) — un `.order_by()` relancerait une requête par tournée.
+        """
+        return sorted(self.stops.all(), key=lambda stop: stop.order)
+
+    @property
+    def first_stop(self):
+        """Premier arrêt de la tournée (le point de départ), ou None si la
+        tournée n'a encore aucun arrêt (état transitoire à la création)."""
+        stops = self.ordered_stops
+        return stops[0] if stops else None
+
+    @property
+    def last_stop(self):
+        """Dernier arrêt de la tournée (la destination finale), ou None."""
+        stops = self.ordered_stops
+        return stops[-1] if stops else None
+
+    @property
+    def origin_venue(self):
+        """Lieu du premier arrêt — équivalent de l'ancien champ `origin_venue`
+        (retiré le 2026-08-04), dérivé des arrêts. `None` sans arrêt."""
+        stop = self.first_stop
+        return stop.venue if stop is not None else None
+
+    @property
+    def origin_venue_id(self):
+        """Id du lieu du premier arrêt — pendant de la propriété `origin_venue`."""
+        stop = self.first_stop
+        return stop.venue_id if stop is not None else None
+
+    @property
+    def destination_venue(self):
+        """Lieu du dernier arrêt — équivalent de l'ancien champ
+        `destination_venue` (retiré le 2026-08-04), dérivé des arrêts."""
+        stop = self.last_stop
+        return stop.venue if stop is not None else None
+
+    @property
+    def destination_venue_id(self):
+        """Id du lieu du dernier arrêt — pendant de la propriété `destination_venue`."""
+        stop = self.last_stop
+        return stop.venue_id if stop is not None else None
+
+    @property
+    def total_duration_minutes(self):
+        """Durée totale de la tournée : somme des durées de segment de tous les
+        arrêts (`travel_minutes_from_previous`, 0 sur le premier arrêt).
+
+        Remplace l'ancien champ `estimated_duration_minutes` (retiré le
+        2026-08-04) — une tournée à 2 arrêts donne exactement la même valeur.
+        """
+        return sum(stop.travel_minutes_from_previous for stop in self.stops.all())
+
+    def arrival_at(self, stop):
+        """Heure d'arrivée dérivée à un arrêt : `scheduled_datetime` + cumul des
+        durées de segment jusqu'à cet arrêt inclus. `None` si la tournée n'a
+        pas encore d'heure (proposition non complétée)."""
+        from datetime import timedelta
+        if self.scheduled_datetime is None:
+            return None
+        cumul = sum(
+            s.travel_minutes_from_previous
+            for s in self.ordered_stops
+            if s.order <= stop.order
+        )
+        return self.scheduled_datetime + timedelta(minutes=cumul)
 
     @property
     def effective_end(self):
-        """Fin de la fenêtre = scheduled_datetime + estimated_duration_minutes.
+        """Fin de la fenêtre = arrivée au dernier arrêt (`scheduled_datetime` +
+        somme des durées de segment).
 
         `None` si `scheduled_datetime` n'est pas encore renseigné (proposition
-        auto 'to_approve' non complétée) — un tel déplacement n'a pas de fenêtre
-        exploitable et est ignoré par les timelines/conflits jusqu'à sa
+        auto 'to_approve' non complétée) — une telle tournée n'a pas de fenêtre
+        exploitable et est ignorée par les timelines/conflits jusqu'à sa
         confirmation.
         """
         from datetime import timedelta
         if self.scheduled_datetime is None:
             return None
-        return self.scheduled_datetime + timedelta(minutes=self.estimated_duration_minutes)
+        return self.scheduled_datetime + timedelta(minutes=self.total_duration_minutes)
 
     @property
     def is_confirmed(self):
         """True si le déplacement est confirmé ET a une heure — donc réellement
         exploitable dans les timelines de position et la détection de conflit."""
         return self.status == self.STATUS_CONFIRMED and self.scheduled_datetime is not None
+
+
+class TransportStop(models.Model):
+    """Arrêt d'une tournée (`Transport`), ajouté le 2026-08-04 avec la refonte
+    en tournées multi-arrêts — voir le docstring de `Transport`.
+
+    Chaque arrêt porte son lieu, sa position dans la séquence (`order`, 0 pour
+    le départ) et la durée du segment qui l'amène depuis l'arrêt précédent
+    (`travel_minutes_from_previous` — trajet + chargement/déchargement,
+    toujours 0 sur le premier arrêt, imposé par `TransportSerializer`).
+    L'heure d'arrivée n'est PAS stockée : elle est dérivée
+    (`Transport.arrival_at`) de l'heure de départ de la tournée + le cumul des
+    segments — décision de Samuel du 2026-08-04 (une seule heure d'ancrage).
+
+    Deux arrêts consécutifs doivent avoir des lieux différents (validé par le
+    serializer), mais un même lieu peut revenir plus loin dans la séquence —
+    c'est ce qui permet une tournée aller-retour (entrepôt → salle → entrepôt)
+    en une seule fiche.
+    """
+
+    transport = models.ForeignKey(
+        Transport,
+        on_delete=models.CASCADE,
+        related_name='stops',
+        help_text="Tournée à laquelle cet arrêt appartient.",
+    )
+    venue = models.ForeignKey(
+        Venue,
+        on_delete=models.PROTECT,
+        related_name='transport_stops',
+        help_text="Lieu de cet arrêt.",
+    )
+    order = models.PositiveIntegerField(
+        help_text="Position de l'arrêt dans la séquence (0 = départ de la tournée).",
+    )
+    travel_minutes_from_previous = models.PositiveIntegerField(
+        default=0,
+        help_text=(
+            "Durée du segment depuis l'arrêt précédent (trajet + "
+            "chargement/déchargement), en minutes. Toujours 0 sur le premier "
+            "arrêt. Pré-remplie via l'API Google Routes quand les deux lieux "
+            "ont des coordonnées GPS (voir TransportSerializer et "
+            "inventory/maps.py) ; sinon, valeur par défaut tirée de Settings."
+        ),
+    )
+
+    class Meta:
+        db_table = 'transport_stops'
+        unique_together = ('transport', 'order')
+        ordering = ['transport', 'order']
+
+    def __str__(self):
+        return f"Arrêt {self.order} — {self.venue} ({self.transport_id})"
+
+    @property
+    def arrival_datetime(self):
+        """Heure d'arrivée dérivée à cet arrêt — voir `Transport.arrival_at`."""
+        return self.transport.arrival_at(self)
 
 
 class TransportTechnician(models.Model):
@@ -1091,9 +1214,18 @@ class TransportMaterial(models.Model):
     qu'il prétend transporter se trouve bien au lieu de départ à ce moment.
 
     `quantity` permet de ne transporter qu'une partie du matériel possédé en
-    plusieurs exemplaires (ex. 8 des 20 rallonges). Un même matériel n'apparaît
-    qu'une fois par transport (`unique_together`) — regrouper la quantité sur
-    une seule ligne plutôt que d'empiler des doublons.
+    plusieurs exemplaires (ex. 8 des 20 rallonges).
+
+    **Tournées multi-arrêts (2026-08-04)** : chaque ligne pointe maintenant son
+    arrêt de chargement (`load_stop`) et de déchargement (`unload_stop`) — le
+    matériel monte dans le camion à l'arrivée au premier et en descend à
+    l'arrivée au second. C'est LA donnée qui associe chaque bloc de matériel à
+    sa portion de la séquence (demande de Samuel) : rien n'est reconstruit
+    côté affichage. Le `unique_together` couvre le quadruplet — le même
+    matériel peut légitimement apparaître deux fois dans une tournée pour une
+    répartition (ex. 8 rallonges chargées au départ, 3 déposées à l'arrêt 1 et
+    5 à l'arrêt 2 = deux lignes), mais pas deux lignes identiques (regrouper
+    la quantité).
     """
 
     transport = models.ForeignKey(
@@ -1112,15 +1244,34 @@ class TransportMaterial(models.Model):
         default=1,
         validators=[MinValueValidator(1)],
         help_text=(
-            "Quantité de ce matériel transportée par ce déplacement (ex. 8 des "
-            "20 rallonges en inventaire). Voir Material.quantity et "
-            "transport_coherence.py pour le suivi des emplacements."
+            "Quantité de ce matériel transportée sur cette portion de la "
+            "tournée (ex. 8 des 20 rallonges en inventaire). Voir "
+            "Material.quantity et transport_coherence.py pour le suivi des "
+            "emplacements."
         ),
+    )
+    load_stop = models.ForeignKey(
+        'TransportStop',
+        on_delete=models.CASCADE,
+        related_name='loaded_materials',
+        help_text=(
+            "Arrêt où ce matériel monte dans le camion. Doit précéder "
+            "`unload_stop` dans la séquence (validé par TransportSerializer) "
+            "et appartenir à la même tournée. CASCADE : le serializer refuse "
+            "de supprimer un arrêt encore référencé par une ligne — la "
+            "cascade ne joue qu'à la suppression de la tournée entière."
+        ),
+    )
+    unload_stop = models.ForeignKey(
+        'TransportStop',
+        on_delete=models.CASCADE,
+        related_name='unloaded_materials',
+        help_text="Arrêt où ce matériel descend du camion.",
     )
 
     class Meta:
         db_table = 'transport_materials'
-        unique_together = ('transport', 'material')
+        unique_together = ('transport', 'material', 'load_stop', 'unload_stop')
         ordering = ['transport']
 
     def __str__(self):

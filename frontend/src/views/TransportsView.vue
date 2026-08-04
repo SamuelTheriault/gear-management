@@ -28,6 +28,19 @@ import { useChipFilter } from '../composables/useChipFilter'
  * calculé) comme clé, trié chronologiquement avec « À planifier » (pas de
  * `scheduled_datetime`) toujours en dernier — voir la note dédiée dans
  * CLAUDE.md.
+ *
+ * Tournées multi-arrêts (2026-08-04, décision de Samuel) : un transport est
+ * une séquence d'arrêts (`stops`) — le trajet affiché enchaîne TOUS les
+ * arrêts (codes courts), plus seulement départ → arrivée, et le champ
+ * `transport_type` (livraison/ramassage) a disparu du modèle : plus de
+ * sélecteur de type dans le formulaire d'ajout, icône neutre unique. Le
+ * formulaire d'ajout rapide reste volontairement un simple A → B (il crée
+ * une tournée à 2 arrêts via le chemin de compat de l'API) — les arrêts
+ * intermédiaires s'ajoutent sur la fiche. La déduction locale des spectacles
+ * de référence suit la nouvelle règle du backend (get_transport_reference_shows) :
+ * le spectacle desservi est le spectacle d'ARRIVÉE s'il se joue au lieu
+ * d'arrivée, de DÉPART s'il se joue au lieu de départ, sinon les deux bouts
+ * sont déduits autour de sa fenêtre.
  */
 
 const { activeProjectId } = useActiveProject()
@@ -35,11 +48,6 @@ const { activeProjectId } = useActiveProject()
 const transports = ref([])
 const loading = ref(false)
 const loadError = ref(null)
-
-const typeMeta = {
-  delivery: { color: 'oklch(0.72 0.13 165)', bg: 'oklch(0.72 0.13 165 / .18)', arrow: '→', label: 'Livraison' },
-  pickup: { color: 'oklch(0.78 0.13 85)', bg: 'oklch(0.78 0.13 85 / .18)', arrow: '←', label: 'Ramassage' },
-}
 
 const statusMeta = {
   confirmed: { label: 'Confirmé', color: 'oklch(0.72 0.13 165)', bg: 'oklch(0.72 0.13 165 / .16)' },
@@ -77,17 +85,18 @@ watch(activeProjectId, loadTransports, { immediate: true })
 
 const decorated = computed(() =>
   transports.value.map((t) => {
-    const type = typeMeta[t.transport_type] ?? typeMeta.delivery
     const status = statusMeta[t.status] ?? statusMeta.confirmed
     const start = t.scheduled_datetime ? new Date(t.scheduled_datetime) : null
     const itemCount = t.materials?.length ?? 0
     const unitCount = (t.materials ?? []).reduce((sum, m) => sum + (m.quantity || 0), 0)
+    const stops = t.stops ?? []
     return {
       ...t,
-      typeColor: type.color,
-      typeBg: type.bg,
-      typeArrow: type.arrow,
-      typeLabel: type.label,
+      // Trajet = la séquence complète des arrêts (codes courts si dispo) —
+      // remplace l'ancien couple départ → arrivée + flèche typée.
+      routeCodes: stops.map((s) => s.venue_code || s.venue_name).join(' → '),
+      routeFull: stops.map((s) => s.venue_name).join(' → '),
+      stopCount: stops.length,
       statusColor: status.color,
       statusBg: status.bg,
       statusLabel: status.label,
@@ -207,7 +216,6 @@ const shows = ref([])
 const venues = ref([])
 const form = ref({
   show: '',
-  transport_type: 'delivery',
   origin_venue: '',
   destination_venue: '',
   scheduled_datetime: '',
@@ -259,20 +267,31 @@ function findArrivalShowLocal(venueId, afterDate, excludeShowId) {
 }
 
 const referenceShows = computed(() => {
+  // Même règle que le backend depuis le retrait de `transport_type`
+  // (2026-08-04, voir get_transport_reference_shows) : c'est le LIEU du
+  // spectacle desservi qui dit s'il est le bout d'arrivée ou de départ.
   const show = shows.value.find((s) => s.id === form.value.show)
   if (!show) return { departureShow: null, arrivalShow: null }
-  if (form.value.transport_type === 'delivery') {
-    const arrivalShow = show
+  if (form.value.destination_venue && show.venue === form.value.destination_venue) {
     const departureShow = form.value.origin_venue
-      ? findDepartureShowLocal(form.value.origin_venue, new Date(arrivalShow.effective_start), arrivalShow.id)
+      ? findDepartureShowLocal(form.value.origin_venue, new Date(show.effective_start), show.id)
       : null
-    return { departureShow, arrivalShow }
+    return { departureShow, arrivalShow: show }
   }
-  const departureShow = show
-  const arrivalShow = form.value.destination_venue
-    ? findArrivalShowLocal(form.value.destination_venue, new Date(departureShow.effective_end), departureShow.id)
-    : null
-  return { departureShow, arrivalShow }
+  if (form.value.origin_venue && show.venue === form.value.origin_venue) {
+    const arrivalShow = form.value.destination_venue
+      ? findArrivalShowLocal(form.value.destination_venue, new Date(show.effective_end), show.id)
+      : null
+    return { departureShow: show, arrivalShow }
+  }
+  return {
+    departureShow: form.value.origin_venue
+      ? findDepartureShowLocal(form.value.origin_venue, new Date(show.effective_start), show.id)
+      : null,
+    arrivalShow: form.value.destination_venue
+      ? findArrivalShowLocal(form.value.destination_venue, new Date(show.effective_end), show.id)
+      : null,
+  }
 })
 
 // Propose l'heure de départ effective comme valeur par défaut — seulement
@@ -314,9 +333,11 @@ async function submitTransport(force = false) {
 
   submitting.value = true
   try {
+    // Ajout rapide = tournée simple à 2 arrêts, via le contrat de compat
+    // origin/destination de l'API (2026-08-04) — les arrêts intermédiaires
+    // s'ajoutent ensuite sur la fiche.
     await api.post('/transports/', {
       show: form.value.show,
-      transport_type: form.value.transport_type,
       status: 'confirmed',
       origin_venue: form.value.origin_venue,
       destination_venue: form.value.destination_venue,
@@ -325,7 +346,6 @@ async function submitTransport(force = false) {
     })
     form.value = {
       show: '',
-      transport_type: 'delivery',
       origin_venue: '',
       destination_venue: '',
       scheduled_datetime: '',
@@ -430,15 +450,14 @@ async function submitTransport(force = false) {
           <div v-for="grp in groups" :key="grp.label" class="group">
             <div class="group__label">{{ grp.label }}</div>
             <div v-for="t in grp.items" :key="t.id" class="transport-row">
-              <div class="transport-row__icon" :style="{ background: t.typeBg }">
-                <span :style="{ color: t.typeColor }">{{ t.typeArrow }}</span>
+              <div class="transport-row__icon">
+                <span>→</span>
+                <!-- Nombre d'arrêts en badge dès que la tournée dépasse le
+                     simple A → B (2026-08-04). -->
+                <span v-if="t.stopCount > 2" class="transport-row__stop-count">{{ t.stopCount }}</span>
               </div>
               <div class="transport-row__route">
-                <div class="transport-row__codes" :title="`${t.origin_venue_name} → ${t.destination_venue_name}`">
-                  {{ t.origin_venue_code || t.origin_venue_name }}
-                  <span class="transport-row__arrow">→</span>
-                  {{ t.destination_venue_code || t.destination_venue_name }}
-                </div>
+                <div class="transport-row__codes" :title="t.routeFull">{{ t.routeCodes }}</div>
                 <div class="transport-row__show">{{ t.show_title }}</div>
               </div>
               <div class="transport-row__time">
@@ -487,13 +506,6 @@ async function submitTransport(force = false) {
             >
               <option value="" disabled>Spectacle…</option>
               <option v-for="s in shows" :key="s.id" :value="s.id">{{ s.display_title }}</option>
-            </select>
-          </label>
-          <label class="add-form__field">
-            <span class="add-form__label">Type</span>
-            <select v-model="form.transport_type" class="add-form__input">
-              <option value="delivery">Livraison</option>
-              <option value="pickup">Ramassage</option>
             </select>
           </label>
           <label class="add-form__field">
@@ -675,6 +687,27 @@ async function submitTransport(force = false) {
   justify-content: center;
   flex: none;
   font: 700 13px system-ui;
+  /* Icône neutre unique depuis le retrait de livraison/ramassage
+     (2026-08-04) — même teinte que les blocs transport du Dashboard. */
+  position: relative;
+  background: color-mix(in oklab, var(--transport) 18%, transparent);
+  color: var(--transport);
+}
+
+.transport-row__stop-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 0 5px 0 5px;
+  background: var(--transport);
+  color: #0b0d10;
+  font: 700 9.5px var(--font-mono);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .transport-row__route {
