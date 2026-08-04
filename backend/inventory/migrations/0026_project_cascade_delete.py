@@ -21,7 +21,10 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('inventory', '0024_settings_event_type_order'),
+        # Renumérotée 0025→0026 le 2026-08-04 : collision avec
+        # 0025_transport_stops (module transport, mergée dans main en
+        # premier) — voir suivi_projet.md.
+        ('inventory', '0025_transport_stops'),
     ]
 
     operations = [
