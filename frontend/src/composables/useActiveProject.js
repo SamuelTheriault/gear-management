@@ -13,6 +13,12 @@ import { api } from '../api/client'
 const STORAGE_KEY = 'gmp_active_project_id'
 
 const projects = ref([])
+// Liste brute, tous statuts confondus (2026-08-04) — `projects` ci-dessus
+// reste filtrée aux projets actifs (sélecteur, garde d'onboarding), mais un
+// écran comme ReglagesView a besoin de voir aussi les projets ARCHIVÉS pour
+// pouvoir les réafficher et les réactiver (sans quoi un projet archivé
+// devient invisible et donc irrécupérable depuis l'interface).
+const allProjects = ref([])
 const activeProjectId = ref(Number(localStorage.getItem(STORAGE_KEY)) || null)
 const loaded = ref(false)
 const loading = ref(false)
@@ -37,6 +43,7 @@ async function loadProjects() {
       // pas de ProjectFilteredMixin) — on filtre les projets archivés côté client.
       const data = await api.get('/projects/')
       const all = Array.isArray(data) ? data : (data.results ?? [])
+      allProjects.value = all
       projects.value = all.filter((p) => p.status === 'active')
 
       const stillValid = projects.value.some((p) => p.id === activeProjectId.value)
@@ -75,6 +82,7 @@ export function useActiveProject() {
   loadProjects()
   return {
     projects,
+    allProjects,
     activeProjectId,
     activeProject,
     setActiveProject,

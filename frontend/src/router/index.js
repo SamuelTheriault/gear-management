@@ -81,6 +81,15 @@ export const router = createRouter({
 // `ensureProjectsLoaded()` réutilise le chargement mis en cache par
 // useActiveProject (AppShell, ReglagesView, ...) : un seul GET /api/projects/
 // par session SPA, pas un par navigation.
+//
+// Exemption /reglages + /projets/:id (2026-08-04, bug trouvé par Samuel) :
+// sans elle, archiver son SEUL projet actif (Project.status='archived',
+// donc absent de `projects` — voir useActiveProject.js) renvoyait vers
+// /bienvenue, qui bloquait à son tour l'accès à Réglages/la fiche du
+// projet — plus aucun moyen de le réactiver depuis l'interface. Ces deux
+// écrans sont de la gestion de projet (créer/lister/réactiver), pas des
+// écrans de saisie qui ont besoin d'un projet actif pour fonctionner —
+// contrairement à Matériel/Lieux/etc., toujours bloqués sans projet actif.
 router.beforeEach(async (to) => {
   if (to.path === '/login') return true
   const { currentUser, checkAuth } = useAuth()
@@ -92,8 +101,9 @@ router.beforeEach(async (to) => {
   const { projects, ensureProjectsLoaded } = useActiveProject()
   await ensureProjectsLoaded()
   const hasActiveProject = projects.value.length > 0
+  const isProjectManagementRoute = to.path === '/reglages' || to.path.startsWith('/projets/')
 
-  if (!hasActiveProject && to.path !== '/bienvenue') {
+  if (!hasActiveProject && to.path !== '/bienvenue' && !isProjectManagementRoute) {
     return { path: '/bienvenue' }
   }
   if (hasActiveProject && to.path === '/bienvenue') {

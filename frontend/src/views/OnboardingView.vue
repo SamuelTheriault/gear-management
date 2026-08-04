@@ -113,6 +113,11 @@ async function handleLogout() {
           biennale...) — rien n'est partagé entre deux projets. Tu pourras en
           créer d'autres plus tard depuis Réglages.
         </p>
+        <p class="panel__intro">
+          Un projet existe déjà mais est archivé ?
+          <RouterLink to="/reglages" class="panel__link">Réactive-le depuis Réglages</RouterLink>
+          plutôt que d'en recréer un.
+        </p>
 
         <div class="fiche-grid">
           <label class="fiche-field fiche-field--wide">
@@ -269,6 +274,10 @@ async function handleLogout() {
   margin: 0;
   font: 400 13px/1.6 system-ui;
   color: rgba(var(--fg-rgb), 0.6);
+}
+
+.panel__link {
+  color: var(--link);
 }
 
 .submit-btn {
