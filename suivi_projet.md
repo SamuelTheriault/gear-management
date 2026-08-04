@@ -4,12 +4,14 @@ Tableau de bord manuel. À mettre à jour à chaque étape franchie ou décision
 prise. Complète `recapitulatif_projet.md` (contenu fonctionnel) sans le
 dupliquer — ce fichier ne suit que **l'avancement**, pas le scope.
 
-Dernière mise à jour : 2026-08-04 — **toutes les étapes du plan initial
-(1 à 16) sont faites, mergées et déployées.** Les deux derniers chantiers
-(tournées multi-arrêts, onboarding de projet + suppression cascade) sont
-passés par une revue `code-reviewer` avant merge, chacune ayant trouvé et
-fait corriger un vrai problème avant qu'il n'atteigne la prod (voir étapes
-15 et 16 ci-dessous).
+Dernière mise à jour : 2026-08-04 (vérification automatique, fin de
+journée) — **toutes les étapes du plan initial (1 à 16) sont faites,
+mergées et déployées.** Confirmé côté Railway : dernier déploiement SUCCESS
+du 2026-08-04, commit `9cd1d42` = merge de la PR #16 (onboarding), précédé
+de la PR #15 (tournées). Les deux derniers chantiers sont passés par une
+revue `code-reviewer` avant merge, chacune ayant trouvé et fait corriger un
+vrai problème avant qu'il n'atteigne la prod (voir étapes 15 et 16
+ci-dessous).
 
 ## Statut global
 
@@ -34,6 +36,17 @@ portabilité CSV (`portability.py`, `csv_export.py`) et le tooltip flottant
 du Dashboard/Parcours (`FloatingTooltip.vue`). Samuel prépare une nouvelle
 branche dédiée à l'import/export pour la suite ; le tooltip flottant reste
 à trier séparément (voir « Prochaine action concrète »).
+
+**Nouveau depuis la dernière vérification (constaté le 2026-08-04 en fin de
+journée)** : l'import CSV est commencé — `csv_import.py` +
+`test_csv_import.py` (15 tests) sont dans l'arbre de travail, **non
+commités** (untracked, sur la branche `docs/suivi-post-merge-2026-08-04`).
+Pas encore branchés dans `views.py` (aucune action `import_csv` sur les
+ViewSets, contrairement à ce que les docstrings annoncent), et ils
+importent `csv_export.py`/`test_portability.py` qui n'existent que sur
+`wip/checkpoint-2026-08-04` — **tant que c'est le cas, `manage.py test`
+casse sur ImportError dans ce dossier.** À assembler dans
+`feature/import-export`.
 
 **Désync doc/code toujours présente** (voir « Points de vigilance ») :
 `recapitulatif_projet.md`/`schema.md`/`architecture.md` restent en retard
@@ -76,14 +89,15 @@ sur plusieurs fonctionnalités déjà codées et déployées.
 Aucune étape bloquante en attente sur `main` — tout ce qui était en PR est
 mergé et déployé.
 
-→ **Samuel prépare `feature/import-export` (CSV) dans une nouvelle
-branche.** Même routine que les deux dernières fois : vérif (flake8,
-migrations, tests ciblés) puis revue `code-reviewer` avant merge.
+→ **Assembler `feature/import-export` (CSV)** : partir d'une branche
+fraîche depuis `main`, y rapatrier `portability.py`/`csv_export.py`/
+`test_portability.py` (depuis `wip/checkpoint-2026-08-04`) ET les nouveaux
+`csv_import.py`/`test_csv_import.py` (untracked dans l'arbre de travail),
+puis câbler les actions `import_csv` dans `views.py` (pas encore fait).
+Même routine que les deux dernières fois : vérif (flake8, migrations,
+tests) puis revue `code-reviewer` avant merge.
 
-→ **`wip/checkpoint-2026-08-04` à trier** : contient déjà du code pour
-l'export/portabilité CSV (`portability.py`, `csv_export.py`,
-`test_portability.py`) — à vérifier si ça peut nourrir directement
-`feature/import-export`, plutôt que de repartir de zéro. Le tooltip flottant
+→ **`wip/checkpoint-2026-08-04` à trier** : le tooltip flottant
 du Dashboard/Parcours (`FloatingTooltip.vue`, remplace l'ancienne info-bulle
 CSS-only piégée par le clipping du défilement zoomé) n'a pas de branche
 dédiée — à extraire séparément si Samuel veut le garder.
@@ -94,6 +108,26 @@ dédiée — à extraire séparément si Samuel veut le garder.
 
 ## Points de vigilance
 
+- **🔴 `manage.py test` casse actuellement dans l'arbre de travail** :
+  `test_csv_import.py` (untracked) importe `csv_export.py` qui n'est pas
+  dans l'arbre (seulement sur `wip/checkpoint-2026-08-04`) — le découvreur
+  de tests Django échoue en ImportError. Se résout en assemblant
+  `feature/import-export` (ou en déplaçant temporairement les deux fichiers
+  untracked hors du package).
+- **🟡 `main` local a divergé de GitHub** : les étapes 15-16 ont été mergées
+  localement (merges directs) PUIS via les PR #15/#16 sur GitHub (commits de
+  merge différents, `9cd1d42` en tête là-bas). Même contenu, deux
+  historiques. Au prochain passage sur `main` : `git fetch` puis réaligner
+  le `main` local sur `origin/main` plutôt que de pousser par-dessus.
+  (Le `git fetch` est impossible depuis le bac à sable Claude — vérifié via
+  l'API Railway, pas via git.)
+- **🟡 La branche `docs/suivi-post-merge-2026-08-04` (mises à jour de ce
+  fichier) est locale seulement** — à pousser et passer en PR (la protection
+  de `main` s'applique aussi aux changements doc).
+- **🟡 Fichiers à nettoyer dans l'arbre de travail** (untracked, rien
+  supprimé automatiquement — confirmation de Samuel requise) : `_to_delete/`,
+  `backend/db.sqlite3.avant-tournees`, `frontend/_to_delete_dist_check/` et
+  `_to_delete_dist_check2/`.
 - **Un seul chantier de code à la fois dans ce dossier** — voir l'incident
   du 2026-08-04 en « Statut global ». Deux sessions Cowork simultanées sur
   le même dossier peuvent se marcher dessus (branche qui change seule,
