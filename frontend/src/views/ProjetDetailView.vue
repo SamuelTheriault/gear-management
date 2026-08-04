@@ -40,6 +40,16 @@ import { useEscapeKey } from '../composables/useEscapeKey'
  * partagé ailleurs. `askDelete`/`cancelDelete`/`confirmDelete` restent
  * réutilisés tels quels (état async + appel API), seule la validation
  * d'activation du bouton est locale à cette fiche.
+ *
+ * Bug corrigé le jour même (signalé par Samuel) : le nom à retaper était
+ * affiché via `.fiche-label`, qui force `text-transform: uppercase` — le
+ * texte à l'écran ne correspondait donc plus à `project.name` (comparaison
+ * sensible à la casse), impossible à retaper correctement. Le nom exact vit
+ * maintenant dans `.fiche-confirm__literal` (style.css), sans transformation
+ * de casse et en `white-space: pre-wrap` pour que des espaces internes
+ * multiples (ex. « Projet  test », deux espaces) restent visibles au lieu
+ * d'être fondus par le rendu HTML par défaut — ce que l'écran montre est
+ * maintenant exactement ce qu'il faut taper.
  */
 
 const route = useRoute()
@@ -396,17 +406,20 @@ async function invite() {
             <li v-if="deletionImpact.shows > 0">{{ deletionImpact.shows }} spectacle(s)</li>
             <li v-if="deletionImpact.transports > 0">{{ deletionImpact.transports }} transport(s)</li>
           </ul>
-          <label class="fiche-field fiche-field--full">
-            <span class="fiche-label">
-              Tape « {{ project.name }} » pour confirmer
-            </span>
+          <div class="fiche-field fiche-field--full">
+            <p class="fiche-confirm__text">
+              Pour confirmer, tape exactement :
+              <span class="fiche-confirm__literal">{{ project.name }}</span>
+            </p>
             <input
               v-model="deleteConfirmText"
               class="fiche-input"
               autocomplete="off"
+              spellcheck="false"
+              :aria-label="`Retape « ${project.name} » pour confirmer`"
               @keyup.enter="canConfirmDelete && !deleting && deleteProject()"
             />
-          </label>
+          </div>
           <div v-if="deleteError" class="fiche-error">{{ deleteError }}</div>
           <div class="fiche-confirm__actions">
             <button type="button" class="fiche-btn" :disabled="deleting" @click="cancelDelete">
