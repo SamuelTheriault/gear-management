@@ -275,6 +275,17 @@ class Project(models.Model):
     différents (un même technicien réel entré dans deux projets isolés n'est
     jamais reconnu comme la même personne).
 
+    **Suppression** (2026-08-04, décision de Samuel — jusque-là volontairement
+    non implémentée, voir historique de `ProjetDetailView.vue`) : `Venue`,
+    `MaterialCategory`, `Material`, `Show` et `Technician` référencent tous ce
+    modèle en `CASCADE` plutôt qu'en `PROTECT` — supprimer un `Project`
+    efface donc TOUTE la production (lieux, matériel, catégories, techniciens,
+    spectacles, et par ricochet leurs transports/assignations, déjà en
+    CASCADE plus bas dans la chaîne). Irréversible, sans corbeille. Le
+    frontend (`ProjetDetailView.vue`) exige de retaper le nom du projet avant
+    d'activer le bouton — friction purement côté UI, la permission réelle
+    reste `HasProjectAccess` + `owner_only_actions` (`ProjectViewSet`).
+
     `status` permet d'archiver une production terminée plutôt que de la
     supprimer — basculer d'un projet à l'autre (actif ou archivé) doit rester
     possible à tout moment sans recharger/exporter de fichier, contrairement
@@ -396,9 +407,11 @@ class ProjectMembership(models.Model):
 class Venue(models.Model):
     """Lieux (salles, théâtres, sites de représentation, entrepôts) — isolés par projet."""
 
+    # CASCADE (2026-08-04, était PROTECT) : voir la note « Suppression » sur
+    # Project ci-dessus — supprimer le projet efface ce lieu avec lui.
     project = models.ForeignKey(
         Project,
-        on_delete=models.PROTECT,
+        on_delete=models.CASCADE,
         related_name='venues',
         help_text="Production à laquelle ce lieu appartient — voir Project.",
     )
@@ -523,9 +536,11 @@ class MaterialCategory(models.Model):
 
     DEFAULT_COLOR = 'rgba(255,255,255,.5)'
 
+    # CASCADE (2026-08-04, était PROTECT) : voir Project — supprimer le
+    # projet efface cette catégorie avec lui.
     project = models.ForeignKey(
         Project,
-        on_delete=models.PROTECT,
+        on_delete=models.CASCADE,
         related_name='material_categories',
         help_text="Production à laquelle cette catégorie appartient — voir Project.",
     )
@@ -568,9 +583,11 @@ class Material(models.Model):
         (OWNERSHIP_RENTAL, 'Location'),
     ]
 
+    # CASCADE (2026-08-04, était PROTECT) : voir Project — supprimer le
+    # projet efface ce matériel avec lui.
     project = models.ForeignKey(
         Project,
-        on_delete=models.PROTECT,
+        on_delete=models.CASCADE,
         related_name='materials',
         help_text="Production à laquelle ce matériel appartient — voir Project.",
     )
@@ -686,9 +703,12 @@ class Show(models.Model):
     # `ShowSerializer.create`), qu'on ajuste ensuite librement.
     INHERITING_PHASE_TYPES = (EVENT_SETUP, EVENT_TEARDOWN)
 
+    # CASCADE (2026-08-04, était PROTECT) : voir Project — supprimer le
+    # projet efface ce spectacle (et ses transports/assignations, déjà en
+    # CASCADE) avec lui.
     project = models.ForeignKey(
         Project,
-        on_delete=models.PROTECT,
+        on_delete=models.CASCADE,
         related_name='shows',
         help_text="Production à laquelle ce spectacle appartient — voir Project. Doit correspondre au projet de `venue`.",
     )
@@ -870,9 +890,11 @@ class ShowMaterial(models.Model):
 class Technician(models.Model):
     """Techniciens disponibles pour assignation aux spectacles. Isolés par projet."""
 
+    # CASCADE (2026-08-04, était PROTECT) : voir Project — supprimer le
+    # projet efface ce technicien avec lui.
     project = models.ForeignKey(
         Project,
-        on_delete=models.PROTECT,
+        on_delete=models.CASCADE,
         related_name='technicians',
         help_text="Production à laquelle ce technicien appartient — voir Project.",
     )

@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
 import { api } from '../api/client'
 import { useFicheEdition } from '../composables/useFicheEdition'
+import { useSuppressionFiche } from '../composables/useSuppressionFiche'
 import { EVENT_TYPE_META, TRANSPORT_META } from '../constants/eventTypeMeta'
 
 /**
@@ -415,6 +416,22 @@ async function saveMaterial() {
   if (await save()) await loadMaterial()
 }
 
+// --- Suppression (2026-08-04, même comportement que Spectacle/Transport) ---
+// Autorisée même si le matériel a un historique d'assignations — pas de
+// blocage façon Lieu. `MaterialSerializer.deletion_impact` distingue ce qui
+// est réellement supprimé (assignations spectacle/transport, en CASCADE) de
+// ce qui est seulement détaché (composants d'un kit, `parent_material` en
+// SET_NULL côté modèle : ils redeviennent du matériel autonome plutôt que de
+// disparaître).
+const {
+  confirming, deleting, deleteError, askDelete, cancelDelete, confirmDelete,
+} = useSuppressionFiche({ endpoint: '/materials', redirectTo: '/materiel' })
+
+const deletionImpact = computed(() => material.value?.deletion_impact ?? null)
+const hasCascade = computed(
+  () => !!deletionImpact.value && Object.values(deletionImpact.value).some((n) => n > 0),
+)
+
 // Le backend refuse un parent qui n'a pas quantity=1 ET is_kit_parent=true
 // (MaterialSerializer.validate_parent_material — champ ajouté le 2026-08-02,
 // demande de Samuel), et le matériel ne peut pas être son propre parent — on
@@ -685,9 +702,54 @@ watch(() => route.params.id, cancelEdit)
           Le lieu d'origine est requis — c'est là que le matériel doit revenir en fin de projet.
         </div>
         <div v-if="saveError" class="fiche-error">{{ saveError }}</div>
+
+        <div class="fiche-danger">
+          <div class="fiche-danger__hint">
+            Supprimer ce matériel retire aussi ses assignations et ses déplacements.
+            Les composants de ce kit, s'il en a, seront détachés (pas supprimés).
+          </div>
+          <button type="button" class="fiche-btn fiche-btn--danger" @click="askDelete">
+            Supprimer ce matériel
+          </button>
+        </div>
       </div>
 
-      <div v-else-if="material.description" class="card">
+      <div v-if="confirming" class="fiche-confirm-backdrop" @click.self="cancelDelete">
+        <div class="fiche-confirm">
+          <div class="fiche-confirm__title">Supprimer « {{ material.name }} » ?</div>
+          <p class="fiche-confirm__text">Cette action est définitive.</p>
+          <template v-if="hasCascade">
+            <p class="fiche-confirm__text">Seront supprimés en même temps :</p>
+            <ul class="fiche-confirm__list">
+              <li v-if="deletionImpact.shows > 0">
+                {{ deletionImpact.shows }} assignation(s) à un spectacle
+              </li>
+              <li v-if="deletionImpact.transports > 0">
+                {{ deletionImpact.transports }} assignation(s) de transport
+              </li>
+              <li v-if="deletionImpact.components > 0">
+                {{ deletionImpact.components }} composant(s) de kit seront détachés (pas supprimés)
+              </li>
+            </ul>
+          </template>
+          <div v-if="deleteError" class="fiche-error">{{ deleteError }}</div>
+          <div class="fiche-confirm__actions">
+            <button type="button" class="fiche-btn" :disabled="deleting" @click="cancelDelete">
+              Annuler
+            </button>
+            <button
+              type="button"
+              class="fiche-btn fiche-btn--danger"
+              :disabled="deleting"
+              @click="confirmDelete(material.id)"
+            >
+              {{ deleting ? 'Suppression…' : 'Supprimer' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="!editing && material.description" class="card">
         <div class="card-title">Description</div>
         <div class="card-text">{{ material.description }}</div>
       </div>
