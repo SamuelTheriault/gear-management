@@ -2717,3 +2717,12 @@ backend). Vérifié en sandbox : build Vite propre + parcours Playwright
   « Tournée » + trajet en séquence complète ; plus aucune référence à
   `transport_type` dans le code (les mentions restantes sont des
   commentaires historiques).
+- **Manifeste par arrêt** (demande de Samuel, même journée) : en mode
+  lecture, la carte « Matériel transporté » devient « Matériel par arrêt » —
+  sectionnée par arrêt (numéro, lieu, heure d'arrivée), avec sous chacun ce
+  qu'on DÉPOSE (↓, bleu) puis ce qu'on PREND (↑, vert) — décharger avant de
+  charger, l'ordre physique. Flèche à gauche de chaque ligne, sous-titre
+  « pris à / à déposer à » pour le contexte, « Aucune manutention » sur un
+  arrêt sans action. C'est la vue chauffeur : dérivée des portions
+  (`load/unload_stop_order`), rien de stocké en plus. Le mode ÉDITION garde
+  la liste unique à sélecteurs (l'outil d'édition, pas la feuille de route).

@@ -343,6 +343,23 @@ watch(() => route.params.id, loadTransport, { immediate: true })
 const isConfirmed = computed(() => transport.value?.status === 'confirmed')
 const isToApprove = computed(() => transport.value?.status === 'to_approve')
 
+// --- Manifeste par arrêt (2026-08-04, demande de Samuel) ---
+// La vue chauffeur : à chaque arrêt, ce qu'on DÉPOSE (↓) puis ce qu'on PREND
+// (↑) — décharger avant de charger, l'ordre physique des opérations. Dérivé
+// des portions des lignes de matériel (load/unload_stop_order), rien de
+// stocké en plus.
+const stopManifest = computed(() => {
+  const t = transport.value
+  if (!t) return []
+  const materials = t.materials ?? []
+  return (t.stops ?? []).map((s, i) => ({
+    stop: s,
+    index: i,
+    drop: materials.filter((m) => m.unload_stop_order === i),
+    pick: materials.filter((m) => m.load_stop_order === i),
+  }))
+})
+
 // --- Séquence d'arrêts (tournées multi-arrêts, 2026-08-04) ---
 
 const venueNameById = computed(() => new Map(venues.value.map((v) => [v.id, v.name])))
@@ -982,29 +999,62 @@ const {
           </div>
         </div>
 
+        <!-- Manifeste par arrêt (2026-08-04, demande de Samuel) : la liste de
+             matériel est sectionnée par arrêt — le chauffeur voit d'un coup
+             d'œil ce qu'il dépose (↓) puis ce qu'il prend (↑) à chaque
+             arrêt, flèche à gauche de chaque ligne. -->
         <div class="card">
-          <div class="card-title" style="margin-bottom: 14px">Matériel transporté</div>
-          <div class="row-list">
-            <div v-for="m in transport.materials" :key="m.id" class="row">
-              <span
-                class="row__dot"
-                :style="{ background: (materialCategoryById.get(m.material) ?? {}).color ?? 'rgba(var(--fg-rgb),.3)' }"
-              />
-              <div class="row__body">
-                <div class="row__title">
-                  {{ m.material_name }}
-                  <span class="row__cat">· {{ (materialCategoryById.get(m.material) ?? {}).label ?? 'Sans catégorie' }}</span>
-                </div>
-                <!-- Portion de la tournée (2026-08-04) : où ce matériel monte
-                     et descend — la donnée centrale du modèle multi-arrêts. -->
-                <div class="row__subtitle">
-                  {{ m.load_stop_order + 1 }}. {{ m.load_venue_name }}
-                  → {{ m.unload_stop_order + 1 }}. {{ m.unload_venue_name }}
+          <div class="card-title" style="margin-bottom: 14px">Matériel par arrêt</div>
+          <div v-if="(transport.materials ?? []).length === 0" class="row-empty">
+            Aucun matériel — camion vide.
+          </div>
+          <div v-else class="manifest">
+            <div v-for="entry in stopManifest" :key="entry.stop.id" class="manifest__stop">
+              <div class="manifest__header">
+                <div class="stop-row__num">{{ entry.index + 1 }}</div>
+                <div class="manifest__venue">{{ entry.stop.venue_name }}</div>
+                <div v-if="entry.stop.arrival_datetime" class="manifest__time">
+                  {{ fmtTime(entry.stop.arrival_datetime) }}
                 </div>
               </div>
-              <div class="row__qty">× {{ m.quantity }}</div>
+              <div class="row-list manifest__rows">
+                <!-- Déposer d'abord, prendre ensuite : l'ordre physique des
+                     opérations à un arrêt. -->
+                <div v-for="m in entry.drop" :key="`d-${m.id}`" class="row">
+                  <span class="manifest__arrow manifest__arrow--drop" title="Déposer">↓</span>
+                  <span
+                    class="row__dot"
+                    :style="{ background: (materialCategoryById.get(m.material) ?? {}).color ?? 'rgba(var(--fg-rgb),.3)' }"
+                  />
+                  <div class="row__body">
+                    <div class="row__title">
+                      {{ m.material_name }}
+                      <span class="row__cat">· {{ (materialCategoryById.get(m.material) ?? {}).label ?? 'Sans catégorie' }}</span>
+                    </div>
+                    <div class="row__subtitle">Déposer — pris à {{ m.load_stop_order + 1 }}. {{ m.load_venue_name }}</div>
+                  </div>
+                  <div class="row__qty">× {{ m.quantity }}</div>
+                </div>
+                <div v-for="m in entry.pick" :key="`p-${m.id}`" class="row">
+                  <span class="manifest__arrow manifest__arrow--pick" title="Prendre">↑</span>
+                  <span
+                    class="row__dot"
+                    :style="{ background: (materialCategoryById.get(m.material) ?? {}).color ?? 'rgba(var(--fg-rgb),.3)' }"
+                  />
+                  <div class="row__body">
+                    <div class="row__title">
+                      {{ m.material_name }}
+                      <span class="row__cat">· {{ (materialCategoryById.get(m.material) ?? {}).label ?? 'Sans catégorie' }}</span>
+                    </div>
+                    <div class="row__subtitle">Prendre — à déposer à {{ m.unload_stop_order + 1 }}. {{ m.unload_venue_name }}</div>
+                  </div>
+                  <div class="row__qty">× {{ m.quantity }}</div>
+                </div>
+                <div v-if="entry.drop.length === 0 && entry.pick.length === 0" class="manifest__none">
+                  Aucune manutention à cet arrêt.
+                </div>
+              </div>
             </div>
-            <div v-if="(transport.materials ?? []).length === 0" class="row-empty">Aucun matériel — camion vide.</div>
           </div>
         </div>
       </template>
@@ -1702,6 +1752,67 @@ const {
 .stop-row__meta {
   font: 400 11.5px system-ui;
   color: rgba(var(--fg-rgb), 0.5);
+}
+
+/* Manifeste par arrêt (2026-08-04) — la vue chauffeur du mode lecture. */
+.manifest {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.manifest__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.manifest__venue {
+  font: 700 13px system-ui;
+  color: rgb(var(--fg-rgb));
+}
+
+.manifest__time {
+  font: 600 11.5px var(--font-mono);
+  color: rgba(var(--fg-rgb), 0.5);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+/* Lignes en léger retrait sous l'entête d'arrêt, avec un trait de
+   raccordement — même lecture visuelle que les composants d'un kit. */
+.manifest__rows {
+  margin-left: 11px;
+  padding-left: 13px;
+  border-left: 2px solid rgba(var(--fg-rgb), 0.1);
+}
+
+.manifest__arrow {
+  width: 20px;
+  height: 20px;
+  border-radius: 0 6px 0 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 700 12px system-ui;
+  flex: none;
+}
+
+.manifest__arrow--pick {
+  color: oklch(0.72 0.13 165);
+  background: oklch(0.72 0.13 165 / 0.16);
+}
+
+.manifest__arrow--drop {
+  color: oklch(0.7 0.11 255);
+  background: oklch(0.7 0.11 255 / 0.16);
+}
+
+.manifest__none {
+  font: 400 11.5px system-ui;
+  color: rgba(var(--fg-rgb), 0.35);
+  padding: 4px 2px;
 }
 
 .stop-editor {
