@@ -299,6 +299,35 @@ class ProjectViewSet(viewsets.ModelViewSet):
     def get_object_project_id(self, obj):
         return obj.id
 
+    def destroy(self, request, *args, **kwargs):
+        """Supprime un projet et toute sa production.
+
+        Revue code-reviewer du 2026-08-04 : `project.delete()` seul lève un
+        `ProtectedError` (→ 500 DRF non catché) sur quasi tout projet réel,
+        malgré le passage des 5 FK `project` en CASCADE (migration `0026`).
+        Cause : Django résout les relations `PROTECT` (`Show.venue`,
+        `TransportStop.venue`, `Material.category` — les 3 seules du modèle)
+        indépendamment du fait que l'objet protégé soit LUI-MÊME promis à la
+        suppression par un autre chemin CASCADE (`Show.project`,
+        `Material.project`) dans le même appel. Contourné en supprimant
+        d'abord ce qui protège, dans l'ordre :
+        1. Les `Show` du projet — cascade déjà `Transport`/`TransportStop`/
+           `TransportMaterial`/`ShowMaterial`/`ShowTechnician`
+           (`on_delete=CASCADE` sur chacun), ce qui lève la protection de
+           `Show.venue` ET `TransportStop.venue` sur `Venue` en un seul geste.
+        2. `Material.category` mis à `None` pour le projet — lève la
+           protection sur `MaterialCategory`.
+        Le `project.delete()` final peut alors cascader `Venue`/`Material`/
+        `MaterialCategory`/`Technician` sans plus rien qui bloque. Tout dans
+        une transaction : soit la production entière part, soit rien.
+        """
+        project = self.get_object()
+        with transaction.atomic():
+            Show.objects.filter(project=project).delete()
+            Material.objects.filter(project=project).update(category=None)
+            project.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     def _grant_owner_membership(self, project):
         """Donne un accès `owner` actif sur `project` à l'utilisateur courant,
         s'il a un profil applicatif (voir docstring de classe). Sans profil
