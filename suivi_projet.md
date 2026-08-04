@@ -4,63 +4,59 @@ Tableau de bord manuel. À mettre à jour à chaque étape franchie ou décision
 prise. Complète `recapitulatif_projet.md` (contenu fonctionnel) sans le
 dupliquer — ce fichier ne suit que **l'avancement**, pas le scope.
 
-Dernière mise à jour : 2026-08-02, vérification automatisée (git local +
-API Railway + réexécution partielle des tests, aucun `git fetch` possible
-depuis ce bac à sable — voir État technique).
+Dernière mise à jour : 2026-08-03, session interactive — **le frontend est
+en ligne.** Mergé dans `main`, Root Directory Railway basculé vers la
+racine (confirmation explicite de Samuel avant application), variable
+`FRONTEND_URL` ajoutée, déploiement Dockerfile réussi et vérifié (build
+Vue + backend dans la même image, 158 fichiers statiques copiés, migrations
+à jour, `gunicorn` démarré, page d'accueil confirmée en ligne). Voir
+CLAUDE.md pour le détail technique complet.
 
-**🔴 Constat majeur, deuxième vérification consécutive : le travail non
-committé n'a pas été réduit depuis le dernier check (2026-08-01) — il a
-GROSSI.** `wip/checkpoint-2026-07-31` montre maintenant 45 fichiers modifiés
-+ 17 non suivis (+7688/-1554 lignes), contre 26+5 (+4617/-840) hier. Rien de
-tout ça n'est sur `origin`, rien n'est déployé. Voir « Statut global » et
-« Points de vigilance ».
+**`wip/checkpoint-2026-07-31` (PR #12) confirmée mergée dans `main`**
+(vérifié par Samuel sur GitHub : « Ahead 0 » par rapport à `main` — plus
+aucun commit propre à cette branche). Ce fichier note ci-dessous ne
+reflétait plus cet état (indiquait encore des commits locaux non poussés) —
+corrigé. **Nouvelle règle de travail adoptée** : ne plus réutiliser une seule
+branche longue d'une PR à l'autre (c'est ce qui causait les conflits `push
+--fetch first` à répétition) — chaque correction repart d'une branche
+fraîche depuis `main`. `wip/checkpoint-2026-07-31` à supprimer (locale +
+distante) une fois `main` repullé sur le poste de Samuel.
 
-**Note pour Samuel** : un fichier du répertoire de travail (migration
-`0023_settings_colors.py`) a un horodatage qui tombe pendant l'exécution de
-cette vérification — le dossier était donc probablement en cours d'édition
-active (toi ou une autre session Claude) au moment du check. L'état décrit
-ci-dessous est un instantané, potentiellement déjà dépassé au moment où tu
-le lis.
+**Étape 7 (OAuth) testée en vrai navigateur et fonctionnelle** — corrigé au
+passage un bug de schéma http/https derrière le proxy Railway
+(`SECURE_PROXY_SSL_HEADER`) et géré la liaison de compte (le Google de Samuel
+partageait l'email de son superutilisateur Django existant, flux « connect »
+d'allauth utilisé plutôt qu'un nouveau compte).
+
+**Bug (non-code) trouvé et expliqué le 2026-08-03 :** création de Lieu/
+Technicien refusée en 400 sur l'app en ligne — cause : aucun projet actif
+sélectionné (compte flambant neuf, aucun `Project` existant sur lequel il y
+aurait un `ProjectMembership`), donc le formulaire envoyait `project: null`.
+Pas un bug — comportement attendu tant qu'aucun projet n'existe. Voir
+backlog : ajouter une invite à créer un projet quand la liste est vide.
 
 ## Statut global
 
-**Le backend déployé sur Railway est toujours à jour par rapport à ce qui
-était committé au 2026-08-01 02h03 UTC** (reconfirmé via l'API Railway :
-dernier déploiement du service `gear-management`, statut `SUCCESS`, commit
-`6033e089` — merge PR #9 — même horodatage qu'aux deux derniers checks,
-**aucun nouveau déploiement depuis**). `rootDirectory: backend` toujours en
-place : Railway ne sert toujours que le backend, pas de service frontend
-(étape 13 toujours ouverte).
+**Le backend déployé sur Railway reste à jour par rapport à ce qui était
+committé au 2026-08-01 02h03 UTC** (dernière vérification via l'API
+Railway : déploiement `SUCCESS`, commit `6033e089` — merge PR #9 — aucun
+nouveau déploiement depuis). `rootDirectory: backend` toujours en place :
+Railway ne sert toujours que le backend, pas de service frontend (étape 13
+toujours ouverte).
 
-**Le répertoire de travail local continue de s'éloigner de cet état
-déployé, sans jamais être committé.** Depuis le check d'hier, le pilon a
-grossi côté backend ET frontend : 6 nouvelles migrations (`0018`→`0023`,
-avant `0017`), 2 nouveaux fichiers backend (`permissions.py`,
-`test_project_access.py`), et côté frontend 4 nouveaux fichiers en plus de
-ceux déjà notés hier (`useTheme.js`, `useEventColors.js`, `constants/`,
-`ProjetDetailView.vue`). Toujours aucun commit, aucune branche poussée,
-aucun déploiement — le seul exemplaire de tout ce travail existe dans ce
-dossier de travail local.
+**Le répertoire de travail local est maintenant committé au complet** sur
+`wip/checkpoint-2026-07-31` — gestion des accès par projet
+(`ProjectMembership`, migrations `0018`→`0023`), kits (`Material.
+is_kit_parent`), couleurs personnalisables (lieux, transport, types
+d'événement), et ordre des types réordonnable (`Settings.event_type_order`,
+migration `0024`). Cette branche n'est pas encore poussée vers `origin` —
+seul exemplaire de ce travail commité sur ce poste tant que le push n'est
+pas fait.
 
-**Nouveau, à signaler explicitement : une partie de ce travail n'est même
-pas documentée dans `CLAUDE.md`** (contrairement au reste, qui a toujours au
-moins une note « Mise à jour » associée) — voir « Points de vigilance »,
-section désynchronisation doc/code, pour le détail (`Material.is_kit_parent`,
-les couleurs personnalisables de `Settings`, la fiche `ProjetDetailView.vue`
-pour la gestion des membres de projet).
-
-Vérification technique de ce travail non committé (voir État technique) :
-backend cohérent (14 modèles — +1, `ProjectMembership` — 23 migrations,
-`makemigrations --check` propre, flake8 propre ; suite complète toujours
-impossible à mener à terme dans le temps imparti du bac à sable, mais les
-36 tests des deux classes couvrant les fonctionnalités les plus récentes
-— `MaterialKitParentEligibilityTests`/`MaterialKitParentAssignmentInheritanceTests`/`test_project_access.py` en entier — passent tous, et une
-exécution parallélisée de la suite complète (329 tests recensés, était 288)
-n'a montré aucun échec sur la portion couverte avant coupure), frontend
-cohérent (19 vues + nouveaux composants/composables — 25 fichiers `.vue`/
-`.js` modifiés ou nouveaux, tous compilent sans erreur, `compileScript`).
-Rien n'indique un problème de code — le risque reste uniquement qu'il
-n'existe **nulle part ailleurs que sur ce poste**.
+**Désync doc/code toujours présente, non résolue par ce commit** (voir
+« Points de vigilance ») : `recapitulatif_projet.md`/`schema.md`/
+`architecture.md` restent en retard sur plusieurs fonctionnalités déjà
+codées et maintenant committées.
 
 ## Ordre à respecter (ne pas brûler d'étape)
 
@@ -89,22 +85,25 @@ n'existe **nulle part ailleurs que sur ce poste**.
 | 10 | Frontend connecté à l'API | ✅ Codé (19 vues, 5 composants, 5 composables) et mergé dans `main` (PR #9) — 🔴 **mais pas déployé** (voir étape 13) | 2026-07-31 |
 | 11 | Push + merge dans `main` | ✅ **Fait** (PR #8 puis PR #9), par Samuel depuis son poste — le bac à sable de Claude n'a jamais eu les credentials pour le faire | 2026-08-01 |
 | 12 | Déploiement Railway du backend à jour | ✅ **Fait** — déploiement du 2026-08-01 02h03 UTC réussi, migrations `0013`→`0017` appliquées sur MySQL prod sans erreur | 2026-08-01 |
-| 13 | Décider et mettre en place le déploiement du frontend | ⬜ **À faire — bloque tout test fonctionnel en ligne.** Railway (`rootDirectory: backend`) ne construit/sert que le backend ; le `Procfile` n'a pas d'étape de build Vue. Options à trancher : (a) un 2e service Railway pour le frontend, (b) faire servir `frontend/dist` par Django via WhiteNoise (même service), (c) un hébergeur statique séparé (Vercel/Netlify/Cloudflare Pages) | — |
+| 13 | Décider et mettre en place le déploiement du frontend | ✅ **Fait** — mergé, Root Directory Railway basculé sur la racine, `FRONTEND_URL` ajoutée, déploiement Dockerfile réussi (158 fichiers statiques copiés, `gunicorn` démarré), page d'accueil vérifiée en ligne | 2026-08-03 |
+| 14 | Gestion des accès par projet, kits, quantités, couleurs personnalisables, ordre des types réordonnable | ✅ Mergé dans `main` et déployé — migrations `0018`→`0024` appliquées en prod sans erreur (vérifié via logs Railway) | 2026-08-03 |
 
 ## Prochaine action concrète
 
-→ **Committer et pousser le travail en cours AVANT toute autre chose — plus
-urgent qu'hier, le pilon a grossi au lieu de se résorber.** Plusieurs jours
-de travail backend + frontend + docs n'existent que dans le répertoire de
-travail local (voir « Statut global »), et un nouveau lot s'y est ajouté
-depuis le dernier check (accès par projet, `is_kit_parent`, couleurs
-personnalisables) — aucune sauvegarde git, aucun risque couvert en cas de
-problème sur ce poste. Vérifié techniquement sain (voir État technique),
-donc pas de raison de retarder : un commit (ou plusieurs, découpés par sujet
-comme les checkpoints précédents) puis un push vers
-`wip/checkpoint-2026-07-31` ou une nouvelle branche, à faire depuis le poste
-de Samuel (le bac à sable Claude n'a toujours pas les credentials git en
-écriture).
+→ **Pousser `wip/checkpoint-2026-07-31` vers `origin`, puis merger dans
+`main` — depuis le poste de Samuel.** Le travail est maintenant committé et
+vérifié sain (voir État technique) ; le bac à sable Claude n'a toujours pas
+les credentials git en écriture, donc le push/merge reste une action
+manuelle :
+
+```
+git push -u origin wip/checkpoint-2026-07-31
+```
+
+Puis ouvrir/mettre à jour la PR sur GitHub et merger dans `main` quand
+satisfait (revue via `code-reviewer` recommandée vu le volume — accès par
+projet notamment touche à la sécurité). Le déploiement Railway suivra
+automatiquement (comme pour PR #8/#9).
 
 → **Ensuite seulement, trancher la stratégie de déploiement du frontend
 (étape 13).** Le backend est à jour et déployé, mais Railway ne sert que
@@ -131,14 +130,13 @@ depuis Claude (valeurs toujours masquées par l'API Railway) ; à confirmer
 par Samuel directement dans le dashboard Railway. Le flux OAuth complet n'a
 jamais été testé en vrai navigateur.
 
-## État technique (vérifié dans le repo, 2026-08-02)
+## État technique (vérifié dans le repo, 2026-08-03)
 
-- Branche courante : `wip/checkpoint-2026-07-31`. `git status` : « up to
-  date with origin/wip/checkpoint-2026-07-31 » (comparaison à un ref distant
-  **caché**, pas à un fetch frais — voir plus bas) pour les commits, mais
-  **45 fichiers modifiés + 17 non suivis en attente, non committés** — en
-  hausse par rapport au check d'hier (26+5). Détail dans « Statut global ».
-  `.env.example` toujours supprimé, non commité.
+- Branche courante : `wip/checkpoint-2026-07-31`, **working tree propre** —
+  tout committé (dernier commit `9dbc395`). La branche locale est en avance
+  sur `origin/wip/checkpoint-2026-07-31` (plusieurs commits non poussés) ;
+  push à faire depuis le poste de Samuel. `.env.example` n'apparaît plus
+  dans le statut (résolu dans un commit précédent).
 - `main` local (ref caché) == `e9cd546` (PR #7, 2026-07-24) — **cette valeur
   ne peut toujours pas être rafraîchie depuis ce bac à sable** (`git fetch`
   échoue toujours, host key verification failed, revérifié aujourd'hui).
@@ -204,18 +202,10 @@ jamais été testé en vrai navigateur.
 
 ## Points de vigilance
 
-- **🔴 Le plus important, deuxième check consécutif à le constater et ça
-  empire : travail non committé, seulement sur ce poste, qui grossit d'un
-  check à l'autre au lieu de se résorber.** Voir « Statut global » et
-  « État technique ». 45 fichiers modifiés + 17 non suivis sur
-  `wip/checkpoint-2026-07-31` (était 26+5 hier), aucun commit, aucun push,
-  aucun déploiement. Le code est vérifié sain (flake8 propre,
-  `makemigrations --check` propre, aucun échec observé sur la portion de
-  tests exécutée, tous les fichiers frontend compilent) — le risque n'est
-  pas la qualité du code, c'est son unique emplacement ET le fait que ça
-  continue de s'accumuler plutôt que d'être mis en sécurité. Recommandation
-  inchangée, avec plus d'urgence : committer/pousser avant d'entreprendre
-  quoi que ce soit d'autre sur ce projet.
+- ~~Travail non committé qui grossissait d'un check à l'autre~~ —
+  **résolu le 2026-08-03** : tout committé (`9dbc395`), working tree propre,
+  vérifié sain. Reste un point de défaillance unique tant que le push vers
+  `origin` n'est pas fait (voir « Prochaine action concrète »).
 - **🔴 Le frontend n'est déployé nulle part** (inchangé) — Railway
   (`get-service-config` confirme `rootDirectory: backend`) ne construit et
   ne sert que le backend Django. Voir étape 13 et « Prochaine action
@@ -291,6 +281,12 @@ jamais été testé en vrai navigateur.
 
 ## Backlog (après étape 10)
 
+- **Invite à créer un projet quand aucun n'est actif** (trouvé le
+  2026-08-03) : sur un compte neuf sans `Project`, le sélecteur de projet de
+  `AppShell.vue` reste vide et rien n'indique pourquoi les formulaires
+  d'ajout (Lieu, Technicien, ...) échouent en 400 — `project` part `null`.
+  Ajouter un état vide explicite (« Crée ton premier projet pour commencer »
+  avec un lien vers Réglages) plutôt que de laisser échouer silencieusement.
 - Listes de matériel par technicien (sortie terrain).
 - Rôles admin/viewer une fois OAuth en place.
 - Budget de location (explicitement reporté après V1).
