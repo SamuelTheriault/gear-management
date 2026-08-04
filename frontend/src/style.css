@@ -310,6 +310,22 @@ body {
   color: rgba(var(--fg-rgb), 0.65);
 }
 
+/* Nom exact à retaper pour confirmer une suppression à confirmation textuelle
+   (ProjetDetailView.vue, 2026-08-04) — délibérément SANS text-transform,
+   contrairement à `.fiche-label` : la casse et les espaces internes de
+   `project.name` doivent rester lisibles tels quels, sinon la comparaison
+   (sensible à la casse) attend un texte différent de ce que l'écran affiche
+   (bug signalé par Samuel — le nom apparaissait en majuscules à cause de
+   `.fiche-label`, alors que la comparaison restait sensible à la casse
+   réelle du nom). */
+.fiche-confirm__literal {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: rgb(var(--fg-rgb));
+  text-transform: none;
+  white-space: pre-wrap;
+}
+
 .fiche-confirm__list {
   margin: 0;
   padding-left: 18px;

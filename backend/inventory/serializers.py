@@ -85,10 +85,29 @@ def _same_project(*objects):
 class ProjectSerializer(serializers.ModelSerializer):
     """Sérialise les productions — voir `models.Project` pour la logique d'isolation."""
 
+    # Décompte de ce qui disparaîtrait en cascade avec ce projet (2026-08-04,
+    # voir la note « Suppression » sur `Project` — Venue/MaterialCategory/
+    # Material/Show/Technician sont passés en CASCADE ce jour-là). `transports`
+    # n'a pas de FK directe vers `project` (voir `Transport.show`), d'où le
+    # passage par `show__project`.
+    deletion_impact = serializers.SerializerMethodField()
+
     class Meta:
         model = Project
-        fields = ['id', 'name', 'client_name', 'status', 'start_date', 'end_date', 'notes', 'created_at']
+        fields = [
+            'id', 'name', 'client_name', 'status', 'start_date', 'end_date', 'notes',
+            'created_at', 'deletion_impact',
+        ]
         read_only_fields = ['created_at']
+
+    def get_deletion_impact(self, obj):
+        return {
+            'venues': obj.venues.count(),
+            'materials': obj.materials.count(),
+            'technicians': obj.technicians.count(),
+            'shows': obj.shows.count(),
+            'transports': Transport.objects.filter(show__project=obj).count(),
+        }
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -237,6 +256,14 @@ class MaterialSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True, default=None)
     category_color = serializers.CharField(source='category.color', read_only=True, default=None)
     component_ids = serializers.PrimaryKeyRelatedField(source='components', many=True, read_only=True)
+    # Décompte de ce qui disparaîtrait avec ce matériel (2026-08-04, même
+    # esprit que `ShowSerializer.deletion_impact`) : `ShowMaterial`/
+    # `TransportMaterial` sont en CASCADE — la suppression n'est PAS bloquée
+    # même si le matériel a déjà servi (contrairement à `MaterialCategory`,
+    # dont la FK reste `PROTECT`). `components` n'est PAS une perte : un
+    # composant n'est que DÉTACHÉ (`parent_material` en `SET_NULL`), le
+    # frontend l'annonce avec un libellé différent des deux autres.
+    deletion_impact = serializers.SerializerMethodField()
     # Lieu d'origine OBLIGATOIRE depuis le 2026-07-30 (demande de Samuel) : sans
     # point de départ, la timeline de position (transport_coherence.py) ne peut
     # rien vérifier — ni la disponibilité au départ d'un transport, ni le retour
@@ -256,7 +283,15 @@ class MaterialSerializer(serializers.ModelSerializer):
             'parent_material', 'parent_material_name', 'is_kit_parent',
             'venue', 'venue_name',
             'ownership_status', 'quantity', 'is_active', 'notes', 'component_ids',
+            'deletion_impact',
         ]
+
+    def get_deletion_impact(self, obj):
+        return {
+            'shows': obj.show_materials.count(),
+            'transports': obj.transport_materials.count(),
+            'components': obj.components.count(),
+        }
 
     def validate_parent_material(self, value):
         if value is not None and self.instance is not None and value.id == self.instance.id:
@@ -723,10 +758,24 @@ class TechnicianSerializer(serializers.ModelSerializer):
     """Sérialise les techniciens disponibles pour assignation, isolés par projet."""
 
     project_name = serializers.CharField(source='project.name', read_only=True)
+    # Décompte de ce qui disparaîtrait avec ce technicien (2026-08-04, même
+    # esprit que `ShowSerializer.deletion_impact`) : `ShowTechnician`/
+    # `TransportTechnician` sont en CASCADE — la suppression n'est PAS
+    # bloquée même si déjà assigné par le passé.
+    deletion_impact = serializers.SerializerMethodField()
 
     class Meta:
         model = Technician
-        fields = ['id', 'project', 'project_name', 'name', 'contact_info', 'specialty', 'notes']
+        fields = [
+            'id', 'project', 'project_name', 'name', 'contact_info', 'specialty', 'notes',
+            'deletion_impact',
+        ]
+
+    def get_deletion_impact(self, obj):
+        return {
+            'shows': obj.show_technicians.count(),
+            'transports': obj.transport_technicians.count(),
+        }
 
 
 class ShowTechnicianSerializer(serializers.ModelSerializer):

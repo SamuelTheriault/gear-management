@@ -1,7 +1,9 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuth } from '../composables/useAuth'
+import { useActiveProject } from '../composables/useActiveProject'
 import DashboardView from '../views/DashboardView.vue'
 import LoginView from '../views/LoginView.vue'
+import OnboardingView from '../views/OnboardingView.vue'
 import ReglagesView from '../views/ReglagesView.vue'
 import UtilisateursView from '../views/UtilisateursView.vue'
 import SpectaclesView from '../views/SpectaclesView.vue'
@@ -50,6 +52,9 @@ const routes = [
   { path: '/projets/:id', name: 'projet-detail', component: ProjetDetailView },
   { path: '/utilisateurs', name: 'utilisateurs', component: UtilisateursView },
   { path: '/login', name: 'login', component: LoginView },
+  // Onboarding (2026-08-04) : voir garde ci-dessous — atteinte uniquement
+  // par redirection quand le compte connecté n'a encore aucun projet actif.
+  { path: '/bienvenue', name: 'onboarding', component: OnboardingView },
   // Départements retiré le 2026-07-29 (modèle Department abandonné, voir
   // CLAUDE.md / recapitulatif_projet.md).
 ]
@@ -64,12 +69,57 @@ export const router = createRouter({
 // django-allauth), sauf /login elle-même. Un seul GET /api/auth/user/ par
 // session SPA (singleton, mis en cache par useAuth) — les navigations
 // suivantes réutilisent le résultat déjà connu sans reappeler l'API.
+//
+// Garde d'onboarding (2026-08-04, remplace l'ancien bandeau prévu au
+// backlog par un écran bloquant — décision de Samuel) : un compte connecté
+// SANS AUCUN projet actif (`ProjectMembership` actif nulle part, ou
+// installation flambant neuve) est redirigé vers /bienvenue quel que soit
+// l'écran visé — sans ça, Lieu/Technicien/... échouaient en 400 en silence
+// (`project` envoyé `null`, voir suivi_projet.md). Symétriquement, un
+// compte qui a déjà au moins un projet actif ne doit plus voir /bienvenue
+// (retour arrière, lien direct, ...) — renvoyé au tableau de bord.
+// `ensureProjectsLoaded()` réutilise le chargement mis en cache par
+// useActiveProject (AppShell, ReglagesView, ...) : un seul GET /api/projects/
+// par session SPA, pas un par navigation.
+//
+// Exemption /reglages + /projets/:id (2026-08-04, bug trouvé par Samuel) :
+// sans elle, archiver son SEUL projet actif (Project.status='archived',
+// donc absent de `projects` — voir useActiveProject.js) renvoyait vers
+// /bienvenue, qui bloquait à son tour l'accès à Réglages/la fiche du
+// projet — plus aucun moyen de le réactiver depuis l'interface. Ces deux
+// écrans sont de la gestion de projet (créer/lister/réactiver), pas des
+// écrans de saisie qui ont besoin d'un projet actif pour fonctionner —
+// contrairement à Matériel/Lieux/etc., toujours bloqués sans projet actif.
+//
+// Exemption /utilisateurs (2026-08-04, revue code-reviewer) : même famille
+// de piège — c'est un écran de gestion PLATEFORME (comptes/pré-provisioning,
+// réservé staff, voir UserViewSet côté API), pas une production, il n'a donc
+// aucune raison de dépendre d'un projet actif. Un compte staff qu'on vient de
+// créer et qui n'a encore été ajouté à aucun projet (voir la note de Samuel :
+// dès qu'un compte est ajouté à un projet, `hasActiveProject` suffit déjà à
+// lui éviter l'onboarding — ce cas-ci ne couvre que l'entre-deux) doit
+// pouvoir aller y inviter/gérer des comptes sans être bloqué par l'écran
+// d'onboarding.
 router.beforeEach(async (to) => {
   if (to.path === '/login') return true
   const { currentUser, checkAuth } = useAuth()
   await checkAuth()
   if (!currentUser.value) {
     return { path: '/login' }
+  }
+
+  const { projects, ensureProjectsLoaded } = useActiveProject()
+  await ensureProjectsLoaded()
+  const hasActiveProject = projects.value.length > 0
+  const isProjectManagementRoute = (
+    to.path === '/reglages' || to.path.startsWith('/projets/') || to.path === '/utilisateurs'
+  )
+
+  if (!hasActiveProject && to.path !== '/bienvenue' && !isProjectManagementRoute) {
+    return { path: '/bienvenue' }
+  }
+  if (hasActiveProject && to.path === '/bienvenue') {
+    return { path: '/' }
   }
   return true
 })

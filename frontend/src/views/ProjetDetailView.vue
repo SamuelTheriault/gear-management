@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
 import { api } from '../api/client'
 import { useFicheEdition } from '../composables/useFicheEdition'
+import { useSuppressionFiche } from '../composables/useSuppressionFiche'
 import { useActiveProject } from '../composables/useActiveProject'
 import { useAuth } from '../composables/useAuth'
 import { useEscapeKey } from '../composables/useEscapeKey'
@@ -28,10 +29,27 @@ import { useEscapeKey } from '../composables/useEscapeKey'
  * retirer/rétrograder le dernier owner actif — le message d'erreur brut du
  * serveur est affiché tel quel, pas deviné côté Vue.
  *
- * Pas de suppression de projet dans cette passe (voir consigne) : les
- * implications en cascade n'ont jamais été posées à Samuel, et le backend
- * ne l'expose de toute façon qu'à owner/staff sans logique dédiée déjà
- * réfléchie (contrairement à Lieu/Spectacle/Transport).
+ * Suppression de projet (2026-08-04, demande de Samuel) : autorisée en
+ * cascade — supprimer un projet efface toute la production (lieux, matériel,
+ * techniciens, spectacles, transports ; voir `Project.deletion_impact` et la
+ * note dédiée dans `models.py`, migration `0025_project_cascade_delete`).
+ * Friction volontairement plus élevée que Lieu/Spectacle/Transport/Matériel/
+ * Technicien (choix explicite de Samuel, `AskUserQuestion`) : il faut taper
+ * le nom exact du projet pour activer le bouton « Supprimer », comme la
+ * suppression d'un dépôt GitHub — pas le simple 2-bouton `useSuppressionFiche`
+ * partagé ailleurs. `askDelete`/`cancelDelete`/`confirmDelete` restent
+ * réutilisés tels quels (état async + appel API), seule la validation
+ * d'activation du bouton est locale à cette fiche.
+ *
+ * Bug corrigé le jour même (signalé par Samuel) : le nom à retaper était
+ * affiché via `.fiche-label`, qui force `text-transform: uppercase` — le
+ * texte à l'écran ne correspondait donc plus à `project.name` (comparaison
+ * sensible à la casse), impossible à retaper correctement. Le nom exact vit
+ * maintenant dans `.fiche-confirm__literal` (style.css), sans transformation
+ * de casse et en `white-space: pre-wrap` pour que des espaces internes
+ * multiples (ex. « Projet  test », deux espaces) restent visibles au lieu
+ * d'être fondus par le rendu HTML par défaut — ce que l'écran montre est
+ * maintenant exactement ce qu'il faut taper.
  */
 
 const route = useRoute()
@@ -110,6 +128,46 @@ async function save() {
 // Changer de projet sans quitter la vue ne doit pas garder un formulaire à
 // moitié rempli sur le projet précédent.
 watch(() => route.params.id, cancelEdit)
+
+// --- Suppression (2026-08-04) ---
+// Friction élevée, volontaire : le bouton « Supprimer » ne s'active qu'une
+// fois le nom du projet retapé exactement (même geste que la suppression
+// d'un dépôt GitHub) — supprimer un projet efface toute la production, pas
+// seulement une fiche. `deletion_impact` (voir ProjectSerializer) est
+// toujours annoncé, cascade ou non : contrairement à Matériel/Technicien, il
+// n'y a jamais rien à « ne pas casser », donc pas de `hasCascade` à calculer.
+const {
+  confirming, deleting, deleteError, askDelete: askDeleteProject, cancelDelete: cancelDeleteProject, confirmDelete,
+} = useSuppressionFiche({ endpoint: '/projects', redirectTo: '/reglages' })
+
+const deleteConfirmText = ref('')
+
+function askDelete() {
+  deleteConfirmText.value = ''
+  askDeleteProject()
+}
+
+function cancelDelete() {
+  deleteConfirmText.value = ''
+  cancelDeleteProject()
+}
+
+const deletionImpact = computed(() => project.value?.deletion_impact ?? null)
+const canConfirmDelete = computed(
+  () => !!project.value && deleteConfirmText.value.trim() === project.value.name,
+)
+
+// `confirmDelete` navigue déjà vers `/reglages` en cas de succès — mais le
+// sélecteur de projet actif (AppShell.vue) doit aussi être averti, exactement
+// comme après un archivage (`save()` ci-dessus) : `refreshProjects()`
+// revalide `activeProjectId` et bascule sur un autre projet actif si celui
+// qu'on vient de supprimer était sélectionné. `deleteError` reste `null`
+// seulement en cas de succès (voir useSuppressionFiche), d'où le test après
+// l'attente plutôt qu'une valeur de retour.
+async function deleteProject() {
+  await confirmDelete(project.value.id)
+  if (!deleteError.value) await refreshProjects()
+}
 
 // --- Membres (accès par projet) ---
 
@@ -323,6 +381,60 @@ async function invite() {
         </div>
         <div v-if="!draft.name.trim()" class="fiche-error">Le nom du projet est requis.</div>
         <div v-if="saveError" class="fiche-error">{{ saveError }}</div>
+
+        <div class="fiche-danger">
+          <div class="fiche-danger__hint">
+            Supprimer ce projet efface aussi tout ce qui lui appartient — lieux,
+            matériel, techniciens, spectacles, transports. Irréversible.
+          </div>
+          <button type="button" class="fiche-btn fiche-btn--danger" @click="askDelete">
+            Supprimer ce projet
+          </button>
+        </div>
+      </div>
+
+      <div v-if="confirming" class="fiche-confirm-backdrop" @click.self="cancelDelete">
+        <div class="fiche-confirm">
+          <div class="fiche-confirm__title">Supprimer « {{ project.name }} » ?</div>
+          <p class="fiche-confirm__text">
+            Cette action est définitive et efface toute la production.
+          </p>
+          <ul v-if="deletionImpact" class="fiche-confirm__list">
+            <li v-if="deletionImpact.venues > 0">{{ deletionImpact.venues }} lieu(x)</li>
+            <li v-if="deletionImpact.materials > 0">{{ deletionImpact.materials }} matériel(s)</li>
+            <li v-if="deletionImpact.technicians > 0">{{ deletionImpact.technicians }} technicien(s)</li>
+            <li v-if="deletionImpact.shows > 0">{{ deletionImpact.shows }} spectacle(s)</li>
+            <li v-if="deletionImpact.transports > 0">{{ deletionImpact.transports }} transport(s)</li>
+          </ul>
+          <div class="fiche-field fiche-field--full">
+            <p class="fiche-confirm__text">
+              Pour confirmer, tape exactement :
+              <span class="fiche-confirm__literal">{{ project.name }}</span>
+            </p>
+            <input
+              v-model="deleteConfirmText"
+              class="fiche-input"
+              autocomplete="off"
+              spellcheck="false"
+              :aria-label="`Retape « ${project.name} » pour confirmer`"
+              @keyup.enter="canConfirmDelete && !deleting && deleteProject()"
+            />
+          </div>
+          <div v-if="deleteError" class="fiche-error">{{ deleteError }}</div>
+          <div class="fiche-confirm__actions">
+            <button type="button" class="fiche-btn" :disabled="deleting" @click="cancelDelete">
+              Annuler
+            </button>
+            <button
+              type="button"
+              class="fiche-btn fiche-btn--danger"
+              :disabled="deleting || !canConfirmDelete"
+              @click="deleteProject"
+            >
+              {{ deleting ? 'Suppression…' : 'Supprimer' }}
+            </button>
+          </div>
+        </div>
       </div>
 
       <div v-if="!editing && project.notes" class="card">

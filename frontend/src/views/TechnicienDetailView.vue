@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
 import { api } from '../api/client'
 import { useFicheEdition } from '../composables/useFicheEdition'
+import { useSuppressionFiche } from '../composables/useSuppressionFiche'
 
 /**
  * Fiche technicien — port de TechnicienDetail.dc.html, branché sur l'API
@@ -123,6 +124,20 @@ const {
 // formulaire à moitié rempli sur le précédent.
 watch(() => route.params.id, cancelEdit)
 
+// --- Suppression (2026-08-04, même comportement que Spectacle/Transport) ---
+// Autorisée même si le technicien a un historique d'assignations — pas de
+// blocage façon Lieu. `TechnicianSerializer.deletion_impact` compte ce qui
+// disparaît en cascade (ShowTechnician/TransportTechnician, tables de
+// liaison en CASCADE).
+const {
+  confirming, deleting, deleteError, askDelete, cancelDelete, confirmDelete,
+} = useSuppressionFiche({ endpoint: '/technicians', redirectTo: '/techniciens' })
+
+const deletionImpact = computed(() => technician.value?.deletion_impact ?? null)
+const hasCascade = computed(
+  () => !!deletionImpact.value && Object.values(deletionImpact.value).some((n) => n > 0),
+)
+
 const decoratedShows = computed(() =>
   showAssignments.value
     .filter((a) => a.showDetail)
@@ -229,9 +244,50 @@ const decoratedTransports = computed(() =>
 
         <div v-if="!draft.name.trim()" class="fiche-error">Le nom du technicien est requis.</div>
         <div v-if="saveError" class="fiche-error">{{ saveError }}</div>
+
+        <div class="fiche-danger">
+          <div class="fiche-danger__hint">
+            Supprimer ce technicien retire aussi ses assignations et ses déplacements.
+          </div>
+          <button type="button" class="fiche-btn fiche-btn--danger" @click="askDelete">
+            Supprimer ce technicien
+          </button>
+        </div>
       </div>
 
-      <template v-else>
+      <div v-if="confirming" class="fiche-confirm-backdrop" @click.self="cancelDelete">
+        <div class="fiche-confirm">
+          <div class="fiche-confirm__title">Supprimer « {{ technician.name }} » ?</div>
+          <p class="fiche-confirm__text">Cette action est définitive.</p>
+          <template v-if="hasCascade">
+            <p class="fiche-confirm__text">Seront supprimés en même temps :</p>
+            <ul class="fiche-confirm__list">
+              <li v-if="deletionImpact.shows > 0">
+                {{ deletionImpact.shows }} assignation(s) de spectacle
+              </li>
+              <li v-if="deletionImpact.transports > 0">
+                {{ deletionImpact.transports }} assignation(s) de transport
+              </li>
+            </ul>
+          </template>
+          <div v-if="deleteError" class="fiche-error">{{ deleteError }}</div>
+          <div class="fiche-confirm__actions">
+            <button type="button" class="fiche-btn" :disabled="deleting" @click="cancelDelete">
+              Annuler
+            </button>
+            <button
+              type="button"
+              class="fiche-btn fiche-btn--danger"
+              :disabled="deleting"
+              @click="confirmDelete(technician.id)"
+            >
+              {{ deleting ? 'Suppression…' : 'Supprimer' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <template v-if="!editing">
         <div v-if="technician.contact_info" class="contact-card">
           {{ technician.contact_info }}
         </div>

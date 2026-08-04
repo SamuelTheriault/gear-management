@@ -43,7 +43,7 @@ import { useEventDisplay } from '../composables/useEventDisplay'
  * recharger la page.
  */
 
-const { projects, refreshProjects } = useActiveProject()
+const { projects, allProjects, refreshProjects } = useActiveProject()
 const { refreshEventDisplay } = useEventDisplay()
 
 const COLOR_DEFAULTS = {
@@ -235,6 +235,40 @@ async function addProject() {
     creatingProject.value = false
   }
 }
+
+// --- Projets archivés (2026-08-04) ---
+//
+// `projects` (useActiveProject) ne garde que les projets actifs — un projet
+// archivé disparaissait donc complètement de l'app, y compris de cet écran,
+// sans aucun moyen de le réafficher ou de le réactiver (bug trouvé par
+// Samuel). `allProjects` (tous statuts) permet de les lister ici ; la
+// réactivation elle-même n'est qu'un PATCH `status: 'active'` — même
+// endpoint que ProjetDetailView.vue, juste sans passer par le formulaire
+// d'édition complet.
+const decoratedArchivedProjects = computed(() =>
+  allProjects.value
+    .filter((p) => p.status === 'archived')
+    .map((p) => ({
+      ...p,
+      createdAtLabel: p.created_at ? dateFmt.format(new Date(p.created_at)) : '—',
+    })),
+)
+
+const reactivatingId = ref(null)
+const reactivateError = ref(null)
+
+async function reactivateProject(p) {
+  reactivateError.value = null
+  reactivatingId.value = p.id
+  try {
+    await api.patch(`/projects/${p.id}/`, { status: 'active' })
+    await refreshProjects()
+  } catch (e) {
+    reactivateError.value = e.data?.detail ?? 'Impossible de réactiver ce projet.'
+  } finally {
+    reactivatingId.value = null
+  }
+}
 </script>
 
 <template>
@@ -262,6 +296,28 @@ async function addProject() {
             </RouterLink>
             <div v-if="decoratedProjects.length === 0" class="row-empty">Aucun projet actif.</div>
           </div>
+
+          <div v-if="decoratedArchivedProjects.length > 0" class="project-list project-list--archived">
+            <div class="project-list__label">Archivés</div>
+            <div v-for="p in decoratedArchivedProjects" :key="p.id" class="project-row project-row--archived">
+              <span class="project-dot project-dot--archived" />
+              <RouterLink :to="`/projets/${p.id}`" class="project-body">
+                <div class="project-top">
+                  <div class="project-name">{{ p.name }}</div>
+                  <div class="project-date">Créé le {{ p.createdAtLabel }}</div>
+                </div>
+              </RouterLink>
+              <div
+                class="btn btn--small"
+                :class="{ 'btn--disabled': reactivatingId === p.id }"
+                @click="reactivatingId !== p.id && reactivateProject(p)"
+              >
+                {{ reactivatingId === p.id ? 'Réactivation…' : 'Réactiver' }}
+              </div>
+            </div>
+            <div v-if="reactivateError" class="error">{{ reactivateError }}</div>
+          </div>
+
           <div class="create-card">
             <div class="create-title">Créer un projet</div>
             <div class="create-row">
@@ -504,6 +560,43 @@ async function addProject() {
   font: 500 12.5px system-ui;
   color: rgba(var(--fg-rgb), 0.4);
   padding: 10px;
+}
+
+/* Projets archivés (2026-08-04) : même carte que la liste active, ligne
+   grisée plutôt qu'un lien plein-largeur (le nom reste cliquable vers la
+   fiche, « Réactiver » agit directement depuis ici sans y entrer). */
+.project-list--archived {
+  margin-top: 10px;
+}
+
+.project-list__label {
+  font: 700 10.5px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(var(--fg-rgb), 0.4);
+  padding: 6px 10px 8px;
+}
+
+.project-row--archived {
+  align-items: center;
+  opacity: 0.75;
+}
+
+.project-row--archived .project-body {
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+  display: block;
+}
+
+.project-dot--archived {
+  background: rgba(var(--fg-rgb), 0.3);
+}
+
+.btn--small {
+  padding: 6px 12px;
+  font: 600 11.5px system-ui;
+  flex: none;
 }
 
 .create-card {

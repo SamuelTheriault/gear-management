@@ -1417,10 +1417,33 @@ class ProjectScopingTests(TestCase):
 
     # --- Suppression protégée ---
 
-    def test_cannot_delete_project_with_existing_data(self):
-        from django.db.models import ProtectedError
-        with self.assertRaises(ProtectedError):
-            self.project_a.delete()
+    def test_deleting_project_cascades_its_entire_production(self):
+        """Revue code-reviewer du 2026-08-04 : `DELETE /api/projects/{id}/`
+        levait un `ProtectedError` (→ 500) sur quasi tout projet réel malgré
+        les 5 FK `project` passées en CASCADE (migration `0026`) — Django ne
+        résout pas `Show.venue`/`TransportStop.venue`/`Material.category`
+        (les 3 seules relations `PROTECT` du modèle) quand l'objet protégé
+        est LUI-MÊME promis à la suppression par un autre chemin CASCADE dans
+        le même appel. Voir `ProjectViewSet.destroy()`, qui supprime d'abord
+        ce qui protège, dans l'ordre. Ce test couvre les trois relations
+        protégées à la fois (Show→Venue, TransportStop→Venue via une
+        tournée, Material→MaterialCategory)."""
+        entrepot = Venue.objects.create(project=self.project_a, name="Entrepôt A", is_storage=True)
+        transport = Transport.objects.create(show=self.show_a, scheduled_datetime=_dt(10))
+        TransportStop.objects.create(transport=transport, venue=entrepot, order=0, travel_minutes_from_previous=0)
+        TransportStop.objects.create(transport=transport, venue=self.venue_a, order=1, travel_minutes_from_previous=30)
+
+        response = self.client.delete(f'/api/projects/{self.project_a.id}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT, response.data)
+
+        self.assertFalse(Project.objects.filter(id=self.project_a.id).exists())
+        self.assertFalse(Venue.objects.filter(id=self.venue_a.id).exists())
+        self.assertFalse(Show.objects.filter(id=self.show_a.id).exists())
+        self.assertFalse(Material.objects.filter(id=self.material_a.id).exists())
+        self.assertFalse(Transport.objects.filter(id=transport.id).exists())
+        # Isolation : le projet B (non touché) doit survivre intact.
+        self.assertTrue(Project.objects.filter(id=self.project_b.id).exists())
+        self.assertTrue(Venue.objects.filter(id=self.venue_b.id).exists())
 
     def test_project_can_be_archived_instead_of_deleted(self):
         response = self.client.patch(f'/api/projects/{self.project_a.id}/', {
