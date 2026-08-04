@@ -268,8 +268,10 @@ jamais été testé en vrai navigateur.
   doivent rester dans la commande `web:`.
 - Ne pas confondre `inventory.User` (modèle applicatif) et le superutilisateur
   Django (`django.contrib.auth`).
-- Protection de branche `main` non activée sur GitHub — repose sur la
-  discipline du gabarit de PR.
+- ~~Protection de branche `main` non activée sur GitHub~~ — **résolu**,
+  confirmé activée le 2026-08-03 (push direct sur `main` refusé : « Changes
+  must be made through a pull request », 2 status checks requis). Tout
+  changement, même documentation seule, passe maintenant par une PR.
 - L'estimation automatique de trajet (Google Routes API) reste non testable
   en conditions réelles (clé vide + pas de réseau) — se dégrade silencieusement
   sur la valeur par défaut.
