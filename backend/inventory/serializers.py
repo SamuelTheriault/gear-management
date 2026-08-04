@@ -1221,6 +1221,16 @@ class TransportSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     'estimated_duration_minutes': "Un nombre entier de minutes est attendu.",
                 })
+            # Le chemin moderne (`stops`) est protégé par le validateur
+            # `min_value=0` généré pour `travel_minutes_from_previous`
+            # (PositiveIntegerField) — ce chemin de compat écrit directement
+            # dans le plan sans repasser par ce serializer, donc sans ce
+            # garde-fou. Revue code-reviewer du 2026-08-04 : une valeur
+            # négative passait silencieusement et corrompait `arrival_at`.
+            if legacy_duration < 0:
+                raise serializers.ValidationError({
+                    'estimated_duration_minutes': "Doit être un nombre de minutes positif.",
+                })
 
         plan, stops_dirty = self._plan_from_request(attrs, legacy_duration)
 

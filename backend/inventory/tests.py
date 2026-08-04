@@ -4298,6 +4298,19 @@ class TourneeMultiArretsAPITests(TestCase):
         }, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
 
+    def test_legacy_negative_duration_is_rejected(self):
+        """Revue code-reviewer du 2026-08-04 : le chemin de compat écrivait
+        `estimated_duration_minutes` négatif directement dans le plan, sans
+        repasser par le validateur `min_value=0` du contrat `stops`."""
+        response = self.client.post('/api/transports/', {
+            'show': self.show.id,
+            'origin_venue': self.entrepot.id, 'destination_venue': self.salle_b.id,
+            'scheduled_datetime': _dt(8).isoformat(),
+            'estimated_duration_minutes': -30,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('estimated_duration_minutes', response.data)
+
 
 class TourneeMultiArretsCoherenceTests(TestCase):
     """Le grand livre de positions (transport_coherence.py) raisonne par LIGNE
