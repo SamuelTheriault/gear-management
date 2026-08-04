@@ -2676,3 +2676,44 @@ d'arrêts avec la liste unique de matériel par portion, Dashboard (bloc =
 fenêtre totale de la tournée), Parcours Matériel (déjà servi par l'API
 adaptée), modale matériel par arrêt (`?stop=`), et retrait des références à
 `transport_type`.
+
+## Mise à jour (2026-08-04, suite) — Tournées multi-arrêts : frontend
+
+Second volet de la refonte transport (voir l'entrée précédente pour le
+backend). Vérifié en sandbox : build Vite propre + parcours Playwright
+(liste, fiche lecture/édition, modale par arrêt, Dashboard) sans erreur JS.
+
+- **TransportDetailView.vue** — la fiche devient une fiche de tournée :
+  - Éditeur de séquence : une ligne par arrêt (lieu, durée du segment,
+    heure d'arrivée dérivée affichée en direct), réordonnable (↑/↓),
+    ajout/retrait. Durée laissée vide = « auto » (estimée par le serveur —
+    la clé n'est pas envoyée). La durée totale passe en lecture seule
+    (somme des segments).
+  - Chaque ligne de matériel porte sa portion : deux `<select>` d'arrêts
+    (chargement/déchargement, options invalides désactivées) en édition, un
+    libellé « 1. Entrepôt → 3. Prospero » en lecture. Retirer/réordonner un
+    arrêt remappe les indexes des lignes (elles suivent leur arrêt) puis
+    `fixupLines()` répare les combinaisons devenues invalides.
+  - Modale « Ajouter du matériel » PAR ARRÊT : un `<select>` d'arrêt de
+    chargement recharge `material-availability?stop=<n>` ; la modale ne
+    pilote que les lignes chargées à cet arrêt (les autres sont préservées,
+    même règle que le matériel hors catalogue). Le dernier arrêt est
+    désactivé comme point de chargement (rien ne peut y monter).
+  - Le toggle Livraison/Ramassage et le couple départ/arrivée disparaissent ;
+    entête « Tournée — ENT → STA → PROS » (codes des arrêts).
+- **TransportsView.vue** — trajet = séquence complète des codes, badge du
+  nombre d'arrêts sur l'icône (neutre, teinte `--transport`) dès 3 arrêts.
+  L'ajout rapide reste un simple A → B (chemin de compat, tournée à 2
+  arrêts) — les arrêts s'ajoutent sur la fiche. Déduction locale des
+  spectacles de référence alignée sur la nouvelle règle sans
+  `transport_type` (le lieu du spectacle desservi décide du bout ancré).
+- **DashboardView.vue** — le bloc d'une tournée apparaît sur la ligne de
+  CHAQUE lieu desservi (arrêts intermédiaires compris, dédupliqués pour les
+  allers-retours). Déplacer un bloc n'envoie plus que `scheduled_datetime`
+  (une seule heure d'ancrage) ; le redimensionnement reste permis sur une
+  tournée à 2 arrêts seulement — au-delà, message clair et ajustement
+  segment par segment sur la fiche.
+- **SpectacleDetailView / TechnicienDetailView / ConflitsView** — badge
+  « Tournée » + trajet en séquence complète ; plus aucune référence à
+  `transport_type` dans le code (les mentions restantes sont des
+  commentaires historiques).

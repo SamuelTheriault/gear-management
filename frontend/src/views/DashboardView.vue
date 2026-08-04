@@ -329,24 +329,29 @@ const projectEntries = computed(() => {
     const start = new Date(t.scheduled_datetime)
     const end = new Date(t.effective_end)
     if (!dansLaFenetre(start, end)) continue
-    const typeLabel = t.transport_type === 'delivery' ? 'Livraison' : 'Ramassage'
-    const from = t.origin_venue_code || t.origin_venue_name
-    const to = t.destination_venue_code || t.destination_venue_name
+    // Tournées multi-arrêts (2026-08-04) : le libellé enchaîne TOUS les
+    // arrêts (codes courts) — plus de type livraison/ramassage (champ retiré).
+    const stops = t.stops ?? []
     entries.push({
       kind: 'transport',
       id: t.id,
       date: start,
       start,
       end,
-      name: `${typeLabel} · ${from} → ${to}`,
+      name: stops.map((s) => s.venue_code || s.venue_name).join(' → '),
       status: t.status,
       conflict: !!t.has_technician_conflict,
       technicianName: (t.technician_names ?? []).join(', '),
       materialsSummary: t.is_empty ? 'Camion vide' : `${(t.materials ?? []).length} article(s)`,
       // Noms complets (pas les codes utilisés dans `name` ci-dessus) : ce
-      // sont les clés de regroupement par lieu (voir `venueRows`).
-      originVenueName: t.origin_venue_name,
-      destinationVenueName: t.destination_venue_name,
+      // sont les clés de regroupement par lieu (voir `venueRows`) — TOUS les
+      // arrêts de la tournée, dédupliqués (une tournée aller-retour repasse
+      // par le même lieu).
+      stopVenueNames: [...new Set(stops.map((s) => s.venue_name))],
+      // Le redimensionnement (durée TOTALE) n'est sans ambiguïté que sur une
+      // tournée à 2 arrêts — au-delà, l'ajustement se fait segment par
+      // segment sur la fiche (voir beginDrag/onDragEnd).
+      resizable: stops.length <= 2,
       route: `/transports/${t.id}`,
     })
   }
@@ -385,8 +390,7 @@ const availableVenues = computed(() => {
     if (entry.kind === 'show') {
       if (entry.venueName) set.add(entry.venueName)
     } else {
-      if (entry.originVenueName) set.add(entry.originVenueName)
-      if (entry.destinationVenueName) set.add(entry.destinationVenueName)
+      ;(entry.stopVenueNames ?? []).forEach((name) => set.add(name))
     }
   }
   return [...set].sort((a, b) => a.localeCompare(b, 'fr'))
@@ -410,7 +414,7 @@ const hasAnyEntries = computed(() => projectEntries.value.length > 0)
 const visibleEntries = computed(() => projectEntries.value.filter((entry) => {
   if (!dayFilter.passes(entry.date.toDateString())) return false
   if (entry.kind === 'show') return venueFilter.passes(entry.venueName)
-  return venueFilter.passes(entry.originVenueName) || venueFilter.passes(entry.destinationVenueName)
+  return (entry.stopVenueNames ?? []).some((name) => venueFilter.passes(name))
 }))
 
 const LANE_HEIGHT = 34
@@ -457,12 +461,10 @@ const venueRows = computed(() => {
     const it = { ...entry, startMin, endMin }
     if (it.kind === 'show') {
       pushTo(it.venueName, it)
-    } else if (it.originVenueName === it.destinationVenueName) {
-      // Cas limite (théoriquement invalide côté métier) : une seule ligne.
-      pushTo(it.originVenueName, it)
     } else {
-      pushTo(it.originVenueName, it)
-      pushTo(it.destinationVenueName, it)
+      // Tournées (2026-08-04) : le bloc apparaît sur la ligne de CHAQUE lieu
+      // desservi — arrêts intermédiaires compris (déjà dédupliqués).
+      ;(it.stopVenueNames ?? []).forEach((name) => pushTo(name, it))
     }
   }
   return [...byVenue.entries()]
@@ -728,6 +730,13 @@ function beginDrag(block, mode, event) {
   if (!event.metaKey) return
   event.preventDefault()
   event.stopPropagation()
+  // Une tournée à plus de 2 arrêts ne se redimensionne pas ici : sa durée
+  // totale est la somme de ses segments, à ajuster sur la fiche (2026-08-04).
+  // La déplacer (mode 'move') reste permis — une seule heure d'ancrage.
+  if (mode !== 'move' && block.kind === 'transport' && block.resizable === false) {
+    dragError.value = 'Cette tournée a plusieurs segments — ajuste les durées arrêt par arrêt sur sa fiche.'
+    return
+  }
   const track = event.currentTarget.closest('.dash-timeline__track')
   if (!track) return
   dragError.value = null
@@ -797,7 +806,16 @@ async function onDragEnd() {
         start_datetime: newStart.toISOString(),
         end_datetime: newEnd.toISOString(),
       })
+    } else if (state.mode === 'move') {
+      // Déplacer une tournée = décaler sa seule heure d'ancrage (2026-08-04) ;
+      // ne pas renvoyer la durée totale, ambiguë sur une tournée multi-arrêts
+      // (et sujette aux arrondis de la timeline).
+      await api.patch(`/transports/${state.id}/`, {
+        scheduled_datetime: newStart.toISOString(),
+      })
     } else {
+      // Redimensionnement : seulement possible sur une tournée à 2 arrêts
+      // (voir beginDrag) — la durée totale = l'unique segment, sans ambiguïté.
       await api.patch(`/transports/${state.id}/`, {
         scheduled_datetime: newStart.toISOString(),
         estimated_duration_minutes: Math.max(1, Math.round(state.endMin - state.startMin)),

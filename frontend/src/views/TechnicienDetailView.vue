@@ -41,7 +41,6 @@ const loadError = ref(null)
 
 const dateFmt = new Intl.DateTimeFormat('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' })
 const timeFmt = new Intl.DateTimeFormat('fr-CA', { hour: '2-digit', minute: '2-digit', hour12: false })
-const transportTypeLabel = { delivery: 'Livraison', pickup: 'Ramassage' }
 
 function initials(name) {
   return (name || '?')
@@ -144,7 +143,8 @@ const decoratedShows = computed(() =>
 const decoratedTransports = computed(() =>
   transports.value.map((tr) => ({
     ...tr,
-    typeLabel: transportTypeLabel[tr.transport_type] ?? tr.transport_type,
+    // Tournées multi-arrêts (2026-08-04) : séquence complète, plus de type.
+    routeLabel: (tr.stops ?? []).map((s) => s.venue_name).join(' → '),
     time: tr.scheduled_datetime ? timeFmt.format(new Date(tr.scheduled_datetime)) : 'à planifier',
   })),
 )
@@ -261,8 +261,8 @@ const decoratedTransports = computed(() =>
         <div class="card-title" style="margin-bottom: 12px">Transports assignés</div>
         <div v-if="decoratedTransports.length > 0" class="row-list">
           <div v-for="tr in decoratedTransports" :key="tr.id" class="row">
-            <div class="row__badge">{{ tr.typeLabel }}</div>
-            <div class="row__body row__body--flex">{{ tr.origin_venue_name }} → {{ tr.destination_venue_name }}</div>
+            <div class="row__badge">Tournée</div>
+            <div class="row__body row__body--flex">{{ tr.routeLabel }}</div>
             <div class="row__time">{{ tr.time }}</div>
           </div>
         </div>

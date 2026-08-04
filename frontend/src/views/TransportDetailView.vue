@@ -112,6 +112,30 @@ import { normalizeText } from '../utils/text'
  * donc pas toujours la même (`.summary-value__sub` posé explicitement sur
  * la bonne ligne selon le champ, plutôt qu'un `:last-child` positionnel qui
  * aurait dimé l'heure au lieu de la date).
+ *
+ * **Tournées multi-arrêts (2026-08-04, décision de Samuel — refonte)** : un
+ * transport n'est plus un trajet A → B mais une SÉQUENCE ordonnée d'arrêts
+ * (`stops`, voir TransportStop côté backend). Conséquences sur cette fiche :
+ * - Le couple de `<select>` départ/arrivée et le toggle Livraison/Ramassage
+ *   disparaissent (champ `transport_type` retiré du modèle) — remplacés par
+ *   un éditeur de séquence : une ligne par arrêt (lieu, durée du segment
+ *   depuis l'arrêt précédent, heure d'arrivée dérivée affichée en direct),
+ *   réordonnable (↑/↓), avec ajout/retrait. Une durée laissée vide est
+ *   estimée côté serveur (Google Routes, repli Settings) — le champ est donc
+ *   envoyé seulement s'il est renseigné.
+ * - « Durée estimée » devient la durée TOTALE (somme des segments), en
+ *   lecture seule — elle s'édite segment par segment.
+ * - Chaque ligne de matériel porte sa PORTION de la tournée : deux `<select>`
+ *   (chargement/déchargement, positions dans la séquence) en édition, un
+ *   libellé « Lieu X → Lieu Y » en lecture. Défaut : tournée entière.
+ *   Retirer/réordonner un arrêt remappe les indexes des lignes (elles
+ *   suivent leur arrêt) puis `fixupLines()` répare les cas devenus invalides
+ *   (chargement ≥ déchargement → retour au défaut tournée entière).
+ * - La modale « Ajouter du matériel » se fait PAR ARRÊT de chargement :
+ *   un `<select>` en tête recharge `material-availability?stop=<n>` — on ne
+ *   propose que ce qui sera sur place à l'arrivée du camion à CET arrêt. La
+ *   modale ne pilote que les lignes chargées à cet arrêt ; les autres sont
+ *   préservées telles quelles (même règle que le matériel hors catalogue).
  */
 
 const route = useRoute()
@@ -122,11 +146,6 @@ const technicians = ref([])
 const materialsCatalog = ref([])
 const loading = ref(false)
 const loadError = ref(null)
-
-const typeOptions = [
-  { value: 'delivery', label: 'Livraison' },
-  { value: 'pickup', label: 'Ramassage' },
-]
 
 const timeFmt = new Intl.DateTimeFormat('fr-CA', { hour: '2-digit', minute: '2-digit', hour12: false })
 // Jour de la semaine ajouté aux deux (2026-08-02, demande de Samuel) —
@@ -272,17 +291,22 @@ function buildForm(t) {
     scheduledDefault = t.departure_show.effective_end.slice(0, 16)
   }
   return {
-    transport_type: t.transport_type,
-    origin_venue: t.origin_venue,
-    destination_venue: t.destination_venue,
     scheduled_datetime: scheduledDefault,
-    estimated_duration_minutes: t.estimated_duration_minutes,
+    // Séquence d'arrêts (tournées 2026-08-04) : `travel` est la durée du
+    // segment depuis l'arrêt précédent. `''` (champ vidé) = « à estimer par
+    // le serveur » — on n'envoie alors pas la clé (voir save()).
+    stops: (t.stops ?? []).map((s) => ({
+      venue: s.venue,
+      travel: s.travel_minutes_from_previous,
+    })),
     technicians: (t.technicians ?? []).map((tt) => tt.technician),
     notes: t.notes ?? '',
     materials: (t.materials ?? []).map((m) => ({
       material: m.material,
       material_name: m.material_name,
       quantity: m.quantity,
+      load: m.load_stop_order,
+      unload: m.unload_stop_order,
     })),
   }
 }
@@ -318,6 +342,150 @@ watch(() => route.params.id, loadTransport, { immediate: true })
 
 const isConfirmed = computed(() => transport.value?.status === 'confirmed')
 const isToApprove = computed(() => transport.value?.status === 'to_approve')
+
+// --- Séquence d'arrêts (tournées multi-arrêts, 2026-08-04) ---
+
+const venueNameById = computed(() => new Map(venues.value.map((v) => [v.id, v.name])))
+
+function stopVenueName(venueId) {
+  return venueNameById.value.get(venueId) ?? '?'
+}
+
+// Libellé du trajet complet (entête + lecture) : codes courts si disponibles,
+// noms sinon — enchaîne TOUS les arrêts, pas seulement départ/arrivée.
+const routeLabel = computed(() =>
+  (transport.value?.stops ?? [])
+    .map((s) => s.venue_code || s.venue_name)
+    .join(' → '),
+)
+
+// Durée totale du brouillon = somme des segments renseignés. `null` si au
+// moins un segment est laissé « à estimer » (on ne peut pas la calculer
+// avant la réponse du serveur).
+const draftTotalMinutes = computed(() => {
+  if (!form.value) return null
+  let total = 0
+  for (let i = 1; i < form.value.stops.length; i += 1) {
+    const t = form.value.stops[i].travel
+    if (t === '' || t === null || t === undefined) return null
+    total += Number(t) || 0
+  }
+  return total
+})
+
+// Heures d'arrivée dérivées en direct pendant l'édition : départ + cumul des
+// segments. `null` dès qu'un segment amont est « à estimer » ou que l'heure
+// de départ manque — l'affichage retombe sur « auto ».
+const draftArrivals = computed(() => {
+  if (!form.value?.scheduled_datetime) return form.value?.stops.map(() => null) ?? []
+  let current = new Date(form.value.scheduled_datetime)
+  let broken = false
+  return form.value.stops.map((s, i) => {
+    if (broken) return null
+    if (i > 0) {
+      const t = s.travel
+      if (t === '' || t === null || t === undefined) {
+        broken = true
+        return null
+      }
+      current = new Date(current.getTime() + (Number(t) || 0) * 60000)
+    }
+    return new Date(current)
+  })
+})
+
+// Après un retrait/réordonnancement d'arrêt, les indexes des lignes de
+// matériel peuvent devenir invalides (hors bornes, chargement ≥
+// déchargement) : on répare au défaut « tournée entière » plutôt que de
+// bloquer — l'utilisateur voit les sélecteurs changer et peut ajuster.
+function fixupLines() {
+  const last = form.value.stops.length - 1
+  form.value.materials.forEach((m) => {
+    if (m.load == null || m.load < 0 || m.load > last) m.load = 0
+    if (m.unload == null || m.unload < 0 || m.unload > last) m.unload = last
+    if (m.load >= m.unload) {
+      m.load = 0
+      m.unload = last
+    }
+  })
+}
+
+function addStop() {
+  // Nouveau segment sans durée : `''` = à estimer par le serveur (Routes ou
+  // défaut des réglages) — cohérent avec la règle du backend.
+  form.value.stops.push({ venue: '', travel: '' })
+  fixupLines()
+}
+
+function removeStop(index) {
+  if (form.value.stops.length <= 2) return
+  form.value.stops.splice(index, 1)
+  // Le segment qui suivait l'arrêt retiré relie maintenant deux lieux
+  // différents : sa durée n'a plus de sens, on la remet « à estimer ».
+  if (index < form.value.stops.length && index > 0) {
+    form.value.stops[index].travel = ''
+  }
+  if (form.value.stops.length > 0) form.value.stops[0].travel = 0
+  // Les lignes suivent leurs arrêts : tout index après l'arrêt retiré recule
+  // d'une position ; une ligne qui pointait l'arrêt retiré lui-même sera
+  // réparée par fixupLines().
+  form.value.materials.forEach((m) => {
+    if (m.load === index) m.load = -1
+    else if (m.load > index) m.load -= 1
+    if (m.unload === index) m.unload = -1
+    else if (m.unload > index) m.unload -= 1
+  })
+  fixupLines()
+}
+
+function moveStop(index, delta) {
+  const target = index + delta
+  if (target < 0 || target >= form.value.stops.length) return
+  const stops = form.value.stops
+  ;[stops[index], stops[target]] = [stops[target], stops[index]]
+  // Les durées de segment décrivent des COUPLES de lieux : après un échange,
+  // les segments touchés (celui qui arrive à chacune des deux positions, et
+  // celui qui suit) ne relient plus les mêmes lieux — remis « à estimer ».
+  const touched = new Set([index, target, Math.max(index, target) + 1])
+  touched.forEach((i) => {
+    if (i > 0 && i < stops.length) stops[i].travel = ''
+  })
+  stops[0].travel = 0
+  // Les lignes de matériel suivent leur arrêt déplacé.
+  form.value.materials.forEach((m) => {
+    if (m.load === index) m.load = target
+    else if (m.load === target) m.load = index
+    if (m.unload === index) m.unload = target
+    else if (m.unload === target) m.unload = index
+  })
+  fixupLines()
+}
+
+// Options des sélecteurs de portion d'une ligne de matériel : chaque arrêt,
+// numéroté dans l'ordre de la séquence.
+const stopOptions = computed(() =>
+  (form.value?.stops ?? []).map((s, i) => ({
+    value: i,
+    label: `${i + 1}. ${s.venue ? stopVenueName(s.venue) : '—'}`,
+  })),
+)
+
+// Validation côté client avant l'envoi — les mêmes règles que le serveur,
+// pour un message immédiat plutôt qu'un 400.
+function validateStops() {
+  if (form.value.stops.length < 2) {
+    return 'Une tournée doit avoir au moins 2 arrêts.'
+  }
+  if (form.value.stops.some((s) => !s.venue)) {
+    return 'Chaque arrêt doit avoir un lieu.'
+  }
+  for (let i = 1; i < form.value.stops.length; i += 1) {
+    if (form.value.stops[i].venue === form.value.stops[i - 1].venue) {
+      return `Deux arrêts consécutifs au même lieu (« ${stopVenueName(form.value.stops[i].venue)} ») — retire l'un des deux.`
+    }
+  }
+  return null
+}
 
 // --- Techniciens affectés (plusieurs depuis le 2026-07-30) ---
 
@@ -359,15 +527,18 @@ function removeMaterialLine(index) {
   form.value.materials.splice(index, 1)
 }
 
-// --- Disponibilité au lieu de départ (2026-07-30) ---
+// --- Disponibilité par arrêt (2026-07-30 ; par arrêt depuis le 2026-08-04) ---
 // On ne charge dans un camion que ce qui se trouve réellement au point de
-// départ à l'heure du départ. La position vient du backend
-// (GET /transports/{id}/material-availability/, qui réutilise le grand livre
-// de transport_coherence.py) : `Material.venue` seul serait faux dès qu'un
-// transport antérieur a déjà déplacé le matériel.
+// chargement à l'arrivée du camion. La position vient du backend
+// (GET /transports/{id}/material-availability/?stop=<n>, qui réutilise le
+// grand livre de transport_coherence.py) : `Material.venue` seul serait faux
+// dès qu'un transport antérieur a déjà déplacé le matériel.
 
 const availability = ref(null)
 const availabilityLoading = ref(false)
+// Arrêt de chargement piloté par la modale — les lignes chargées à un AUTRE
+// arrêt ne sont pas touchées par elle (voir confirmAddMaterial).
+const loadStopIndex = ref(0)
 
 // L'heure de référence est celle enregistrée en base, pas celle en cours de
 // saisie dans le formulaire : tant que le transport n'est pas enregistré, le
@@ -405,13 +576,19 @@ const availableById = computed(() => {
   return map
 })
 
-async function openAddModal() {
-  showAddModal.value = true
-  categoryFilter.selectAll()
-  search.value = ''
+async function refreshAvailability() {
   availabilityLoading.value = true
   try {
-    availability.value = await api.get(`/transports/${transport.value.id}/material-availability/`)
+    // La disponibilité se calcule sur l'état ENREGISTRÉ de la tournée (arrêts
+    // en base) : si l'utilisateur vient d'ajouter un arrêt non enregistré, le
+    // paramètre est borné à ce que le serveur connaît — le bandeau
+    // `availabilityStale` explique déjà ce décalage pour l'heure.
+    const savedStopCount = (transport.value.stops ?? []).length
+    const stopParam = Math.min(loadStopIndex.value, Math.max(0, savedStopCount - 1))
+    availability.value = await api.get(
+      `/transports/${transport.value.id}/material-availability/`,
+      { stop: stopParam },
+    )
   } catch {
     // En cas d'échec on ne bloque rien : mieux vaut une modale sans grisé
     // qu'une modale inutilisable.
@@ -419,13 +596,41 @@ async function openAddModal() {
   } finally {
     availabilityLoading.value = false
   }
+}
 
+function seedCatalogQty() {
+  // La modale ne pilote que les lignes chargées à l'arrêt sélectionné — le
+  // matériel qui monte à un autre arrêt de la même tournée n'y apparaît pas
+  // pré-coché et n'est pas modifié par elle.
   const seed = {}
   materialsCatalog.value.forEach((m) => {
-    const existing = form.value.materials.find((line) => line.material === m.id)
+    const existing = form.value.materials.find(
+      (line) => line.material === m.id && line.load === loadStopIndex.value,
+    )
     seed[m.id] = existing ? existing.quantity : 0
   })
   catalogQty.value = seed
+}
+
+async function openAddModal(stopIndex = 0) {
+  showAddModal.value = true
+  categoryFilter.selectAll()
+  search.value = ''
+  loadStopIndex.value = stopIndex
+  await refreshAvailability()
+  seedCatalogQty()
+}
+
+// Changer l'arrêt de chargement depuis la modale recharge la disponibilité
+// ET la sélection (les quantités saisies pour l'arrêt quitté sont appliquées
+// aux lignes ? Non — elles seraient perdues : on applique d'abord, même
+// comportement qu'un « Appliquer » implicite, puis on repart sur le nouvel
+// arrêt).
+async function changeLoadStop(stopIndex) {
+  applyCatalogToLines()
+  loadStopIndex.value = Number(stopIndex)
+  await refreshAvailability()
+  seedCatalogQty()
 }
 
 function closeAddModal() {
@@ -526,48 +731,77 @@ const unavailableCount = computed(() => catalogRows.value.filter((c) => c.disabl
 
 const selectedCatalogCount = computed(() => Object.values(catalogQty.value).filter((q) => q > 0).length)
 
-function confirmAddMaterial() {
-  // La modale reflète l'état complet du chargement : une ligne à 0 (décochée)
-  // doit donc être RETIRÉE du camion, pas seulement ignorée — sinon décocher
-  // n'aurait aucun effet (demande de Samuel, 2026-07-30). Contrairement aux
-  // modales du spectacle, tout reste local ici : c'est le PATCH du transport
-  // qui applique la liste (`TransportSerializer.materials`).
+function applyCatalogToLines() {
+  // La modale reflète l'état complet du chargement À CET ARRÊT : une ligne à
+  // 0 (décochée) doit donc être RETIRÉE du camion, pas seulement ignorée —
+  // sinon décocher n'aurait aucun effet (demande de Samuel, 2026-07-30).
+  // Tournées (2026-08-04) : seules les lignes chargées à l'arrêt sélectionné
+  // sont pilotées — celles des autres arrêts, et le matériel absent du
+  // catalogue affiché (inactif, filtré hors projet), sont préservés tels
+  // quels plutôt que perdus silencieusement. Tout reste local ici : c'est le
+  // PATCH du transport qui applique la liste (`TransportSerializer.materials`).
+  const lastIndex = form.value.stops.length - 1
+  const catalogIds = new Set(materialsCatalog.value.map((m) => m.id))
   const merged = []
   materialsCatalog.value.forEach((m) => {
     const qty = catalogQty.value[m.id] || 0
     if (qty <= 0) return
-    const existing = form.value.materials.find((line) => line.material === m.id)
+    const existing = form.value.materials.find(
+      (line) => line.material === m.id && line.load === loadStopIndex.value,
+    )
     merged.push({
       material: m.id,
       material_name: existing?.material_name ?? m.name,
       quantity: qty,
+      load: loadStopIndex.value,
+      // Une ligne existante garde son arrêt de déchargement ; une nouvelle
+      // descend au dernier arrêt (défaut « tournée entière » depuis ce
+      // point), ajustable ensuite sur la ligne elle-même.
+      unload: existing ? existing.unload : lastIndex,
     })
   })
-  // Le matériel absent du catalogue affiché (inactif, ou filtré hors du
-  // projet) n'est pas piloté par la modale : on le conserve tel quel plutôt
-  // que de le perdre silencieusement.
-  const catalogIds = new Set(materialsCatalog.value.map((m) => m.id))
   form.value.materials.forEach((line) => {
-    if (!catalogIds.has(line.material)) merged.push(line)
+    if (!catalogIds.has(line.material) || line.load !== loadStopIndex.value) merged.push(line)
   })
   form.value.materials = merged
+  fixupLines()
+}
+
+function confirmAddMaterial() {
+  applyCatalogToLines()
   showAddModal.value = false
 }
 
 async function save({ confirm = false, force = false } = {}) {
   saveError.value = null
   conflictDetail.value = null
+  const stopsError = validateStops()
+  if (stopsError) {
+    saveError.value = stopsError
+    return
+  }
   saving.value = true
   try {
     const payload = {
-      transport_type: form.value.transport_type,
-      origin_venue: form.value.origin_venue,
-      destination_venue: form.value.destination_venue,
       scheduled_datetime: form.value.scheduled_datetime ? new Date(form.value.scheduled_datetime).toISOString() : null,
-      estimated_duration_minutes: Number(form.value.estimated_duration_minutes) || 1,
+      // Séquence d'arrêts : l'ordre est la position dans la liste. Une durée
+      // laissée vide n'envoie pas la clé — le serveur estime (Routes, repli
+      // Settings) ; le premier arrêt n'a jamais de durée (segment inexistant).
+      stops: form.value.stops.map((s, i) => {
+        const stop = { venue: s.venue }
+        if (i > 0 && s.travel !== '' && s.travel !== null && s.travel !== undefined) {
+          stop.travel_minutes_from_previous = Math.max(0, Number(s.travel) || 0)
+        }
+        return stop
+      }),
       technicians: form.value.technicians.map((id) => ({ technician: id })),
       notes: form.value.notes,
-      materials: form.value.materials.map((m) => ({ material: m.material, quantity: m.quantity })),
+      materials: form.value.materials.map((m) => ({
+        material: m.material,
+        quantity: m.quantity,
+        load_stop_order: m.load,
+        unload_stop_order: m.unload,
+      })),
       force,
     }
     if (confirm) payload.status = 'confirmed'
@@ -587,7 +821,8 @@ async function save({ confirm = false, force = false } = {}) {
       saveError.value =
         e.data?.detail ??
         e.data?.scheduled_datetime?.[0] ??
-        e.data?.destination_venue?.[0] ??
+        e.data?.stops?.[0] ??
+        e.data?.materials?.[0] ??
         "Impossible d'enregistrer les changements."
     }
   } finally {
@@ -620,12 +855,7 @@ const {
 
       <div class="header">
         <div class="header__title-row">
-          <h1 class="header__title">
-            {{ transport.transport_type === 'delivery' ? 'Livraison' : 'Ramassage' }} —
-            {{ transport.origin_venue_code || transport.origin_venue_name }}
-            →
-            {{ transport.destination_venue_code || transport.destination_venue_name }}
-          </h1>
+          <h1 class="header__title">Tournée — {{ routeLabel }}</h1>
           <div
             class="header__status"
             :style="isConfirmed
@@ -671,7 +901,7 @@ const {
       <template v-if="!editing">
         <div class="card summary-grid">
           <div>
-            <div class="summary-label">Heure prévue</div>
+            <div class="summary-label">Heure de départ</div>
             <div class="summary-value summary-value--lines" :class="{ 'summary-value--accent': !transport.scheduled_datetime }">
               <template v-if="transport.scheduled_datetime">
                 <div class="summary-value__sub">{{ fmtDate(transport.scheduled_datetime) }},</div>
@@ -681,23 +911,33 @@ const {
             </div>
           </div>
           <div>
-            <div class="summary-label">Durée estimée</div>
+            <div class="summary-label">Durée totale</div>
             <div class="summary-value">{{ transport.estimated_duration_minutes }} min</div>
-          </div>
-          <div>
-            <div class="summary-label">Type</div>
-            <div class="summary-value">{{ transport.transport_type === 'delivery' ? 'Livraison' : 'Ramassage' }}</div>
           </div>
           <div>
             <div class="summary-label">Spectacle</div>
             <div class="summary-value">{{ transport.show_title }}</div>
           </div>
-          <div class="summary-span-2">
-            <div class="summary-label">Trajet</div>
-            <div class="summary-value route-value">
-              <span>{{ transport.origin_venue_name }}</span>
-              <span class="route-arrow" aria-hidden="true">→</span>
-              <span>{{ transport.destination_venue_name }}</span>
+        </div>
+
+        <!-- Séquence d'arrêts (tournées 2026-08-04) : une ligne par arrêt,
+             avec l'heure d'arrivée dérivée (fournie par l'API,
+             `stops[].arrival_datetime`) et la durée du segment qui y mène. -->
+        <div class="card">
+          <div class="card-title" style="margin-bottom: 14px">Séquence de la tournée</div>
+          <div class="stop-list">
+            <div v-for="(s, i) in transport.stops" :key="s.id" class="stop-row">
+              <div class="stop-row__num">{{ i + 1 }}</div>
+              <div class="stop-row__body">
+                <div class="stop-row__name">{{ s.venue_name }}</div>
+                <div class="stop-row__meta">
+                  <template v-if="i === 0">Départ<template v-if="s.arrival_datetime"> · {{ fmtTime(s.arrival_datetime) }}</template></template>
+                  <template v-else>
+                    + {{ s.travel_minutes_from_previous }} min
+                    <template v-if="s.arrival_datetime"> · arrivée {{ fmtTime(s.arrival_datetime) }}</template>
+                  </template>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -745,7 +985,7 @@ const {
         <div class="card">
           <div class="card-title" style="margin-bottom: 14px">Matériel transporté</div>
           <div class="row-list">
-            <div v-for="m in form.materials" :key="m.material" class="row">
+            <div v-for="m in transport.materials" :key="m.id" class="row">
               <span
                 class="row__dot"
                 :style="{ background: (materialCategoryById.get(m.material) ?? {}).color ?? 'rgba(var(--fg-rgb),.3)' }"
@@ -755,10 +995,16 @@ const {
                   {{ m.material_name }}
                   <span class="row__cat">· {{ (materialCategoryById.get(m.material) ?? {}).label ?? 'Sans catégorie' }}</span>
                 </div>
+                <!-- Portion de la tournée (2026-08-04) : où ce matériel monte
+                     et descend — la donnée centrale du modèle multi-arrêts. -->
+                <div class="row__subtitle">
+                  {{ m.load_stop_order + 1 }}. {{ m.load_venue_name }}
+                  → {{ m.unload_stop_order + 1 }}. {{ m.unload_venue_name }}
+                </div>
               </div>
               <div class="row__qty">× {{ m.quantity }}</div>
             </div>
-            <div v-if="form.materials.length === 0" class="row-empty">Aucun matériel — camion vide.</div>
+            <div v-if="(transport.materials ?? []).length === 0" class="row-empty">Aucun matériel — camion vide.</div>
           </div>
         </div>
       </template>
@@ -768,7 +1014,7 @@ const {
       <div v-else class="card">
         <div class="field-grid">
           <div class="field">
-            <div class="field__label">Heure prévue</div>
+            <div class="field__label">Heure de départ</div>
             <!-- step en secondes : 300 = minutes par pas de 5 -->
             <input
               v-model="form.scheduled_datetime"
@@ -778,33 +1024,17 @@ const {
             />
           </div>
           <div class="field">
-            <div class="field__label">Durée estimée (min)</div>
-            <input
-              v-model.number="form.estimated_duration_minutes"
-              type="number"
-              min="1"
-              step="5"
-              class="field__input"
-            />
+            <div class="field__label">Durée totale</div>
+            <!-- Dérivée (somme des segments) : s'édite segment par segment
+                 dans la séquence ci-dessous. « À estimer » dès qu'un segment
+                 est laissé vide (le serveur le calculera). -->
+            <div class="field__static">
+              {{ draftTotalMinutes !== null ? `${draftTotalMinutes} min` : 'À estimer à l\'enregistrement' }}
+            </div>
           </div>
         </div>
         <div v-if="isToApprove && !form.scheduled_datetime" class="fiche-hint">
-          Ajoute une heure prévue pour pouvoir confirmer ce transport.
-        </div>
-
-        <div class="field">
-          <div class="field__label">Type</div>
-          <div class="type-toggle">
-            <div
-              v-for="t in typeOptions"
-              :key="t.value"
-              class="type-toggle__item"
-              :class="{ 'type-toggle__item--active': form.transport_type === t.value }"
-              @click="form.transport_type = t.value"
-            >
-              {{ t.label }}
-            </div>
-          </div>
+          Ajoute une heure de départ pour pouvoir confirmer ce transport.
         </div>
 
         <div class="field">
@@ -812,20 +1042,48 @@ const {
           <div class="field__static">{{ transport.show_title }}</div>
         </div>
 
-        <div class="field-grid field-grid--route">
-          <div class="field">
-            <div class="field__label">Lieu de départ</div>
-            <select v-model="form.origin_venue" class="field__input">
-              <option v-for="v in venues" :key="v.id" :value="v.id">{{ v.name }}</option>
-            </select>
+        <!-- Séquence d'arrêts (tournées 2026-08-04) : l'ordre est la position
+             dans la liste. La durée d'un segment laissée vide est estimée par
+             le serveur (Google Routes, repli réglages). -->
+        <div class="field">
+          <div class="field__label">Séquence de la tournée</div>
+          <div class="stop-editor">
+            <div v-for="(s, i) in form.stops" :key="i" class="stop-editor__row">
+              <div class="stop-row__num">{{ i + 1 }}</div>
+              <select v-model="s.venue" class="field__input stop-editor__venue">
+                <option value="" disabled>Lieu…</option>
+                <option v-for="v in venues" :key="v.id" :value="v.id">{{ v.name }}</option>
+              </select>
+              <div v-if="i > 0" class="stop-editor__travel">
+                <span class="stop-editor__travel-label">+</span>
+                <input
+                  v-model="s.travel"
+                  type="number"
+                  min="0"
+                  step="5"
+                  class="field__input stop-editor__travel-input"
+                  placeholder="auto"
+                />
+                <span class="stop-editor__travel-label">min</span>
+              </div>
+              <div v-else class="stop-editor__travel stop-editor__travel--start">Départ</div>
+              <div class="stop-editor__arrival">
+                {{ draftArrivals[i] ? fmtTime(draftArrivals[i].toISOString()) : (i === 0 ? '' : 'auto') }}
+              </div>
+              <div class="stop-editor__actions">
+                <button type="button" class="stop-editor__btn" :disabled="i === 0" title="Monter" @click="moveStop(i, -1)">↑</button>
+                <button type="button" class="stop-editor__btn" :disabled="i === form.stops.length - 1" title="Descendre" @click="moveStop(i, 1)">↓</button>
+                <button
+                  type="button"
+                  class="stop-editor__btn stop-editor__btn--danger"
+                  :disabled="form.stops.length <= 2"
+                  title="Retirer cet arrêt"
+                  @click="removeStop(i)"
+                >✕</button>
+              </div>
+            </div>
           </div>
-          <div class="route-arrow" aria-hidden="true">→</div>
-          <div class="field">
-            <div class="field__label">Lieu d'arrivée</div>
-            <select v-model="form.destination_venue" class="field__input">
-              <option v-for="v in venues" :key="v.id" :value="v.id">{{ v.name }}</option>
-            </select>
-          </div>
+          <div class="material-add" @click="addStop">+ Ajouter un arrêt</div>
         </div>
 
         <div v-if="transport.departure_show || transport.arrival_show" class="reference-times">
@@ -876,7 +1134,7 @@ const {
             <div class="field__label">Matériel transporté</div>
           </div>
           <div class="material-list">
-            <div v-for="(m, i) in form.materials" :key="m.material" class="material-row">
+            <div v-for="(m, i) in form.materials" :key="`${m.material}-${m.load}-${m.unload}`" class="material-row material-row--stops">
               <div class="material-row__name">{{ m.material_name }}</div>
               <input
                 type="number"
@@ -886,11 +1144,37 @@ const {
                 @input="updateMaterialQty(i, $event.target.value)"
               />
               <div class="material-row__stock">/ {{ materialStockById.get(m.material) ?? '?' }} dispo.</div>
+              <!-- Portion de la tournée (2026-08-04) : où cette ligne monte et
+                   descend. Les options sont les arrêts de la séquence
+                   ci-dessus, numérotés par position. -->
+              <div class="material-row__portion">
+                <select
+                  class="field__input material-row__stop-select"
+                  :value="m.load"
+                  title="Arrêt de chargement"
+                  @change="m.load = Number($event.target.value); fixupLines()"
+                >
+                  <option v-for="o in stopOptions" :key="o.value" :value="o.value" :disabled="o.value >= m.unload && o.value !== m.load">
+                    {{ o.label }}
+                  </option>
+                </select>
+                <span class="route-arrow" aria-hidden="true">→</span>
+                <select
+                  class="field__input material-row__stop-select"
+                  :value="m.unload"
+                  title="Arrêt de déchargement"
+                  @change="m.unload = Number($event.target.value); fixupLines()"
+                >
+                  <option v-for="o in stopOptions" :key="o.value" :value="o.value" :disabled="o.value <= m.load && o.value !== m.unload">
+                    {{ o.label }}
+                  </option>
+                </select>
+              </div>
               <div class="material-row__remove" @click="removeMaterialLine(i)">✕</div>
             </div>
             <div v-if="form.materials.length === 0" class="row-empty">Aucun matériel — camion vide.</div>
           </div>
-          <div class="material-add" @click="openAddModal">+ Ajouter du matériel</div>
+          <div class="material-add" @click="openAddModal(0)">+ Ajouter du matériel</div>
         </div>
 
         <div class="field">
@@ -961,15 +1245,30 @@ const {
           <div class="modal__title">Ajouter du matériel</div>
           <div class="modal__close" @click="closeAddModal">×</div>
         </div>
+        <!-- Arrêt de chargement (tournées 2026-08-04) : la disponibilité est
+             recalculée pour l'arrêt choisi — on ne charge à un arrêt que ce
+             qui s'y trouvera à l'arrivée du camion. -->
+        <div class="modal__stop-picker">
+          <span class="modal__stop-label">Chargement à l'arrêt</span>
+          <select
+            class="field__input modal__stop-select"
+            :value="loadStopIndex"
+            @change="changeLoadStop($event.target.value)"
+          >
+            <option v-for="o in stopOptions" :key="o.value" :value="o.value" :disabled="o.value === form.stops.length - 1">
+              {{ o.label }}
+            </option>
+          </select>
+        </div>
         <div v-if="availabilityLoading" class="modal__note">Vérification des emplacements…</div>
         <div v-else-if="availability && availability.at === null" class="modal__note">
-          Ce déplacement n'a pas encore d'heure prévue : impossible de savoir ce
+          Ce déplacement n'a pas encore d'heure de départ : impossible de savoir ce
           qui se trouvera à {{ availability.origin_venue_name }}. Tout l'inventaire
           est proposé — saisis l'heure et enregistre pour filtrer sur le réel.
         </div>
         <div v-else-if="availability" class="modal__note">
           Seul le matériel présent à <strong>{{ availability.origin_venue_name }}</strong>
-          au moment du départ est sélectionnable.
+          à l'arrivée du camion est sélectionnable.
           <template v-if="unavailableCount > 0">
             {{ unavailableCount }} item(s) grisé(s) sont ailleurs.
           </template>
@@ -1360,13 +1659,137 @@ const {
   gap: 14px;
 }
 
-.field-grid--route {
-  grid-template-columns: 1fr auto 1fr;
-  align-items: end;
+/* --- Séquence d'arrêts (tournées 2026-08-04) --- */
+
+.stop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.field-grid--route .route-arrow {
-  padding-bottom: 11px;
+.stop-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-notch-sm);
+  background: var(--bg-row);
+}
+
+.stop-row__num {
+  width: 24px;
+  height: 24px;
+  border-radius: 0 7px 0 7px;
+  background: rgba(var(--accent-rgb), 0.16);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 700 11.5px var(--font-mono);
+  flex: none;
+}
+
+.stop-row__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.stop-row__name {
+  font: 600 13px system-ui;
+  color: rgb(var(--fg-rgb));
+}
+
+.stop-row__meta {
+  font: 400 11.5px system-ui;
+  color: rgba(var(--fg-rgb), 0.5);
+}
+
+.stop-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stop-editor__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-notch-sm);
+  background: var(--bg-row);
+}
+
+.stop-editor__venue {
+  flex: 1;
+  min-width: 0;
+}
+
+.stop-editor__travel {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+}
+
+.stop-editor__travel--start {
+  font: 700 10px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(var(--fg-rgb), 0.4);
+  /* Même encombrement que « + [input] min » pour garder les colonnes
+     alignées entre la ligne de départ et les segments. */
+  width: 96px;
+  justify-content: center;
+}
+
+.stop-editor__travel-label {
+  font: 500 11.5px system-ui;
+  color: rgba(var(--fg-rgb), 0.4);
+}
+
+.stop-editor__travel-input {
+  width: 58px;
+  padding: 7px 8px;
+  text-align: center;
+}
+
+.stop-editor__arrival {
+  font: 600 11.5px var(--font-mono);
+  color: rgba(var(--fg-rgb), 0.55);
+  width: 62px;
+  text-align: right;
+  flex: none;
+  white-space: nowrap;
+}
+
+.stop-editor__actions {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.stop-editor__btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 0 6px 0 6px;
+  background: var(--bg-deep);
+  border: 1px solid rgba(var(--fg-rgb), 0.12);
+  color: rgba(var(--fg-rgb), 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font: 700 12px system-ui;
+  padding: 0;
+}
+
+.stop-editor__btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.stop-editor__btn--danger {
+  color: oklch(0.78 0.16 35);
 }
 
 .reference-times {
@@ -1397,29 +1820,6 @@ const {
   color: rgba(var(--fg-rgb), 0.8);
 }
 
-.type-toggle {
-  display: flex;
-  gap: 8px;
-}
-
-.type-toggle__item {
-  flex: 1;
-  text-align: center;
-  padding: 10px;
-  border-radius: var(--radius-notch-sm);
-  font: 600 13px system-ui;
-  cursor: pointer;
-  background: transparent;
-  color: rgba(var(--fg-rgb), 0.55);
-  border: 1px solid rgba(var(--fg-rgb), 0.12);
-}
-
-.type-toggle__item--active {
-  background: rgba(var(--accent-rgb), 0.18);
-  color: var(--accent);
-  border-color: rgba(var(--accent-rgb), 0.4);
-}
-
 .conflict-note {
   margin-top: 8px;
   font: 500 11.5px system-ui;
@@ -1442,7 +1842,8 @@ const {
 }
 
 .material-row__name {
-  flex: 1;
+  flex: 1 1 110px;
+  min-width: 0;
   font: 500 12.5px system-ui;
   color: rgb(var(--fg-rgb));
 }
@@ -1462,7 +1863,7 @@ const {
 .material-row__stock {
   font: 400 11px system-ui;
   color: rgba(var(--fg-rgb), 0.35);
-  min-width: 64px;
+  white-space: nowrap;
 }
 
 .material-row__remove {
@@ -1470,6 +1871,46 @@ const {
   color: rgba(var(--fg-rgb), 0.35);
   cursor: pointer;
   padding: 2px 6px;
+}
+
+/* Ligne de matériel avec sa portion de tournée (2026-08-04) : les deux
+   sélecteurs d'arrêts passent sous le nom sur les écrans étroits. */
+.material-row--stops {
+  flex-wrap: wrap;
+}
+
+.material-row__portion {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.material-row__stop-select {
+  width: auto;
+  padding: 6px 8px;
+  font: 500 12px system-ui;
+}
+
+.modal__stop-picker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px 0;
+}
+
+.modal__stop-label {
+  font: 700 10.5px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(var(--fg-rgb), 0.45);
+  flex: none;
+}
+
+.modal__stop-select {
+  width: auto;
+  min-width: 200px;
+  padding: 8px 10px;
 }
 
 .material-add {

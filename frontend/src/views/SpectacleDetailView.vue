@@ -257,8 +257,6 @@ const decoratedTechnicians = computed(() =>
   }),
 )
 
-const transportTypeLabel = { delivery: 'Livraison', pickup: 'Ramassage' }
-
 // Triés chronologiquement (2026-08-01, demande de Samuel) — l'API ne les
 // renvoie pas déjà triés. Une proposition sans `scheduled_datetime` (pas
 // encore complétée) va en fin de liste plutôt que de casser le tri, même
@@ -268,7 +266,9 @@ const decoratedTransports = computed(() =>
   transports.value
     .map((tr) => ({
       ...tr,
-      typeLabel: transportTypeLabel[tr.transport_type] ?? tr.transport_type,
+      // Tournées multi-arrêts (2026-08-04) : trajet = la séquence complète
+      // des arrêts ; le type livraison/ramassage n'existe plus.
+      routeLabel: (tr.stops ?? []).map((s) => s.venue_name).join(' → '),
       time: tr.scheduled_datetime
         ? `${dayShortFmt.format(new Date(tr.scheduled_datetime))} ${timeFmt.format(new Date(tr.scheduled_datetime))}`
         : 'à planifier',
@@ -1035,8 +1035,8 @@ async function onTechnicienAssigned(payload) {
         <div class="card-title" style="margin-bottom: 14px">Transports liés</div>
         <div class="row-list">
           <div v-for="tr in decoratedTransports" :key="tr.id" class="row">
-            <div class="row__badge">{{ tr.typeLabel }}</div>
-            <div class="row__body row__body--flex">{{ tr.origin_venue_name }} → {{ tr.destination_venue_name }}</div>
+            <div class="row__badge">Tournée</div>
+            <div class="row__body row__body--flex">{{ tr.routeLabel }}</div>
             <div class="row__time">{{ tr.time }}</div>
           </div>
           <div v-if="decoratedTransports.length === 0" class="row-empty">Aucun transport lié.</div>
