@@ -174,22 +174,23 @@ Table d'association — assigne des techniciens à un spectacle/répétition.
 
 ## 8. `transports`
 
-Table ajoutée le 2026-07-18 (hors des 8 tables initiales) — trace la livraison/ramassage de matériel entre deux lieux pour un spectacle donné, et quel technicien s'en charge.
+Table ajoutée le 2026-07-18 (hors des 8 tables initiales). **Refonte en tournées multi-arrêts le 2026-08-04 (décision de Samuel)** : un `transports` n'est plus un trajet « lieu A → lieu B » mais une **tournée** — une séquence ordonnée d'arrêts (`transport_stops`, section 8bis) : arrêt 1 on ramasse du matériel, arrêt 2 on en ajoute, arrêt 3 on décharge, etc. Les anciens champs `transport_type` (livraison/ramassage — retiré sans équivalent, il n'avait plus de sens au niveau d'une tournée), `origin_venue_id`, `destination_venue_id` et `estimated_duration_minutes` ont été supprimés (migration `0025_transport_stops` : chaque transport existant devient une tournée à 2 arrêts, fenêtres dérivées identiques).
 
 | Champ | Type | Description |
 |---|---|---|
 | id | INT, PK | Identifiant unique |
-| show_id | INT, FK → shows.id | Spectacle desservi par ce déplacement |
-| transport_type | ENUM('delivery','pickup') | Livraison (aller) ou ramassage (retour) |
+| show_id | INT, FK → shows.id | Spectacle desservi par cette tournée |
 | status | ENUM('confirmed','to_approve') (default 'confirmed') | Cycle de vie (ajouté le 2026-07-24) — voir note ci-dessous |
-| origin_venue_id | INT, FK → venues.id | Lieu de départ (souvent un entrepôt pour une livraison) |
-| destination_venue_id | INT, FK → venues.id | Lieu d'arrivée (souvent le lieu du spectacle pour une livraison) — doit être différent de `origin_venue_id` |
-| scheduled_datetime | DATETIME, **nullable** | Heure prévue du déplacement — nullable depuis le 2026-07-24 (une proposition `to_approve` n'a pas encore d'heure). Obligatoire pour un `status='confirmed'` (validé par `TransportSerializer`) |
-| *(dérivé)* origin_venue_code / destination_venue_code | VARCHAR(4) | Code court des lieux (voir `venues.code`), exposé en lecture seule pour un affichage compact départ/arrivée — vide si le lieu n'a pas de code |
-| estimated_duration_minutes | INT (default : voir `settings.default_transport_duration_minutes`) | Durée estimée (trajet + chargement/déchargement) — pré-remplie automatiquement via l'API Google Routes si les deux venues ont des coordonnées GPS (voir section 10) |
+| scheduled_datetime | DATETIME, **nullable** | Heure de départ de la tournée (départ du premier arrêt) — nullable depuis le 2026-07-24 (une proposition `to_approve` n'a pas encore d'heure). Obligatoire pour un `status='confirmed'` (validé par `TransportSerializer`) |
 | notes | TEXT | Notes diverses |
+| *(dérivés)* origin_venue / destination_venue (+ noms, codes) | — | Lieux des PREMIER et DERNIER arrêts, exposés en lecture pour compat avec l'affichage A → B ; acceptés en **écriture** comme chemin de compat (voir note API ci-dessous) |
+| *(dérivé)* estimated_duration_minutes | INT | Durée TOTALE de la tournée = somme des `travel_minutes_from_previous` des arrêts — la clé API garde son nom historique |
 
-**Fenêtre effective** = `scheduled_datetime` à `scheduled_datetime + estimated_duration_minutes` (pas de buffers séparés — la durée estimée couvre déjà trajet + chargement).
+**Horaire (décision du 2026-08-04)** : UNE heure d'ancrage (`scheduled_datetime`) + une durée par segment (portée par chaque arrêt) — les heures d'arrivée aux arrêts sont **dérivées** (`Transport.arrival_at`), et décaler toute la tournée reste un seul champ à changer (le glisser-déposer du Dashboard en dépend).
+
+**Fenêtre effective** = `scheduled_datetime` à l'arrivée au dernier arrêt (`scheduled_datetime + somme des segments`) — pas de buffers séparés, les durées de segment couvrent déjà trajet + chargement/déchargement. Les techniciens affectés sont engagés sur toute la tournée.
+
+**Compat API ancien contrat A → B** : `POST` avec `origin_venue`/`destination_venue` (sans `stops`) crée une tournée à 2 arrêts ; `PATCH` de ces champs retouche le lieu du premier/dernier arrêt (réestimation du segment touché) ; `PATCH` de `estimated_duration_minutes` seul ajuste l'unique segment d'une tournée à 2 arrêts (refusé s'il changerait la valeur d'une tournée plus longue — ambigu). Le frontend actuel reste fonctionnel tel quel en attendant sa refonte.
 
 **Techniciens affectés** (décision du 2026-07-30) : *qui* fait le déplacement est décrit par la table de liaison `transport_technicians` (section 13bis), pas directement ici. Le champ `technician_id` (FK unique) a été retiré : un déplacement peut mobiliser plusieurs personnes, comme un spectacle. Voir migration `0015_transport_technicians`.
 
@@ -201,6 +202,24 @@ Table ajoutée le 2026-07-18 (hors des 8 tables initiales) — trace la livraiso
 
 ---
 
+## 8bis. `transport_stops`
+
+Table ajoutée le 2026-08-04 (refonte tournées) — les arrêts d'une tournée, dans l'ordre.
+
+| Champ | Type | Description |
+|---|---|---|
+| id | INT, PK | Identifiant unique |
+| transport_id | INT, FK → transports.id (CASCADE) | Tournée à laquelle cet arrêt appartient |
+| venue_id | INT, FK → venues.id (PROTECT) | Lieu de l'arrêt — PROTECT : un lieu référencé par un arrêt bloque la suppression du lieu (même règle que `shows.venue_id`) |
+| order | INT | Position dans la séquence (0 = départ) — `unique_together (transport, order)` |
+| travel_minutes_from_previous | INT (default 0) | Durée du segment depuis l'arrêt précédent (trajet + chargement/déchargement) — toujours 0 sur le premier arrêt ; pré-remplie via Google Routes (section 4ter), sinon `settings.default_transport_duration_minutes` |
+
+**Heure d'arrivée** : dérivée, jamais stockée — `scheduled_datetime` de la tournée + cumul des segments jusqu'à l'arrêt inclus (`Transport.arrival_at`). Exposée en lecture (`arrival_datetime`) par `TransportStopSerializer`.
+
+**Règles** : au moins 2 arrêts par tournée ; deux arrêts CONSÉCUTIFS ne peuvent pas partager le même lieu ; un même lieu peut revenir plus loin dans la séquence — c'est ce qui permet une tournée aller-retour (entrepôt → salle → entrepôt) en une seule fiche. À l'écriture (`TransportSerializer.stops`), l'ordre est la position dans la liste envoyée ; la resynchronisation se fait EN PLACE par position (mêmes ids — les lignes de matériel qui pointent un arrêt survivent à une retouche de lieu/durée). Retirer un arrêt encore utilisé par une ligne de matériel est refusé (sauf si `materials` est refourni dans la même requête).
+
+---
+
 ## 9. `transport_materials`
 
 Table de liaison ajoutée le 2026-07-24 (module transport) — relie un `transport` au matériel (et à la quantité) qu'il transporte. Sans elle, un `transport` savait *quand* et *où* le matériel bougeait, mais pas *lequel* montait dans le camion.
@@ -208,27 +227,31 @@ Table de liaison ajoutée le 2026-07-24 (module transport) — relie un `transpo
 | Champ | Type | Description |
 |---|---|---|
 | id | INT, PK | Identifiant unique |
-| transport_id | INT, FK → transports.id (CASCADE) | Déplacement qui transporte ce matériel |
+| transport_id | INT, FK → transports.id (CASCADE) | Tournée qui transporte ce matériel |
 | material_id | INT, FK → materials.id (CASCADE) | Matériel transporté |
-| quantity | INT (default 1) | Quantité transportée (ex. 8 des 20 rallonges) — un même matériel n'apparaît qu'une fois par transport (`unique_together (transport, material)`) |
+| quantity | INT (default 1) | Quantité transportée sur cette portion (ex. 8 des 20 rallonges) |
+| load_stop_id | INT, FK → transport_stops.id (CASCADE) | **Arrêt de chargement** (2026-08-04) — le matériel monte dans le camion à l'arrivée de la tournée à cet arrêt ; doit précéder `unload_stop` |
+| unload_stop_id | INT, FK → transport_stops.id (CASCADE) | **Arrêt de déchargement** — le matériel descend à l'arrivée à cet arrêt |
 
-**Écriture** : géré en écriture imbriquée sur `TransportSerializer` via le champ `materials` (liste de `{material, quantity}`). Fournir `materials` lors d'un PATCH remplace intégralement les lignes du transport ; l'omettre les laisse inchangées. Validations (non overridables par `force`, ce sont des erreurs de données) : chaque matériel doit appartenir au même projet que le déplacement, ne pas être listé deux fois, et sa quantité transportée ne peut dépasser `materials.quantity` (la quantité totale possédée).
+**Portion de tournée (2026-08-04)** : chaque ligne associe le matériel à SA portion de la séquence — c'est une donnée stockée, pas une reconstruction d'affichage. `unique_together` couvre le quadruplet `(transport, material, load_stop, unload_stop)` : un même matériel peut apparaître deux fois dans une tournée pour une répartition (8 rallonges chargées au départ, 3 déposées à l'arrêt 1 et 5 à l'arrêt 2 = deux lignes) ou un relais (A → B puis B → C dans le même véhicule).
 
-**Module de cohérence des emplacements** (`transport_coherence.py`, non bloquant) : à partir de ce lien, le module reconstruit une *timeline* de position par matériel — départ au lieu d'entreposage `materials.venue`, puis application chronologique des transports (un transport est réputé « arrivé » à sa `effective_end`). Il produit un **rapport** (jamais un blocage) exposé par `GET /api/shows/{id}/transport-coherence/` (centré sur un spectacle) et `GET /api/projects/{id}/transport-coherence/` (toute la production). Trois types d'incohérence :
+**Écriture** : géré en écriture imbriquée sur `TransportSerializer` via le champ `materials` (liste de `{material, quantity, load_stop_order?, unload_stop_order?}` — positions 0-indexées dans la séquence ; absentes, la ligne couvre la tournée entière, ce qui garde l'ancien contrat `{material, quantity}` fonctionnel). Fournir `materials` lors d'un PATCH remplace intégralement les lignes du transport ; l'omettre les laisse inchangées. Validations (non overridables par `force`, ce sont des erreurs de données) : chaque matériel doit appartenir au même projet que le déplacement, `load < unload`, pas deux lignes identiques sur la même portion, et la quantité PAR LIGNE ne peut dépasser `materials.quantity` (pas de somme par matériel — un relais réutilise les mêmes unités physiques ; le réalisme spatial est jugé par le rapport de cohérence).
+
+**Module de cohérence des emplacements** (`transport_coherence.py`, non bloquant) : à partir de ce lien, le module reconstruit une *timeline* de position par matériel — départ au lieu d'entreposage `materials.venue`, puis application chronologique des LIGNES de tournée (2026-08-04) : chaque ligne déplace sa quantité du lieu de son arrêt de chargement (le matériel doit y être disponible à l'heure d'ARRIVÉE du camion à cet arrêt) vers celui de son arrêt de déchargement (réputé « arrivé » à l'heure d'arrivée à ce dernier). Il produit un **rapport** (jamais un blocage) exposé par `GET /api/shows/{id}/transport-coherence/` (centré sur un spectacle) et `GET /api/projects/{id}/transport-coherence/` (toute la production). Trois types d'incohérence :
 
 - `materiel_non_livre` : un `show_material` requiert du matériel à un lieu où il n'est pas présent (en quantité suffisante) au début de la fenêtre effective — aucun transport **confirmé** ne l'y amène. Répond à « tout déplacement de matériel est associé à un transport ». Porte un champ `etat` : `propose` (orange — une proposition auto `to_approve` couvre le déplacement, `proposal_transport_id` la pointe) ou `manquant` (rouge — rien, même proposé, ne le couvre).
-- `origine_incoherente` : un `transport` prétend transporter du matériel depuis un lieu où ce matériel n'est pas disponible à l'heure du départ. Répond à « tout est possible sur les emplacements prévus ».
+- `origine_incoherente` : une tournée prétend charger du matériel à un arrêt où ce matériel n'est pas disponible à l'heure d'arrivée du camion. Répond à « tout est possible sur les emplacements prévus ».
 - `origine_inconnue` : le matériel n'a pas de lieu d'entreposage (`materials.venue` vide), sa position de départ est inconnue — signalé une seule fois, impossible à suivre.
 
-**Portée assumée — aller seulement** (décision du 2026-07-24) : le module vérifie la *présence* du matériel là où il est requis (livraisons). Il n'exige PAS qu'un ramassage (`pickup`) ramène le matériel à son entrepôt d'origine (pas de boucle de retour fermée) — un `pickup` est tout de même pris en compte dans la timeline comme tout déplacement.
+**Portée assumée — aller seulement** (décision du 2026-07-24) : le module vérifie la *présence* du matériel là où il est requis (livraisons). Il n'exige PAS qu'un déplacement de retour précis ramène le matériel à son entrepôt d'origine (pas de boucle fermée) — tout déplacement, retour compris, est pris en compte dans la timeline.
 
 **Retour à l'origine en fin de projet** (ajout du 2026-07-30) : quatrième type d'incohérence, `retour_manquant`. À l'**horizon du projet** — `projects.end_date` si renseignée (fin de journée), sinon la fin effective du dernier événement du projet — chaque matériel doit se retrouver en totalité à son `venue` d'origine. Sinon l'issue liste la quantité manquante et les lieux où le reliquat se trouve encore. Non bloquant comme le reste du rapport. Cela **révise la portée « aller seulement »** décidée le 2026-07-24 : on ne vérifie toujours pas qu'un `pickup` précis existe pour chaque livraison, mais on contrôle le résultat net à la fin.
 
-**Disponibilité au lieu de départ** (ajout du 2026-07-30) : la même timeline sert aussi *avant* la saisie, via `get_venue_material_availability()` et `GET /api/transports/{id}/material-availability/` — « quel matériel est présent au lieu de départ à l'heure du départ, en quelle quantité ». Le frontend grise et rend non sélectionnable ce qui n'est pas sur place. Le blocage est **côté interface seulement** : l'API accepte toujours un chargement incohérent (créé par l'API brute, ou devenu faux après un changement d'horaire), que le rapport ci-dessus continue de signaler en `origine_incoherente`. Le transport est exclu de son propre calcul ; sans `scheduled_datetime`, l'endpoint renvoie `at: null` et tout le stock comme disponible.
+**Disponibilité par arrêt** (ajout du 2026-07-30, par-arrêt depuis le 2026-08-04) : la même timeline sert aussi *avant* la saisie, via `get_venue_material_availability()` et `GET /api/transports/{id}/material-availability/?stop=<position>` — « quel matériel est présent à cet arrêt à l'heure d'arrivée du camion, en quelle quantité ». Sans paramètre `stop`, le premier arrêt (l'ancien comportement « lieu de départ », intact pour la modale actuelle). Le frontend grise et rend non sélectionnable ce qui n'est pas sur place. Le blocage est **côté interface seulement** : l'API accepte toujours un chargement incohérent (créé par l'API brute, ou devenu faux après un changement d'horaire), que le rapport ci-dessus continue de signaler en `origine_incoherente`. Le transport est exclu de son propre calcul ; sans `scheduled_datetime`, l'endpoint renvoie `at: null` et tout le stock comme disponible.
 
 **Exemption d'entreposage** : un `show_material` rattaché à un `show` d'entrepôt (`venue.is_storage=True`) n'exige aucune livraison — cohérent avec l'exemption de la section 5.
 
-**Génération automatique des propositions** (`transport_autogen.py`, décision du 2026-07-24) : plutôt que d'attendre que l'utilisateur crée chaque transport, l'app **génère automatiquement** un `transports` en `status='to_approve'` pour chaque déplacement manquant détecté. Déclenchement par signaux (`regenerate_signals.py`), à chaque changement pertinent : assignation de matériel (`show_materials`), transport confirmé, ligne `transport_materials` d'un transport confirmé, ou horaire/lieu d'un `shows`. La proposition est préremplie avec le lieu de départ (dernière position connue du matériel — origines chaînées entrepôt→A puis A→B), le lieu d'arrivée (le lieu du spectacle) et le matériel (groupé : une proposition par couple origine/spectacle peut porter plusieurs matériels). Régénération = *resync* idempotent des seules propositions `to_approve` (pas de mémoire de rejet — décision Samuel : on recalcule à chaque fois ; les transports confirmés ne sont jamais touchés). L'utilisateur complète (heure, technicien) puis confirme, ce qui fait passer la proposition de l'orange au vert.
+**Génération automatique des propositions** (`transport_autogen.py`, décision du 2026-07-24) : plutôt que d'attendre que l'utilisateur crée chaque transport, l'app **génère automatiquement** un `transports` en `status='to_approve'` pour chaque déplacement manquant détecté. Déclenchement par signaux (`regenerate_signals.py`), à chaque changement pertinent : assignation de matériel (`show_materials`), transport confirmé, ligne `transport_materials` d'un transport confirmé, ou horaire/lieu d'un `shows`. La proposition est une tournée simple à 2 arrêts (2026-08-04), préremplie avec le lieu de départ (dernière position connue du matériel — origines chaînées entrepôt→A puis A→B), le lieu d'arrivée (le lieu du spectacle) et le matériel (groupé : une proposition par couple origine/spectacle peut porter plusieurs matériels ; chaque ligne couvre la tournée entière). Fusionner des propositions en une vraie tournée multi-arrêts reste un geste manuel (phase ultérieure, décision du 2026-08-04). Régénération = *resync* idempotent des seules propositions `to_approve` (pas de mémoire de rejet — décision Samuel : on recalcule à chaque fois ; les transports confirmés ne sont jamais touchés). L'utilisateur complète (heure, technicien) puis confirme, ce qui fait passer la proposition de l'orange au vert.
 
 **Conflit de technicien sur un transport** (rappel) : reste **bloquant + `force`** comme avant (section 8 / `architecture.md` section 4). Le champ dérivé `has_technician_conflict` sur `TransportSerializer` expose l'info en lecture seule pour l'indicateur orange du frontend, y compris pour une affectation créée avec `force: true` — il vaut `true` dès qu'**au moins une** des personnes affectées est en conflit (2026-07-30).
 

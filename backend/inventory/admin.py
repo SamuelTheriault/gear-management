@@ -27,6 +27,7 @@ from .models import (
     ShowTechnician,
     Technician,
     Transport,
+    TransportStop,
     TransportTechnician,
     User,
     Venue,
@@ -123,11 +124,15 @@ class ShowTechnicianInline(admin.TabularInline):
 
 
 class TransportInline(admin.TabularInline):
-    """Déplacements (livraison/ramassage) affichés directement sur la fiche du spectacle."""
+    """Tournées de matériel affichées directement sur la fiche du spectacle.
+
+    Les arrêts de la séquence ne sont pas éditables ici (un inline ne peut pas
+    imbriquer un second inline) — ils se gèrent sur la fiche `TransportAdmin`
+    dédiée, via `TransportStopInline`.
+    """
 
     model = Transport
     extra = 0
-    autocomplete_fields = ('origin_venue', 'destination_venue')
 
 
 @admin.register(Show)
@@ -163,20 +168,42 @@ class TransportTechnicianInline(admin.TabularInline):
     autocomplete_fields = ('technician',)
 
 
+class TransportStopInline(admin.TabularInline):
+    """Arrêts de la tournée (voir TransportStop, 2026-08-04) — la séquence de
+    lieux, dans l'ordre, avec la durée de chaque segment."""
+
+    model = TransportStop
+    extra = 0
+    autocomplete_fields = ('venue',)
+    ordering = ('order',)
+
+
 @admin.register(Transport)
 class TransportAdmin(admin.ModelAdmin):
-    """Admin pour les déplacements (livraison/ramassage) — vue globale utile pour la logistique."""
+    """Admin pour les tournées de matériel — vue globale utile pour la logistique.
 
-    list_display = (
-        'show', 'transport_type', 'origin_venue', 'destination_venue',
-        'scheduled_datetime', 'estimated_duration_minutes',
-    )
-    list_filter = ('transport_type', 'origin_venue', 'destination_venue')
+    Depuis la refonte multi-arrêts (2026-08-04), le trajet s'affiche via la
+    séquence d'arrêts (`route`, dérivé) plutôt que les anciens champs
+    origine/destination, et s'édite via `TransportStopInline`.
+    """
+
+    list_display = ('show', 'route', 'scheduled_datetime', 'total_duration')
+    list_filter = ('status', 'stops__venue')
     search_fields = ('show__title', 'notes')
-    autocomplete_fields = ('show', 'origin_venue', 'destination_venue')
+    autocomplete_fields = ('show',)
     # Les techniciens affectés sont passés en inline le 2026-07-30 : un
     # déplacement peut en mobiliser plusieurs (voir TransportTechnician).
-    inlines = [TransportTechnicianInline]
+    inlines = [TransportStopInline, TransportTechnicianInline]
+
+    @admin.display(description='Trajet')
+    def route(self, obj):
+        """Séquence des lieux de la tournée, jointe par des flèches."""
+        return ' → '.join(str(stop.venue) for stop in obj.ordered_stops) or '—'
+
+    @admin.display(description='Durée totale (min)')
+    def total_duration(self, obj):
+        """Somme des durées de segment — voir Transport.total_duration_minutes."""
+        return obj.total_duration_minutes
 
 
 @admin.register(Settings)

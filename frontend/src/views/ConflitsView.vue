@@ -78,7 +78,9 @@ function sideContext(side) {
   if (side.type === 'show_material') return side.material_name
   if (side.type === 'show') return side.venue_name
   if (side.type === 'transport') {
-    return side.transport_type === 'delivery' ? `Livraison · ${side.technician_name ?? '—'}` : `Ramassage · ${side.technician_name ?? '—'}`
+    // `transport_type` a disparu du modèle (tournées multi-arrêts,
+    // 2026-08-04) — le contexte utile ici est la personne engagée.
+    return `Tournée · ${side.technician_name ?? '—'}`
   }
   return side.technician_name // show_technician
 }
