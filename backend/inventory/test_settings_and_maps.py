@@ -75,17 +75,26 @@ class SettingsDrivenDefaultsTests(TestCase):
         self.assertEqual(show.buffer_after_minutes, 20)
 
     def test_transport_uses_settings_default_duration(self):
+        """Depuis les tournées multi-arrêts (2026-08-04), le défaut de Settings
+        s'applique dans `TransportSerializer` (durée d'un segment non fournie,
+        sans estimation Routes possible), plus via un default de champ modèle
+        — le test passe donc par l'API plutôt que par l'ORM."""
+        user = DjangoUser.objects.create_superuser('admin-def', 'admin-def@test.com', 'testpass123')
+        client = APIClient()
+        client.force_authenticate(user=user)
         storage_venue = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
         show = Show.objects.create(
             project=self.project, title="Show", venue=self.venue, event_type="performance",
             start_datetime=_dt(14), end_datetime=_dt(16),
         )
-        transport = Transport.objects.create(
-            show=show, transport_type='delivery',
-            origin_venue=storage_venue, destination_venue=self.venue,
-            scheduled_datetime=_dt(10),
-        )
-        self.assertEqual(transport.estimated_duration_minutes, 90)
+        response = client.post('/api/transports/', {
+            'show': show.id,
+            'origin_venue': storage_venue.id, 'destination_venue': self.venue.id,
+            'scheduled_datetime': _dt(10).isoformat(),
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        transport = Transport.objects.get(id=response.data['id'])
+        self.assertEqual(transport.total_duration_minutes, 90)
 
     def test_explicit_value_overrides_settings_default(self):
         show = Show.objects.create(

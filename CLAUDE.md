@@ -2585,3 +2585,94 @@ changement de Root Directory + Dockerfile côté service Railway (fait
 depuis l'API par Claude avec confirmation de Samuel, ou par Samuel
 lui-même dans le dashboard) et ajouter la variable `FRONTEND_URL` — voir
 `suivi_projet.md` pour le statut à jour de cette étape.
+
+## Mise à jour (2026-08-04) — Module transport : tournées multi-arrêts (backend)
+
+**Décision de Samuel** : un transport n'est plus « lieu A → lieu B » mais une
+**tournée** — une séquence ordonnée d'arrêts (arrêt 1 on ramasse du matériel,
+arrêt 2 on en ajoute, arrêt 3 on décharge…). Trois options ont été comparées
+(parent-enfant façon `Show.parent_show`, conteneur de segments chaînés,
+tournée + arrêts) ; la troisième a été retenue parce que les segments d'une
+tournée sont COUPLÉS (la destination du segment N est l'origine du N+1, même
+camion, même équipe) : le parent-enfant aurait stocké chaque lieu
+intermédiaire deux fois et forcé une ligne de matériel PAR SEGMENT — deux
+vérités à synchroniser, exactement le doublon corrigé sur `display_title` le
+2026-08-02. `transport_type` (livraison/ramassage) a été retiré en même temps
+— Samuel n'en voyait pas l'utilité. Portée de cette étape : **backend
+complet** ; le frontend suit dans une étape ultérieure (l'API garde un chemin
+de compat pour l'interface actuelle, voir plus bas).
+
+**Modèle** (migration `0025_transport_stops`, en trois temps comme la 0014 ;
+irréversible) :
+- Nouvelle table `transport_stops` : `venue` (PROTECT), `order` (0 = départ,
+  `unique_together (transport, order)`), `travel_minutes_from_previous`
+  (durée du segment, trajet + chargement — toujours 0 sur le premier arrêt).
+- `Transport` perd `transport_type`/`origin_venue`/`destination_venue`/
+  `estimated_duration_minutes` ; il garde `show`, `status`,
+  `scheduled_datetime` (départ du premier arrêt) et `notes`. Horaire décidé
+  par Samuel : UNE heure d'ancrage + durées par segment, les arrivées aux
+  arrêts sont DÉRIVÉES (`Transport.arrival_at`) — décaler la tournée reste un
+  seul champ (le drag du Dashboard en dépend). `origin_venue`/
+  `destination_venue`/`total_duration_minutes`/`effective_end` deviennent des
+  propriétés dérivées des arrêts.
+- `TransportMaterial` gagne `load_stop`/`unload_stop` : chaque ligne pointe
+  SA portion de la séquence — c'est la donnée qui associe chaque bloc de
+  matériel à sa portion (l'affichage voulu par Samuel), pas une
+  reconstruction. `unique_together` passe au quadruplet : un même matériel
+  peut faire une répartition (8 chargées, 3 déposées à l'arrêt 1, 5 à
+  l'arrêt 2) ou un relais (A→B puis B→C) dans la même tournée. La quantité
+  est validée PAR LIGNE (pas de somme par matériel — un relais réutilise les
+  mêmes unités ; le réalisme spatial reste au rapport de cohérence).
+- Un ancien transport A→B = tournée à 2 arrêts (fenêtres identiques au pixel
+  près) ; les lieux peuvent se répéter en positions non consécutives — une
+  tournée aller-retour (entrepôt → salle → entrepôt) tient en une fiche.
+
+**Logique adaptée** :
+- `transport_coherence.py` : le grand livre raisonne par LIGNE — le matériel
+  quitte son origine à l'arrivée du camion à l'arrêt de chargement et est
+  livré à l'arrivée à l'arrêt de déchargement. `_ledger_before`, parcours,
+  disponibilité et retour inchangés dans leur logique.
+- `transport_autogen.py` : les propositions restent des tournées à 2 arrêts ;
+  fusionner des propositions en une vraie tournée = geste manuel (phase
+  ultérieure, décision Samuel). La couverture d'une livraison se juge sur
+  l'arrêt de déchargement de la LIGNE, pas la destination finale.
+- `conflicts.py` : fenêtre technicien = tournée entière (départ → arrivée au
+  dernier arrêt). `get_transport_reference_shows` n'a plus `transport_type` :
+  si le spectacle desservi se joue au lieu du DERNIER arrêt il est le
+  spectacle d'arrivée (ancienne livraison), au PREMIER le spectacle de départ
+  (ancien ramassage) — les arrêts intermédiaires ne bornent rien.
+- `regenerate_signals.py` : signal ajouté sur `TransportStop` (déplacer un
+  arrêt d'une tournée confirmée change la couverture).
+
+**API** (`TransportSerializer`) : nouveau contrat `stops` (liste ordonnée de
+`{venue, travel_minutes_from_previous?}` — l'ordre est la position, `order`
+en lecture seule ; durée absente → estimation Google Routes par segment,
+repli Settings ; segment au couple de lieux inchangé → durée conservée, même
+règle que l'ancienne non-réestimation sur PATCH sans rapport) et `materials`
+enrichi (`load_stop_order`/`unload_stop_order`, défaut = tournée entière).
+Resynchronisation des arrêts EN PLACE par position (mêmes ids — les lignes
+survivent à une retouche) ; retirer un arrêt encore utilisé par une ligne est
+refusé sauf si `materials` est refourni dans la même requête. **Chemin de
+compat pour le frontend actuel** : `origin_venue`/`destination_venue` en
+écriture (création 2 arrêts / retouche premier-dernier arrêt),
+`estimated_duration_minutes` en écriture sur une tournée à 2 arrêts (le
+resize du Dashboard), refusé s'il changerait la valeur d'une tournée plus
+longue et ignoré s'il la renvoie inchangée (la fiche renvoie tout son
+formulaire). En lecture, `origin_venue*`/`destination_venue*`/
+`estimated_duration_minutes` (= durée totale) restent exposés — l'interface
+actuelle fonctionne telle quelle, `transport_type` disparaît simplement des
+réponses. `material-availability` prend `?stop=<position>` (défaut : premier
+arrêt, l'ancien comportement).
+
+**Tests** : les fixtures A→B passent par deux fabriques (`_creer_transport`/
+`_creer_ligne`, ancienne signature traduite vers transport + 2 arrêts) ; 14
+nouveaux tests couvrent le multi-arrêts (création, portions, validations,
+sync en place, disponibilité par arrêt, compat, cohérence par arrêt,
+aller-retour). Suite complète : **354 tests OK** + flake8 propre (vérifié
+dans le bac à sable cloud, venv reconstruit).
+
+**Reste à faire (frontend, étape suivante)** : fiche Transport en liste
+d'arrêts avec la liste unique de matériel par portion, Dashboard (bloc =
+fenêtre totale de la tournée), Parcours Matériel (déjà servi par l'API
+adaptée), modale matériel par arrêt (`?stop=`), et retrait des références à
+`transport_type`.

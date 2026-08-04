@@ -19,8 +19,11 @@ Deux types de conflits, même logique sous-jacente :
 
 La fenêtre effective d'un spectacle = [start_datetime - buffer_before_minutes,
 end_datetime + buffer_after_minutes] (voir Show.effective_start / effective_end
-dans models.py). La fenêtre d'un déplacement (`Transport`) = [scheduled_datetime,
-scheduled_datetime + estimated_duration_minutes] (voir Transport.effective_end).
+dans models.py). La fenêtre d'une tournée (`Transport`) = [scheduled_datetime,
+scheduled_datetime + somme des durées de segment] (voir Transport.effective_end
+et Transport.total_duration_minutes — tournées multi-arrêts depuis le
+2026-08-04) : un technicien affecté est engagé du départ du premier arrêt à
+l'arrivée au dernier.
 Le chevauchement est strict : deux fenêtres qui se touchent exactement à leur
 limite (la fin de l'une == le début de l'autre) ne sont PAS considérées en
 conflit — convention standard d'intervalles, et ça permet d'enchaîner deux
@@ -53,19 +56,22 @@ exemption d'entreposage que pour le matériel : un lieu d'entrepôt peut
 recevoir plusieurs fiches de rangement qui se chevauchent sans que ce soit
 un vrai conflit d'occupation physique.
 
-Fenêtre départ/arrivée d'un déplacement (décision Samuel du 2026-07-30) : un
-`Transport` ne connaît qu'UN spectacle explicite (`show`, le spectacle
-« desservi ») — l'arrivée pour une livraison, le départ pour un ramassage.
-L'AUTRE bout n'est qu'un lieu (`origin_venue`/`destination_venue`), pas
-forcément lié à un spectacle précis. `find_departure_show`/`find_arrival_show`
-déduisent automatiquement ce spectacle manquant (le plus proche
-chronologiquement à ce lieu), sans champ supplémentaire à saisir — un lieu
-d'entrepôt (`is_storage=True`) n'a jamais de spectacle associé (le matériel y
-est toujours disponible), donc pas de borne de ce côté.
-`get_transport_reference_shows` combine les deux pour exposer, pour n'importe
-quel déplacement, le spectacle de départ ET d'arrivée (utilisé par
-`TransportSerializer` pour l'affichage ET la validation — voir
-`validate_transport_window`) : le déplacement doit avoir lieu ENTRE la fin
+Fenêtre départ/arrivée d'un déplacement (décision Samuel du 2026-07-30,
+adaptée aux tournées le 2026-08-04) : un `Transport` ne connaît qu'UN
+spectacle explicite (`show`, le spectacle « desservi »). Les bornes de la
+tournée sont ses PREMIER et DERNIER arrêts — les arrêts intermédiaires ne
+bornent rien (on s'y arrête en passant, pas de spectacle à attendre ou à
+devancer par construction). Si le lieu du spectacle desservi est le dernier
+arrêt, `show` est le spectacle d'arrivée (l'ancienne « livraison ») ; si c'est
+le premier, il est le spectacle de départ (l'ancien « ramassage ») — c'est ce
+qui remplace le champ `transport_type`, retiré le 2026-08-04. L'autre bout est
+déduit par `find_departure_show`/`find_arrival_show` (le spectacle le plus
+proche chronologiquement à ce lieu) — un lieu d'entrepôt (`is_storage=True`)
+n'a jamais de spectacle associé (le matériel y est toujours disponible), donc
+pas de borne de ce côté. `get_transport_reference_shows` combine les deux pour
+exposer, pour n'importe quelle tournée, le spectacle de départ ET d'arrivée
+(utilisé par `TransportSerializer` pour l'affichage ET la validation — voir
+`validate_transport_window`) : la tournée doit avoir lieu ENTRE la fin
 effective du spectacle de départ et le début effectif du spectacle
 d'arrivée (buffers inclus, comme partout ailleurs). Bloquant + `force`, même
 pattern que les autres conflits.
@@ -78,7 +84,6 @@ from .models import (
     Show,
     ShowMaterial,
     ShowTechnician,
-    Transport,
     TransportTechnician,
 )
 
@@ -256,6 +261,9 @@ def _technician_commitments(technician_id, exclude_show_technician_id=None, excl
         TransportTechnician.objects
         .filter(technician_id=technician_id, transport__scheduled_datetime__isnull=False)
         .select_related('transport', 'transport__show', 'technician')
+        # `effective_end` somme les segments de la tournée (2026-08-04) — le
+        # prefetch évite une requête par arrêt dans la boucle ci-dessous.
+        .prefetch_related('transport__stops')
     )
     if exclude_transport_id is not None:
         transport_technicians = transport_technicians.exclude(transport_id=exclude_transport_id)
@@ -350,43 +358,60 @@ def find_arrival_show(venue, after_datetime, exclude_show_id=None):
     return min(upcoming, key=lambda s: s.effective_start)
 
 
-def get_transport_reference_shows(show, transport_type, origin_venue, destination_venue):
-    """Retourne `(departure_show, arrival_show)` pour un déplacement donné.
+def get_transport_reference_shows(show, origin_venue, destination_venue):
+    """Retourne `(departure_show, arrival_show)` pour une tournée donnée.
 
-    Le spectacle connu (`show`, toujours renseigné) est le point d'ancrage :
-    l'autre bout est déduit par `find_departure_show`/`find_arrival_show` en
-    cherchant à partir de la fenêtre effective de `show`, PAS à partir de
+    `origin_venue`/`destination_venue` sont les lieux des PREMIER et DERNIER
+    arrêts (les arrêts intermédiaires ne bornent rien — voir la note de
+    module, 2026-08-04). Le spectacle connu (`show`, toujours renseigné) est
+    le point d'ancrage : s'il se joue au lieu d'arrivée, il EST le spectacle
+    d'arrivée (l'ancienne « livraison ») ; s'il se joue au lieu de départ, il
+    EST le spectacle de départ (l'ancien « ramassage ») — c'est ce test de
+    lieu qui remplace le champ `transport_type`, retiré le 2026-08-04. Dans
+    les deux cas l'autre bout est déduit par `find_departure_show`/
+    `find_arrival_show` à partir de la fenêtre effective de `show`, PAS de
     `scheduled_datetime` (souvent encore vide pour une proposition
-    'to_approve' — voir Transport.scheduled_datetime).
+    'to_approve'). Si le spectacle ne se joue à aucun des deux bouts (il est
+    desservi par un arrêt intermédiaire), les deux bouts sont déduits autour
+    de sa fenêtre.
     """
-    if transport_type == Transport.TYPE_DELIVERY:
+    if show is None:
+        return None, None
+    if destination_venue is not None and show.venue_id == destination_venue.id:
         arrival_show = show
-        departure_show = (
-            find_departure_show(origin_venue, before_datetime=arrival_show.effective_start, exclude_show_id=arrival_show.id)
-            if arrival_show is not None else None
+        departure_show = find_departure_show(
+            origin_venue, before_datetime=show.effective_start, exclude_show_id=show.id,
         )
-    else:
+        return departure_show, arrival_show
+    if origin_venue is not None and show.venue_id == origin_venue.id:
         departure_show = show
-        arrival_show = (
-            find_arrival_show(destination_venue, after_datetime=departure_show.effective_end, exclude_show_id=departure_show.id)
-            if departure_show is not None else None
+        arrival_show = find_arrival_show(
+            destination_venue, after_datetime=show.effective_end, exclude_show_id=show.id,
         )
+        return departure_show, arrival_show
+    departure_show = find_departure_show(
+        origin_venue, before_datetime=show.effective_start, exclude_show_id=show.id,
+    )
+    arrival_show = find_arrival_show(
+        destination_venue, after_datetime=show.effective_end, exclude_show_id=show.id,
+    )
     return departure_show, arrival_show
 
 
-def validate_transport_window(show, transport_type, origin_venue, destination_venue, scheduled_datetime, duration_minutes):
-    """Vérifie qu'un déplacement (fenêtre `[scheduled_datetime, scheduled_datetime
-    + duration_minutes]`) a bien lieu ENTRE la fin effective du spectacle de
-    départ et le début effectif du spectacle d'arrivée (décision Samuel du
-    2026-07-30 — voir note de module). Retourne `None` si la fenêtre est
-    valide (ou si aucune borne ne s'applique des deux côtés — ex. entrepôt),
-    sinon un dict `{'detail': ..., 'departure_show': ..., 'arrival_show': ...}`
-    prêt à être renvoyé par le serializer.
+def validate_transport_window(show, origin_venue, destination_venue, scheduled_datetime, duration_minutes):
+    """Vérifie qu'une tournée (fenêtre `[scheduled_datetime, scheduled_datetime
+    + duration_minutes]`, du départ du premier arrêt à l'arrivée au dernier) a
+    bien lieu ENTRE la fin effective du spectacle de départ et le début
+    effectif du spectacle d'arrivée (décision Samuel du 2026-07-30 — voir note
+    de module). Retourne `None` si la fenêtre est valide (ou si aucune borne
+    ne s'applique des deux côtés — ex. entrepôt), sinon un dict `{'detail':
+    ..., 'departure_show': ..., 'arrival_show': ...}` prêt à être renvoyé par
+    le serializer.
     """
     if scheduled_datetime is None or duration_minutes is None:
         return None
 
-    departure_show, arrival_show = get_transport_reference_shows(show, transport_type, origin_venue, destination_venue)
+    departure_show, arrival_show = get_transport_reference_shows(show, origin_venue, destination_venue)
     transport_end = scheduled_datetime + timedelta(minutes=duration_minutes)
 
     if departure_show is not None and scheduled_datetime < departure_show.effective_end:
@@ -541,6 +566,7 @@ def get_project_conflicts(project):
         TransportTechnician.objects
         .filter(transport__show__project_id=project.id, transport__scheduled_datetime__isnull=False)
         .select_related('transport', 'transport__show', 'technician')
+        .prefetch_related('transport__stops')
     )
     seen_tech_pairs = set()
     technician_conflicts = []
@@ -561,7 +587,7 @@ def get_project_conflicts(project):
         transport = tt.transport
         others = get_transport_conflicts(
             transport.scheduled_datetime,
-            transport.estimated_duration_minutes,
+            transport.total_duration_minutes,
             tt.technician,
             exclude_id=transport.id,
         )
@@ -600,9 +626,10 @@ def serialize_technician_conflict(obj):
             'transport_id': transport.id,
             'show_id': transport.show_id,
             'show_title': transport.show.display_title,
-            'transport_type': transport.transport_type,
             'scheduled_datetime': transport.scheduled_datetime,
-            'estimated_duration_minutes': transport.estimated_duration_minutes,
+            # La clé garde son nom historique pour le frontend, mais c'est la
+            # durée TOTALE de la tournée (somme des segments — 2026-08-04).
+            'estimated_duration_minutes': transport.total_duration_minutes,
             'technician_id': obj.technician_id,
             'technician_name': obj.technician.name,
         }

@@ -40,6 +40,7 @@ from .models import (
     Technician,
     Transport,
     TransportMaterial,
+    TransportStop,
     TransportTechnician,
     Venue,
 )
@@ -56,6 +57,46 @@ def _dt(hour, day=1):
     return timezone.make_aware(timezone.datetime(2026, 9, day, hour, 0))
 
 
+def _creer_transport(**kwargs):
+    """Fabrique de test : crée une tournée à 2 arrêts avec l'ANCIENNE signature
+    « A → B » (origin_venue/destination_venue/estimated_duration_minutes).
+
+    Les fixtures de cette suite décrivent presque toutes un simple A → B ;
+    plutôt que de réécrire chaque appel après la refonte en tournées
+    multi-arrêts (2026-08-04), ce helper traduit l'ancien vocabulaire vers le
+    nouveau modèle : `Transport` + 2 `TransportStop` (segment unique portant
+    toute la durée). `transport_type` est accepté et IGNORÉ (champ retiré).
+    Les tests propres au multi-arrêts construisent leurs tournées à la main.
+    """
+    kwargs.pop('transport_type', None)
+    origin = kwargs.pop('origin_venue')
+    destination = kwargs.pop('destination_venue')
+    duration = kwargs.pop('estimated_duration_minutes', 60)
+    transport = Transport.objects.create(**kwargs)
+    TransportStop.objects.create(transport=transport, venue=origin, order=0)
+    TransportStop.objects.create(
+        transport=transport, venue=destination, order=1,
+        travel_minutes_from_previous=duration,
+    )
+    return transport
+
+
+def _creer_ligne(transport, material, quantity=1, load=0, unload=None):
+    """Fabrique de test : ligne de matériel sur une tournée existante.
+
+    Par défaut, la ligne couvre la tournée entière (chargement au premier
+    arrêt, déchargement au dernier) — l'équivalent exact de l'ancienne ligne
+    sans notion d'arrêts. `load`/`unload` (positions 0-indexées) servent aux
+    tests multi-arrêts.
+    """
+    stops = transport.ordered_stops
+    return TransportMaterial.objects.create(
+        transport=transport, material=material, quantity=quantity,
+        load_stop=stops[load],
+        unload_stop=stops[unload if unload is not None else len(stops) - 1],
+    )
+
+
 def _transport_avec_technicien(technician, **kwargs):
     """Crée un `Transport` et y affecte `technician`.
 
@@ -64,7 +105,7 @@ def _transport_avec_technicien(technician, **kwargs):
     déplacement peut en mobiliser plusieurs). Ce helper garde les tests de
     conflit lisibles, où l'on ne veut qu'une personne.
     """
-    transport = Transport.objects.create(**kwargs)
+    transport = _creer_transport(**kwargs)
     TransportTechnician.objects.create(transport=transport, technician=technician)
     return transport
 
@@ -981,7 +1022,7 @@ class TransportWindowValidationAPITests(TestCase):
         self.assertIn('arrival_show', response.data)
 
     def test_reference_shows_exposed_on_read(self):
-        transport = Transport.objects.create(
+        transport = _creer_transport(
             show=self.arrival_show, transport_type='delivery',
             origin_venue=self.venue_a, destination_venue=self.venue_b,
             scheduled_datetime=_dt(17), estimated_duration_minutes=60,
@@ -993,7 +1034,7 @@ class TransportWindowValidationAPITests(TestCase):
 
     def test_reference_shows_null_when_no_show_at_venue(self):
         # Origine = entrepôt : aucun spectacle de départ à déduire.
-        transport = Transport.objects.create(
+        transport = _creer_transport(
             show=self.arrival_show, transport_type='delivery',
             origin_venue=self.storage, destination_venue=self.venue_b,
             scheduled_datetime=_dt(10), estimated_duration_minutes=60,
@@ -1431,7 +1472,7 @@ class ProjectDuplicationTests(TestCase):
         )
         ShowMaterial.objects.create(show=self.show, material=self.kit)
         ShowTechnician.objects.create(show=self.show, technician=self.technician)
-        Transport.objects.create(
+        _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=self.storage_venue, destination_venue=self.stage_venue,
             scheduled_datetime=_dt(10), estimated_duration_minutes=30,
@@ -1563,12 +1604,12 @@ class TransportCoherenceLogicTests(TestCase):
         )
 
     def _delivery(self, material, quantity=1, origin=None, destination=None, scheduled=None, duration=60):
-        transport = Transport.objects.create(
+        transport = _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=origin or self.entrepot, destination_venue=destination or self.salle,
             scheduled_datetime=scheduled or _dt(8), estimated_duration_minutes=duration,
         )
-        TransportMaterial.objects.create(transport=transport, material=material, quantity=quantity)
+        _creer_ligne(transport=transport, material=material, quantity=quantity)
         return transport
 
     def test_material_required_without_transport_is_flagged(self):
@@ -1617,12 +1658,12 @@ class TransportCoherenceLogicTests(TestCase):
     def test_transport_origin_impossible_is_flagged(self):
         # Un transport part de la Chapelle (pas le home) alors que la console est
         # à l'entrepôt à ce moment -> origine incohérente.
-        transport = Transport.objects.create(
+        transport = _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=self.salle, destination_venue=self.entrepot,
             scheduled_datetime=_dt(8), estimated_duration_minutes=60,
         )
-        TransportMaterial.objects.create(transport=transport, material=self.console, quantity=1)
+        _creer_ligne(transport=transport, material=self.console, quantity=1)
         types = [i['type'] for i in get_material_coherence_issues(self.console)]
         self.assertIn('origine_incoherente', types)
 
@@ -1832,7 +1873,6 @@ class TransportAutogenTests(TestCase):
         self.assertEqual(proposal.origin_venue_id, self.entrepot.id)
         self.assertEqual(proposal.destination_venue_id, self.salle1.id)
         self.assertIsNone(proposal.scheduled_datetime)
-        self.assertEqual(proposal.transport_type, Transport.TYPE_DELIVERY)
         self.assertEqual(
             list(proposal.transport_materials.values_list('material_id', flat=True)),
             [self.console.id],
@@ -1844,9 +1884,11 @@ class TransportAutogenTests(TestCase):
         ShowMaterial.objects.create(show=show1, material=self.console)
         ShowMaterial.objects.create(show=show2, material=self.console)
         # Deux propositions : entrepôt->salle1 puis salle1->salle2 (origine chaînée).
-        move2 = self._proposals().get(destination_venue=self.salle2)
+        # Destination = DERNIER arrêt (tournées 2026-08-04) : le filtre
+        # combine lieu + position dans un même filter() (même ligne de JOIN).
+        move2 = self._proposals().filter(stops__venue=self.salle2, stops__order=1).get()
         self.assertEqual(move2.origin_venue_id, self.salle1.id)
-        move1 = self._proposals().get(destination_venue=self.salle1)
+        move1 = self._proposals().filter(stops__venue=self.salle1, stops__order=1).get()
         self.assertEqual(move1.origin_venue_id, self.entrepot.id)
 
     def test_multiple_materials_grouped_in_one_proposal(self):
@@ -1884,12 +1926,12 @@ class TransportAutogenTests(TestCase):
         ShowMaterial.objects.create(show=show, material=self.console)
         self.assertEqual(self._proposals().count(), 1)
         # Un transport confirmé qui dessert la console à ce spectacle supprime la proposition.
-        confirmed = Transport.objects.create(
-            show=show, transport_type=Transport.TYPE_DELIVERY, status=Transport.STATUS_CONFIRMED,
+        confirmed = _creer_transport(
+            show=show, status=Transport.STATUS_CONFIRMED,
             origin_venue=self.entrepot, destination_venue=self.salle1,
             scheduled_datetime=_dt(8), estimated_duration_minutes=60,
         )
-        TransportMaterial.objects.create(transport=confirmed, material=self.console, quantity=1)
+        _creer_ligne(transport=confirmed, material=self.console, quantity=1)
         self.assertEqual(self._proposals().count(), 0)
 
     def test_material_without_home_generates_no_proposal(self):
@@ -2401,7 +2443,7 @@ class TransportMaterialAvailabilityAPITests(TestCase):
         return {m['name']: m for m in response.data['materials']}
 
     def _transport(self, origin, destination, hour, status_value=Transport.STATUS_CONFIRMED):
-        return Transport.objects.create(
+        return _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=origin, destination_venue=destination,
             scheduled_datetime=_dt(hour), estimated_duration_minutes=60,
@@ -2426,7 +2468,7 @@ class TransportMaterialAvailabilityAPITests(TestCase):
         # Un premier transport confirmé amène la console en salle à 9h ;
         # un second partant de la salle à 12h doit donc l'y trouver.
         premier = self._transport(self.entrepot, self.salle, 8)
-        TransportMaterial.objects.create(transport=premier, material=self.console, quantity=1)
+        _creer_ligne(transport=premier, material=self.console, quantity=1)
 
         second = self._transport(self.salle, self.entrepot, 12)
         rows = self._availability(second)
@@ -2439,7 +2481,7 @@ class TransportMaterialAvailabilityAPITests(TestCase):
 
     def test_partial_quantity_moved(self):
         premier = self._transport(self.entrepot, self.salle, 8)
-        TransportMaterial.objects.create(transport=premier, material=self.rallonges, quantity=12)
+        _creer_ligne(transport=premier, material=self.rallonges, quantity=12)
 
         reste = self._transport(self.entrepot, self.salle, 14)
         rows = self._availability(reste)
@@ -2451,7 +2493,7 @@ class TransportMaterialAvailabilityAPITests(TestCase):
         proposition = self._transport(
             self.entrepot, self.salle, 8, status_value=Transport.STATUS_TO_APPROVE,
         )
-        TransportMaterial.objects.create(transport=proposition, material=self.console, quantity=1)
+        _creer_ligne(transport=proposition, material=self.console, quantity=1)
 
         depuis_salle = self._transport(self.salle, self.entrepot, 12)
         rows = self._availability(depuis_salle)
@@ -2461,12 +2503,12 @@ class TransportMaterialAvailabilityAPITests(TestCase):
         # Rouvrir la modale d'un transport déjà rempli ne doit pas montrer son
         # propre chargement comme « déjà parti ».
         transport = self._transport(self.entrepot, self.salle, 8)
-        TransportMaterial.objects.create(transport=transport, material=self.console, quantity=1)
+        _creer_ligne(transport=transport, material=self.console, quantity=1)
         rows = self._availability(transport)
         self.assertEqual(rows['Console']['available'], 1)
 
     def test_without_scheduled_datetime_everything_is_available(self):
-        transport = Transport.objects.create(
+        transport = _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=self.salle, destination_venue=self.entrepot,
             scheduled_datetime=None, estimated_duration_minutes=60,
@@ -2716,14 +2758,14 @@ class MaterialReturnToOriginTests(TestCase):
         )
 
     def _transport(self, origin, destination, hour, material=None, quantity=1, day=1):
-        transport = Transport.objects.create(
+        transport = _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=origin, destination_venue=destination,
             scheduled_datetime=_dt(hour, day=day), estimated_duration_minutes=60,
             status=Transport.STATUS_CONFIRMED,
         )
         if material is not None:
-            TransportMaterial.objects.create(
+            _creer_ligne(
                 transport=transport, material=material, quantity=quantity,
             )
         return transport
@@ -2906,7 +2948,7 @@ class SuppressionFicheAPITests(TestCase):
         self.assertTrue(Venue.objects.filter(id=self.salle.id).exists())
 
     def test_delete_venue_used_by_a_transport_is_refused(self):
-        Transport.objects.create(
+        _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=self.entrepot, destination_venue=self.salle,
             scheduled_datetime=_dt(8), estimated_duration_minutes=60,
@@ -2934,7 +2976,7 @@ class SuppressionFicheAPITests(TestCase):
         alex = Technician.objects.create(project=self.project, name="Alex")
         ShowMaterial.objects.create(show=self.show, material=console, quantity=1)
         ShowTechnician.objects.create(show=self.show, technician=alex)
-        Transport.objects.create(
+        _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=self.entrepot, destination_venue=self.salle,
             scheduled_datetime=_dt(8), estimated_duration_minutes=60,
@@ -2955,7 +2997,7 @@ class SuppressionFicheAPITests(TestCase):
             project=self.project, name="Console", venue=self.entrepot, quantity=1,
         )
         ShowMaterial.objects.create(show=self.show, material=console, quantity=1)
-        transport = Transport.objects.create(
+        transport = _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=self.entrepot, destination_venue=self.salle,
             scheduled_datetime=_dt(8), estimated_duration_minutes=60,
@@ -2975,12 +3017,12 @@ class SuppressionFicheAPITests(TestCase):
             project=self.project, name="Console", venue=self.entrepot, quantity=1,
         )
         alex = Technician.objects.create(project=self.project, name="Alex")
-        transport = Transport.objects.create(
+        transport = _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=self.entrepot, destination_venue=self.salle,
             scheduled_datetime=_dt(8), estimated_duration_minutes=60,
         )
-        TransportMaterial.objects.create(transport=transport, material=console, quantity=1)
+        _creer_ligne(transport=transport, material=console, quantity=1)
         TransportTechnician.objects.create(transport=transport, technician=alex)
 
         response = self.client.delete(f'/api/transports/{transport.id}/')
@@ -3020,14 +3062,14 @@ class ParcoursAPITests(TestCase):
         self.alex = Technician.objects.create(project=self.project, name="Alex", specialty="Son")
 
     def _livraison(self, hour, origin, destination, material=None, day=1):
-        transport = Transport.objects.create(
+        transport = _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=origin, destination_venue=destination,
             scheduled_datetime=_dt(hour, day=day), estimated_duration_minutes=60,
             status=Transport.STATUS_CONFIRMED,
         )
         if material is not None:
-            TransportMaterial.objects.create(transport=transport, material=material, quantity=1)
+            _creer_ligne(transport=transport, material=material, quantity=1)
         return transport
 
     # --- Matériel ---
@@ -3068,13 +3110,13 @@ class ParcoursAPITests(TestCase):
         caisse = Material.objects.create(
             project=self.project, name="Caisse", venue=self.entrepot, quantity=3,
         )
-        transport = Transport.objects.create(
+        transport = _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=self.entrepot, destination_venue=self.salle,
             scheduled_datetime=_dt(8), estimated_duration_minutes=60,
             status=Transport.STATUS_CONFIRMED,
         )
-        TransportMaterial.objects.create(transport=transport, material=caisse, quantity=2)
+        _creer_ligne(transport=transport, material=caisse, quantity=2)
 
         response = self.client.get(f'/api/projects/{self.project.id}/material-journey/')
         ligne = next(m for m in response.data['materials'] if m['name'] == "Caisse")
@@ -3103,20 +3145,20 @@ class ParcoursAPITests(TestCase):
         caisse = Material.objects.create(
             project=self.project, name="Caisse", venue=self.entrepot, quantity=5,
         )
-        premier = Transport.objects.create(
+        premier = _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=self.entrepot, destination_venue=self.salle,
             scheduled_datetime=_dt(8), estimated_duration_minutes=60,
             status=Transport.STATUS_CONFIRMED,
         )
-        TransportMaterial.objects.create(transport=premier, material=caisse, quantity=3)
-        second = Transport.objects.create(
+        _creer_ligne(transport=premier, material=caisse, quantity=3)
+        second = _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=self.salle, destination_venue=studio,
             scheduled_datetime=_dt(10), estimated_duration_minutes=30,
             status=Transport.STATUS_CONFIRMED,
         )
-        TransportMaterial.objects.create(transport=second, material=caisse, quantity=1)
+        _creer_ligne(transport=second, material=caisse, quantity=1)
 
         response = self.client.get(f'/api/projects/{self.project.id}/material-journey/')
         ligne = next(m for m in response.data['materials'] if m['name'] == "Caisse")
@@ -3158,20 +3200,20 @@ class ParcoursAPITests(TestCase):
         caisse = Material.objects.create(
             project=self.project, name="Caisse", venue=self.entrepot, quantity=3,
         )
-        depart = Transport.objects.create(
+        depart = _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=self.entrepot, destination_venue=self.salle,
             scheduled_datetime=_dt(8), estimated_duration_minutes=60,
             status=Transport.STATUS_CONFIRMED,
         )
-        TransportMaterial.objects.create(transport=depart, material=caisse, quantity=2)
-        retour = Transport.objects.create(
+        _creer_ligne(transport=depart, material=caisse, quantity=2)
+        retour = _creer_transport(
             show=self.show, transport_type='pickup',
             origin_venue=self.salle, destination_venue=self.entrepot,
             scheduled_datetime=_dt(10), estimated_duration_minutes=30,
             status=Transport.STATUS_CONFIRMED,
         )
-        TransportMaterial.objects.create(transport=retour, material=caisse, quantity=2)
+        _creer_ligne(transport=retour, material=caisse, quantity=2)
 
         response = self.client.get(f'/api/projects/{self.project.id}/material-journey/')
         ligne = next(m for m in response.data['materials'] if m['name'] == "Caisse")
@@ -3209,13 +3251,13 @@ class ParcoursAPITests(TestCase):
         self.assertEqual(ligne['transports'][0]['show_title'], "Vertiges")
 
     def test_material_journey_excludes_unconfirmed_transports(self):
-        transport = Transport.objects.create(
+        transport = _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=self.entrepot, destination_venue=self.salle,
             scheduled_datetime=_dt(8), estimated_duration_minutes=60,
             status=Transport.STATUS_TO_APPROVE,
         )
-        TransportMaterial.objects.create(transport=transport, material=self.console, quantity=1)
+        _creer_ligne(transport=transport, material=self.console, quantity=1)
         response = self.client.get(f'/api/projects/{self.project.id}/material-journey/')
         ligne = next(m for m in response.data['materials'] if m['name'] == "Console")
         self.assertEqual(ligne['transports'], [])
@@ -3815,13 +3857,13 @@ class MaterialScheduleAPITests(TestCase):
         self.assertEqual(titres, ["Montage — Vertiges", "Vertiges"])
 
     def test_a_transport_appears_in_the_timeline(self):
-        transport = Transport.objects.create(
+        transport = _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=self.autre_salle, destination_venue=self.salle,
             scheduled_datetime=_dt(12), estimated_duration_minutes=60,
             status='confirmed',
         )
-        TransportMaterial.objects.create(transport=transport, material=self.console, quantity=2)
+        _creer_ligne(transport=transport, material=self.console, quantity=2)
         entree = next(e for e in self._agenda() if e['kind'] == 'transport')
         self.assertEqual(entree['id'], transport.id)
         self.assertEqual(entree['quantity'], 2)
@@ -3831,13 +3873,13 @@ class MaterialScheduleAPITests(TestCase):
         # Une proposition à approuver n'a pas d'heure : la masquer cacherait
         # justement ce qu'il reste à compléter.
         ShowMaterial.objects.create(show=self.show, material=self.console, quantity=1)
-        proposition = Transport.objects.create(
+        proposition = _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=self.autre_salle, destination_venue=self.salle,
             scheduled_datetime=None, estimated_duration_minutes=60,
             status='to_approve',
         )
-        TransportMaterial.objects.create(transport=proposition, material=self.console, quantity=1)
+        _creer_ligne(transport=proposition, material=self.console, quantity=1)
         agenda = self._agenda()
         sans_heure = [e for e in agenda if e['start'] is None]
         self.assertTrue(sans_heure)
@@ -3880,13 +3922,13 @@ class MaterialScheduleAPITests(TestCase):
         self.project.start_date = _dt(0).date()
         self.project.end_date = _dt(0).date()
         self.project.save()
-        proposition = Transport.objects.create(
+        proposition = _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=self.autre_salle, destination_venue=self.salle,
             scheduled_datetime=None, estimated_duration_minutes=60,
             status='to_approve',
         )
-        TransportMaterial.objects.create(transport=proposition, material=self.console, quantity=1)
+        _creer_ligne(transport=proposition, material=self.console, quantity=1)
         response = self.client.get(f'/api/materials/{self.console.id}/schedule/')
         self.assertIn(
             proposition.id,
@@ -3938,13 +3980,13 @@ class MaterialDistributionAPITests(TestCase):
         )
 
     def _transport(self, quantity, depart, duree=60, statut='confirmed'):
-        transport = Transport.objects.create(
+        transport = _creer_transport(
             show=self.show, transport_type='delivery',
             origin_venue=self.entrepot, destination_venue=self.salle,
             scheduled_datetime=depart, estimated_duration_minutes=duree,
             status=statut,
         )
-        TransportMaterial.objects.create(
+        _creer_ligne(
             transport=transport, material=self.rallonges, quantity=quantity,
         )
         return transport
@@ -4054,3 +4096,312 @@ class ProjectWindowAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIsNone(response.data['start'])
         self.assertIsNone(response.data['end'])
+
+
+class TourneeMultiArretsAPITests(TestCase):
+    """Tournées multi-arrêts (refonte du 2026-08-04, décision de Samuel).
+
+    Couvre le nouveau contrat `stops` (séquence ordonnée, durées de segment,
+    heures d'arrivée dérivées) et le matériel par portion de tournée
+    (`load_stop_order`/`unload_stop_order`) — voir `TransportSerializer` et
+    `TransportStop`/`TransportMaterial` (models.py).
+    """
+
+    def setUp(self):
+        self.project = Project.objects.create(name="Projet tournées")
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.salle_a = Venue.objects.create(project=self.project, name="Salle A")
+        self.salle_b = Venue.objects.create(project=self.project, name="Salle B")
+        self.show = Show.objects.create(
+            project=self.project, title="Spectacle B", venue=self.salle_b, event_type="performance",
+            start_datetime=_dt(19), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        self.console = Material.objects.create(
+            project=self.project, name="Console", category=_cat(self.project, "Audio"),
+            venue=self.entrepot,
+        )
+        self.moniteurs = Material.objects.create(
+            project=self.project, name="Moniteurs", category=_cat(self.project, "Audio"),
+            venue=self.salle_a, quantity=4,
+        )
+
+    def _payload_3_arrets(self, **overrides):
+        """Tournée entrepôt → salle A → salle B : la console monte au départ,
+        les moniteurs montent à la salle A, tout descend à la salle B."""
+        payload = {
+            'show': self.show.id,
+            'scheduled_datetime': _dt(8).isoformat(),
+            'stops': [
+                {'venue': self.entrepot.id},
+                {'venue': self.salle_a.id, 'travel_minutes_from_previous': 30},
+                {'venue': self.salle_b.id, 'travel_minutes_from_previous': 45},
+            ],
+            'materials': [
+                {'material': self.console.id, 'quantity': 1},
+                {'material': self.moniteurs.id, 'quantity': 4,
+                 'load_stop_order': 1, 'unload_stop_order': 2},
+            ],
+        }
+        payload.update(overrides)
+        return payload
+
+    def _creer_tournee_3_arrets(self, **overrides):
+        response = self.client.post('/api/transports/', self._payload_3_arrets(**overrides), format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        return response
+
+    def test_create_multi_stop_route_derives_arrivals_and_total(self):
+        response = self._creer_tournee_3_arrets()
+        data = response.data
+        self.assertEqual([s['venue'] for s in data['stops']],
+                         [self.entrepot.id, self.salle_a.id, self.salle_b.id])
+        self.assertEqual([s['order'] for s in data['stops']], [0, 1, 2])
+        # Durée totale = somme des segments ; arrivées dérivées en cumul.
+        self.assertEqual(data['estimated_duration_minutes'], 75)
+        transport = Transport.objects.get(id=data['id'])
+        stops = transport.ordered_stops
+        self.assertEqual(transport.arrival_at(stops[1]), _dt(8) + timedelta(minutes=30))
+        self.assertEqual(transport.arrival_at(stops[2]), _dt(8) + timedelta(minutes=75))
+        self.assertEqual(transport.effective_end, _dt(8) + timedelta(minutes=75))
+        # Lieux dérivés premier/dernier arrêt (compat lecture).
+        self.assertEqual(data['origin_venue'], self.entrepot.id)
+        self.assertEqual(data['destination_venue'], self.salle_b.id)
+
+    def test_material_lines_carry_their_portion(self):
+        data = self._creer_tournee_3_arrets().data
+        lignes = {ligne['material']: ligne for ligne in data['materials']}
+        # Défaut : la console couvre la tournée entière (premier → dernier).
+        self.assertEqual(lignes[self.console.id]['load_stop_order'], 0)
+        self.assertEqual(lignes[self.console.id]['unload_stop_order'], 2)
+        # Portion explicite : les moniteurs montent à la salle A seulement.
+        self.assertEqual(lignes[self.moniteurs.id]['load_stop_order'], 1)
+        self.assertEqual(lignes[self.moniteurs.id]['unload_stop_order'], 2)
+        self.assertEqual(lignes[self.moniteurs.id]['load_venue_name'], "Salle A")
+
+    def test_consecutive_stops_at_same_venue_are_rejected(self):
+        payload = self._payload_3_arrets()
+        payload['stops'][1] = {'venue': self.entrepot.id, 'travel_minutes_from_previous': 30}
+        response = self.client.post('/api/transports/', payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('stops', response.data)
+
+    def test_load_must_precede_unload(self):
+        payload = self._payload_3_arrets(materials=[
+            {'material': self.console.id, 'quantity': 1,
+             'load_stop_order': 2, 'unload_stop_order': 1},
+        ])
+        response = self.client.post('/api/transports/', payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('materials', response.data)
+
+    def test_round_trip_route_allows_repeated_venue(self):
+        """Aller-retour entrepôt → salle B → entrepôt en UNE tournée : le même
+        lieu peut revenir plus loin dans la séquence (seuls deux arrêts
+        CONSÉCUTIFS au même lieu sont refusés)."""
+        response = self.client.post('/api/transports/', {
+            'show': self.show.id,
+            'scheduled_datetime': _dt(8).isoformat(),
+            'stops': [
+                {'venue': self.entrepot.id},
+                {'venue': self.salle_b.id, 'travel_minutes_from_previous': 30},
+                {'venue': self.entrepot.id, 'travel_minutes_from_previous': 30},
+            ],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+    def test_patch_stops_keeps_ids_and_material_lines(self):
+        """La resynchronisation des arrêts se fait EN PLACE par position :
+        mêmes ids d'arrêts, lignes de matériel intactes après une retouche de
+        durée de segment."""
+        data = self._creer_tournee_3_arrets().data
+        stop_ids = [s['id'] for s in data['stops']]
+        response = self.client.patch(f"/api/transports/{data['id']}/", {
+            'stops': [
+                {'venue': self.entrepot.id},
+                {'venue': self.salle_a.id, 'travel_minutes_from_previous': 50},
+                {'venue': self.salle_b.id, 'travel_minutes_from_previous': 45},
+            ],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual([s['id'] for s in response.data['stops']], stop_ids)
+        self.assertEqual(response.data['estimated_duration_minutes'], 95)
+        self.assertEqual(len(response.data['materials']), 2)
+
+    def test_removing_a_stop_still_used_by_a_line_is_rejected(self):
+        data = self._creer_tournee_3_arrets().data
+        response = self.client.patch(f"/api/transports/{data['id']}/", {
+            'stops': [
+                {'venue': self.entrepot.id},
+                {'venue': self.salle_b.id, 'travel_minutes_from_previous': 45},
+            ],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('stops', response.data)
+
+    def test_material_availability_per_stop(self):
+        """`?stop=1` : la disponibilité se calcule au lieu ET à l'heure
+        d'arrivée de cet arrêt — les moniteurs entreposés à la salle A y sont
+        disponibles, la console (partie de l'entrepôt dans CE camion, exclue
+        du calcul) n'y est pas."""
+        data = self._creer_tournee_3_arrets().data
+        response = self.client.get(f"/api/transports/{data['id']}/material-availability/?stop=1")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['origin_venue'], self.salle_a.id)
+        self.assertEqual(response.data['stop_order'], 1)
+        par_id = {m['id']: m for m in response.data['materials']}
+        self.assertEqual(par_id[self.moniteurs.id]['available'], 4)
+        self.assertEqual(par_id[self.console.id]['available'], 0)
+        # Sans paramètre : premier arrêt — l'ancien comportement, intact.
+        response = self.client.get(f"/api/transports/{data['id']}/material-availability/")
+        self.assertEqual(response.data['origin_venue'], self.entrepot.id)
+
+    def test_legacy_two_stop_contract_still_works(self):
+        """L'ancien contrat A → B (origin_venue/destination_venue +
+        estimated_duration_minutes) crée et modifie une tournée à 2 arrêts —
+        le frontend actuel (fiche Transport, drag du Dashboard) reste
+        fonctionnel tel quel en attendant sa refonte."""
+        response = self.client.post('/api/transports/', {
+            'show': self.show.id, 'transport_type': 'delivery',
+            'origin_venue': self.entrepot.id, 'destination_venue': self.salle_b.id,
+            'scheduled_datetime': _dt(8).isoformat(),
+            'estimated_duration_minutes': 40,
+            'materials': [{'material': self.console.id, 'quantity': 1}],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(len(response.data['stops']), 2)
+        self.assertEqual(response.data['estimated_duration_minutes'], 40)
+        # Redimensionnement façon Dashboard : PATCH de la durée totale seule.
+        patch = self.client.patch(f"/api/transports/{response.data['id']}/", {
+            'estimated_duration_minutes': 55,
+        }, format='json')
+        self.assertEqual(patch.status_code, status.HTTP_200_OK, patch.data)
+        self.assertEqual(patch.data['estimated_duration_minutes'], 55)
+
+    def test_patching_total_duration_on_multi_stop_route_is_rejected(self):
+        """Sur une tournée à 3 arrêts et plus, une durée totale envoyée par
+        l'ancien contrat est ambiguë (quel segment ajuster ?) : refusée si
+        elle change réellement la valeur, ignorée sinon (l'ancienne fiche
+        renvoie tout son formulaire)."""
+        data = self._creer_tournee_3_arrets().data
+        response = self.client.patch(f"/api/transports/{data['id']}/", {
+            'estimated_duration_minutes': 120,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        # Valeur inchangée (75) : tolérée, rien n'est modifié.
+        response = self.client.patch(f"/api/transports/{data['id']}/", {
+            'estimated_duration_minutes': 75, 'notes': 'ok',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+
+class TourneeMultiArretsCoherenceTests(TestCase):
+    """Le grand livre de positions (transport_coherence.py) raisonne par LIGNE
+    de matériel depuis la refonte en tournées : chargement/déchargement aux
+    heures d'arrivée des arrêts concernés."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name="Projet tournées")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.salle_a = Venue.objects.create(project=self.project, name="Salle A")
+        self.salle_b = Venue.objects.create(project=self.project, name="Salle B")
+        self.show_b = Show.objects.create(
+            project=self.project, title="Spectacle B", venue=self.salle_b, event_type="performance",
+            start_datetime=_dt(19), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        self.moniteurs = Material.objects.create(
+            project=self.project, name="Moniteurs", category=_cat(self.project, "Audio"),
+            venue=self.salle_a, quantity=4,
+        )
+
+    def _tournee_3_arrets(self, scheduled=None):
+        """Entrepôt → salle A → salle B, 30 + 45 min ; les moniteurs (entreposés
+        à la salle A) montent à l'arrêt 1 et descendent à l'arrêt 2."""
+        transport = Transport.objects.create(
+            show=self.show_b, status=Transport.STATUS_CONFIRMED,
+            scheduled_datetime=scheduled or _dt(8),
+        )
+        s0 = TransportStop.objects.create(transport=transport, venue=self.entrepot, order=0)
+        s1 = TransportStop.objects.create(
+            transport=transport, venue=self.salle_a, order=1, travel_minutes_from_previous=30,
+        )
+        s2 = TransportStop.objects.create(
+            transport=transport, venue=self.salle_b, order=2, travel_minutes_from_previous=45,
+        )
+        TransportMaterial.objects.create(
+            transport=transport, material=self.moniteurs, quantity=4,
+            load_stop=s1, unload_stop=s2,
+        )
+        return transport
+
+    def test_pickup_at_intermediate_stop_uses_arrival_time(self):
+        """Le matériel chargé à l'arrêt intermédiaire doit être disponible à
+        l'heure d'ARRIVÉE du camion à cet arrêt — il l'est (c'est son lieu
+        d'entreposage), donc aucune issue d'origine."""
+        self._tournee_3_arrets()
+        types = [i['type'] for i in get_material_coherence_issues(self.moniteurs)]
+        self.assertNotIn('origine_incoherente', types)
+
+    def test_delivery_at_final_stop_covers_the_show(self):
+        """La ligne décharge à la salle B avant le spectacle : l'assignation
+        est couverte, pas d'issue `materiel_non_livre`."""
+        ShowMaterial.objects.create(show=self.show_b, material=self.moniteurs, quantity=4)
+        self._tournee_3_arrets()
+        types = [i['type'] for i in get_material_coherence_issues(self.moniteurs)]
+        self.assertNotIn('materiel_non_livre', types)
+
+    def test_material_position_follows_its_own_portion(self):
+        """Entre les deux arrêts de sa portion, le matériel n'est ni à A ni à
+        B ; après l'arrivée au dernier arrêt, il est à B — les heures viennent
+        des ARRIVÉES d'arrêts, pas du départ de la tournée."""
+        from .transport_coherence import get_venue_material_availability
+        self._tournee_3_arrets()
+        arrivee_b = _dt(8) + timedelta(minutes=75)
+        # Juste avant l'arrivée à B : encore rien sur place.
+        rows = {r['material'].id: r['available'] for r in get_venue_material_availability(
+            self.salle_b, at=arrivee_b - timedelta(minutes=1), project=self.project,
+        )}
+        self.assertEqual(rows[self.moniteurs.id], 0)
+        # Après l'arrivée : les 4 moniteurs y sont.
+        rows = {r['material'].id: r['available'] for r in get_venue_material_availability(
+            self.salle_b, at=arrivee_b + timedelta(minutes=1), project=self.project,
+        )}
+        self.assertEqual(rows[self.moniteurs.id], 4)
+
+    def test_round_trip_single_route_returns_material_home(self):
+        """Une tournée aller-retour (entrepôt → B → entrepôt) qui ramène le
+        matériel : pas de `retour_manquant` à l'horizon du projet."""
+        self.project.end_date = timezone.datetime(2026, 9, 2).date()
+        self.project.save(update_fields=['end_date'])
+        console = Material.objects.create(
+            project=self.project, name="Console", category=_cat(self.project, "Audio"),
+            venue=self.entrepot,
+        )
+        transport = Transport.objects.create(
+            show=self.show_b, status=Transport.STATUS_CONFIRMED, scheduled_datetime=_dt(8),
+        )
+        s0 = TransportStop.objects.create(transport=transport, venue=self.entrepot, order=0)
+        s1 = TransportStop.objects.create(
+            transport=transport, venue=self.salle_b, order=1, travel_minutes_from_previous=30,
+        )
+        s2 = TransportStop.objects.create(
+            transport=transport, venue=self.entrepot, order=2, travel_minutes_from_previous=30,
+        )
+        # Aller : la console va jouer à B... et l'assignation est couverte.
+        TransportMaterial.objects.create(
+            transport=transport, material=console, quantity=1, load_stop=s0, unload_stop=s1,
+        )
+        # ...retour dans le même véhicule plus tard dans la séquence.
+        TransportMaterial.objects.create(
+            transport=transport, material=console, quantity=1, load_stop=s1, unload_stop=s2,
+        )
+        types = [i['type'] for i in get_material_coherence_issues(
+            console, horizon=get_project_horizon(self.project),
+        )]
+        self.assertNotIn('retour_manquant', types)
+        self.assertNotIn('origine_incoherente', types)

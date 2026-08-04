@@ -18,7 +18,7 @@ les neutralise donc pendant qu'une régénération est en cours.
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
-from .models import Show, ShowMaterial, Transport, TransportMaterial
+from .models import Show, ShowMaterial, Transport, TransportMaterial, TransportStop
 from .transport_autogen import is_regenerating, regenerate_project_proposals
 
 
@@ -69,6 +69,23 @@ def _on_transport_material_change(instance, **kwargs):
     Couvre le cas de la création via l'API (les lignes sont créées après le
     transport lui-même : ce signal capte l'ajout du matériel et régénère avec
     la couverture correcte)."""
+    if is_regenerating():
+        return
+    transport = Transport.objects.filter(id=instance.transport_id).select_related('show__project').first()
+    if transport is None or transport.status != Transport.STATUS_CONFIRMED:
+        return
+    _regenerate_for_show(transport.show_id)
+
+
+@receiver(post_save, sender=TransportStop)
+@receiver(post_delete, sender=TransportStop)
+def _on_transport_stop_change(instance, **kwargs):
+    """Arrêt changé sur une tournée confirmée → régénère (tournées 2026-08-04).
+
+    Déplacer/ajouter/retirer un arrêt change les lieux de chargement et de
+    déchargement effectifs des lignes de matériel, donc la couverture des
+    livraisons et la timeline de position — même raison que le signal
+    `TransportMaterial` ci-dessus."""
     if is_regenerating():
         return
     transport = Transport.objects.filter(id=instance.transport_id).select_related('show__project').first()

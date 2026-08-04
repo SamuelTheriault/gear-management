@@ -53,6 +53,13 @@ migration `0024`). Cette branche n'est pas encore poussée vers `origin` —
 seul exemplaire de ce travail commité sur ce poste tant que le push n'est
 pas fait.
 
+**Checkpoint du 2026-08-04** : le travail en cours non committé (onboarding
+de projet, portabilité/export CSV, tooltip flottant) a été mis à l'abri sur
+`wip/checkpoint-2026-08-04` avant d'entamer la refonte transport. La refonte
+elle-même vit sur `feature/transport-tournees`, branchée de `main` (règle
+« branches fraîches ») — backend complet, voir étape 15 et l'entrée
+2026-08-04 de CLAUDE.md. Ni l'une ni l'autre n'est poussée vers `origin`.
+
 **Désync doc/code toujours présente, non résolue par ce commit** (voir
 « Points de vigilance ») : `recapitulatif_projet.md`/`schema.md`/
 `architecture.md` restent en retard sur plusieurs fonctionnalités déjà
@@ -87,6 +94,7 @@ codées et maintenant committées.
 | 12 | Déploiement Railway du backend à jour | ✅ **Fait** — déploiement du 2026-08-01 02h03 UTC réussi, migrations `0013`→`0017` appliquées sur MySQL prod sans erreur | 2026-08-01 |
 | 13 | Décider et mettre en place le déploiement du frontend | ✅ **Fait** — mergé, Root Directory Railway basculé sur la racine, `FRONTEND_URL` ajoutée, déploiement Dockerfile réussi (158 fichiers statiques copiés, `gunicorn` démarré), page d'accueil vérifiée en ligne | 2026-08-03 |
 | 14 | Gestion des accès par projet, kits, quantités, couleurs personnalisables, ordre des types réordonnable | ✅ Mergé dans `main` et déployé — migrations `0018`→`0024` appliquées en prod sans erreur (vérifié via logs Railway) | 2026-08-03 |
+| 15 | Module transport en tournées multi-arrêts (backend) : `TransportStop`, matériel par portion (`load_stop`/`unload_stop`), retrait de `transport_type`, migration `0025`, cohérence/autogen/conflits adaptés, chemin de compat API pour le frontend actuel | ✅ Codé et testé (354 tests + flake8) sur la branche `feature/transport-tournees` (base `main`) — PR à ouvrir/merger par Samuel ; frontend = étape suivante | 2026-08-04 |
 
 ## Prochaine action concrète
 
