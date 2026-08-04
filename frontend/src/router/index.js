@@ -1,7 +1,9 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuth } from '../composables/useAuth'
+import { useActiveProject } from '../composables/useActiveProject'
 import DashboardView from '../views/DashboardView.vue'
 import LoginView from '../views/LoginView.vue'
+import OnboardingView from '../views/OnboardingView.vue'
 import ReglagesView from '../views/ReglagesView.vue'
 import UtilisateursView from '../views/UtilisateursView.vue'
 import SpectaclesView from '../views/SpectaclesView.vue'
@@ -50,6 +52,9 @@ const routes = [
   { path: '/projets/:id', name: 'projet-detail', component: ProjetDetailView },
   { path: '/utilisateurs', name: 'utilisateurs', component: UtilisateursView },
   { path: '/login', name: 'login', component: LoginView },
+  // Onboarding (2026-08-04) : voir garde ci-dessous — atteinte uniquement
+  // par redirection quand le compte connecté n'a encore aucun projet actif.
+  { path: '/bienvenue', name: 'onboarding', component: OnboardingView },
   // Départements retiré le 2026-07-29 (modèle Department abandonné, voir
   // CLAUDE.md / recapitulatif_projet.md).
 ]
@@ -64,12 +69,35 @@ export const router = createRouter({
 // django-allauth), sauf /login elle-même. Un seul GET /api/auth/user/ par
 // session SPA (singleton, mis en cache par useAuth) — les navigations
 // suivantes réutilisent le résultat déjà connu sans reappeler l'API.
+//
+// Garde d'onboarding (2026-08-04, remplace l'ancien bandeau prévu au
+// backlog par un écran bloquant — décision de Samuel) : un compte connecté
+// SANS AUCUN projet actif (`ProjectMembership` actif nulle part, ou
+// installation flambant neuve) est redirigé vers /bienvenue quel que soit
+// l'écran visé — sans ça, Lieu/Technicien/... échouaient en 400 en silence
+// (`project` envoyé `null`, voir suivi_projet.md). Symétriquement, un
+// compte qui a déjà au moins un projet actif ne doit plus voir /bienvenue
+// (retour arrière, lien direct, ...) — renvoyé au tableau de bord.
+// `ensureProjectsLoaded()` réutilise le chargement mis en cache par
+// useActiveProject (AppShell, ReglagesView, ...) : un seul GET /api/projects/
+// par session SPA, pas un par navigation.
 router.beforeEach(async (to) => {
   if (to.path === '/login') return true
   const { currentUser, checkAuth } = useAuth()
   await checkAuth()
   if (!currentUser.value) {
     return { path: '/login' }
+  }
+
+  const { projects, ensureProjectsLoaded } = useActiveProject()
+  await ensureProjectsLoaded()
+  const hasActiveProject = projects.value.length > 0
+
+  if (!hasActiveProject && to.path !== '/bienvenue') {
+    return { path: '/bienvenue' }
+  }
+  if (hasActiveProject && to.path === '/bienvenue') {
+    return { path: '/' }
   }
   return true
 })

@@ -18,27 +18,40 @@ const loaded = ref(false)
 const loading = ref(false)
 const error = ref(null)
 
+// Promesse du chargement en cours, s'il y en a un — permet à un appelant
+// (le garde de route, notamment, voir router/index.js) d'ATTENDRE que la
+// liste soit connue avant de décider d'une redirection, plutôt que de lire
+// `projects.value` pendant qu'il est encore vide par défaut. `loadProjects`
+// reste par ailleurs appelable « fire-and-forget » comme avant (AppShell,
+// ReglagesView, ...) : elle retourne toujours la même promesse partagée.
+let inFlight = null
+
 async function loadProjects() {
-  if (loaded.value || loading.value) return
+  if (loaded.value) return
+  if (inFlight) return inFlight
   loading.value = true
   error.value = null
-  try {
-    // ProjectViewSet n'a pas de filtre `?status=` côté serveur (queryset brut,
-    // pas de ProjectFilteredMixin) — on filtre les projets archivés côté client.
-    const data = await api.get('/projects/')
-    const all = Array.isArray(data) ? data : (data.results ?? [])
-    projects.value = all.filter((p) => p.status === 'active')
+  inFlight = (async () => {
+    try {
+      // ProjectViewSet n'a pas de filtre `?status=` côté serveur (queryset brut,
+      // pas de ProjectFilteredMixin) — on filtre les projets archivés côté client.
+      const data = await api.get('/projects/')
+      const all = Array.isArray(data) ? data : (data.results ?? [])
+      projects.value = all.filter((p) => p.status === 'active')
 
-    const stillValid = projects.value.some((p) => p.id === activeProjectId.value)
-    if (!stillValid) {
-      activeProjectId.value = projects.value[0]?.id ?? null
+      const stillValid = projects.value.some((p) => p.id === activeProjectId.value)
+      if (!stillValid) {
+        activeProjectId.value = projects.value[0]?.id ?? null
+      }
+      loaded.value = true
+    } catch (e) {
+      error.value = e
+    } finally {
+      loading.value = false
+      inFlight = null
     }
-    loaded.value = true
-  } catch (e) {
-    error.value = e
-  } finally {
-    loading.value = false
-  }
+  })()
+  return inFlight
 }
 
 function setActiveProject(id) {
@@ -60,5 +73,17 @@ const activeProject = computed(
 
 export function useActiveProject() {
   loadProjects()
-  return { projects, activeProjectId, activeProject, setActiveProject, refreshProjects, loading, error }
+  return {
+    projects,
+    activeProjectId,
+    activeProject,
+    setActiveProject,
+    refreshProjects,
+    // Exposée pour router/index.js (garde d'onboarding) : `await
+    // ensureProjectsLoaded()` avant de lire `projects.value` pour décider
+    // d'une redirection. Sans effet si déjà chargée (voir `loaded` ci-dessus).
+    ensureProjectsLoaded: loadProjects,
+    loading,
+    error,
+  }
 }
