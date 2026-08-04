@@ -156,6 +156,10 @@ dédiée — à extraire séparément si Samuel veut le garder.
 - Protection de branche `main` activée sur GitHub (confirmé le 2026-08-03) —
   PR obligatoire + 2 status checks, y compris pour un changement
   documentation seule.
+- ~~Protection de branche `main` non activée sur GitHub~~ — **résolu**,
+  confirmé activée le 2026-08-03 (push direct sur `main` refusé : « Changes
+  must be made through a pull request », 2 status checks requis). Tout
+  changement, même documentation seule, passe maintenant par une PR.
 - L'estimation automatique de trajet (Google Routes API) reste non testable
   en conditions réelles dans le bac à sable Claude (pas de réseau) — se
   dégrade silencieusement sur la valeur par défaut si la clé est absente.
