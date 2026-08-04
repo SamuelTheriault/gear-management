@@ -90,6 +90,16 @@ export const router = createRouter({
 // écrans sont de la gestion de projet (créer/lister/réactiver), pas des
 // écrans de saisie qui ont besoin d'un projet actif pour fonctionner —
 // contrairement à Matériel/Lieux/etc., toujours bloqués sans projet actif.
+//
+// Exemption /utilisateurs (2026-08-04, revue code-reviewer) : même famille
+// de piège — c'est un écran de gestion PLATEFORME (comptes/pré-provisioning,
+// réservé staff, voir UserViewSet côté API), pas une production, il n'a donc
+// aucune raison de dépendre d'un projet actif. Un compte staff qu'on vient de
+// créer et qui n'a encore été ajouté à aucun projet (voir la note de Samuel :
+// dès qu'un compte est ajouté à un projet, `hasActiveProject` suffit déjà à
+// lui éviter l'onboarding — ce cas-ci ne couvre que l'entre-deux) doit
+// pouvoir aller y inviter/gérer des comptes sans être bloqué par l'écran
+// d'onboarding.
 router.beforeEach(async (to) => {
   if (to.path === '/login') return true
   const { currentUser, checkAuth } = useAuth()
@@ -101,7 +111,9 @@ router.beforeEach(async (to) => {
   const { projects, ensureProjectsLoaded } = useActiveProject()
   await ensureProjectsLoaded()
   const hasActiveProject = projects.value.length > 0
-  const isProjectManagementRoute = to.path === '/reglages' || to.path.startsWith('/projets/')
+  const isProjectManagementRoute = (
+    to.path === '/reglages' || to.path.startsWith('/projets/') || to.path === '/utilisateurs'
+  )
 
   if (!hasActiveProject && to.path !== '/bienvenue' && !isProjectManagementRoute) {
     return { path: '/bienvenue' }
