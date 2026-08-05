@@ -3,11 +3,13 @@ import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
 import ZoomControls from '../components/ZoomControls.vue'
+import FloatingTooltip from '../components/FloatingTooltip.vue'
 import { api } from '../api/client'
 import { useActiveProject } from '../composables/useActiveProject'
 import { useChipFilter } from '../composables/useChipFilter'
 import { useZoomScroll } from '../composables/useZoomScroll'
 import { useEventDisplay } from '../composables/useEventDisplay'
+import { useFloatingTooltip } from '../composables/useFloatingTooltip'
 
 const router = useRouter()
 
@@ -74,9 +76,18 @@ const router = useRouter()
  *
  * ## Survol, clic et glisser-déposer
  *
- * Chaque bloc porte une info-bulle CSS-only (`block.details`) et navigue vers
- * sa fiche au clic. `.dash-timeline__track` et `.dash-timeline__block` n'ont
- * pas d'`overflow: hidden`, pour laisser l'info-bulle déborder.
+ * Chaque bloc navigue vers sa fiche au clic et affiche une info-bulle au
+ * survol via `showTooltip`/`hideTooltip` (`useFloatingTooltip`, composable
+ * partagé avec les deux Parcours — voir ce fichier pour le contexte complet).
+ * Ce n'est PLUS une info-bulle CSS-only : un premier correctif (2026-08-03)
+ * avait juste changé son sens d'ouverture et ajouté un padding tampon, mais
+ * `.dash-timeline__scroll` (`overflow-x: auto`, nécessaire au défilement
+ * horizontal sous zoom) clippe TOUT enfant qui dépasse sa boîte dans
+ * n'importe quelle direction — un simple rapiéçage CSS ne pouvait que
+ * repousser le problème, pas l'éliminer. L'info-bulle est donc
+ * `position: fixed`, positionnée en JS au survol et téléportée dans
+ * `<body>` (`FloatingTooltip.vue`) : elle échappe à tout ancêtre, plus
+ * besoin de la moindre marge tampon.
  *
  * ⌘ + glisser ajuste l'horaire : poignées aux deux bords pour le début/la
  * fin, corps du bloc pour déplacer en gardant la durée. Sans ⌘, le clic
@@ -568,6 +579,11 @@ const scrollFraction = computed(() => {
 const scrollRef = ref(null)
 useZoomScroll(scrollRef, zoomLevel, scrollFraction)
 
+// Info-bulle flottante (2026-08-03) — voir `useFloatingTooltip.js` : remplace
+// l'ancienne info-bulle CSS-only, piégée par le clipping de
+// `.dash-timeline__scroll` (`overflow-x: auto`).
+const { tooltip, show: showTooltip, hide: hideTooltip } = useFloatingTooltip()
+
 // --- Rendu de la timeline ---
 //
 // Les positions (left/width) sont TOUJOURS relatives à la fenêtre complète du
@@ -740,6 +756,10 @@ function beginDrag(block, mode, event) {
   const track = event.currentTarget.closest('.dash-timeline__track')
   if (!track) return
   dragError.value = null
+  // L'info-bulle flottante ne se cache plus toute seule au survol perdu
+  // pendant un glisser (le pointeur reste capté par le bloc) — masquée
+  // explicitement au début d'un glisser réel.
+  hideTooltip()
   // Un clic sur une poignée de redimensionnement ne doit jamais naviguer,
   // même sans mouvement. Un clic sur le corps du bloc (mode 'move') doit
   // encore naviguer si aucun glisser réel n'a eu lieu — voir onDragMove.
@@ -1013,17 +1033,13 @@ const upcoming = computed(() => {
                   :style="blockStyle(block)"
                   @pointerdown="beginDrag(block, 'move', $event)"
                   @click="handleBlockClick(block)"
+                  @mouseenter="showTooltip($event, { title: block.name, time: blockTimeLabel(block), lines: block.details })"
+                  @mouseleave="hideTooltip"
                 >
                   <div class="dash-timeline__handle dash-timeline__handle--start" @pointerdown="beginDrag(block, 'resize-start', $event)" />
                   <div class="dash-timeline__block-name">{{ block.name }}</div>
                   <div class="dash-timeline__block-time">{{ blockTimeLabel(block) }}</div>
                   <div class="dash-timeline__handle dash-timeline__handle--end" @pointerdown="beginDrag(block, 'resize-end', $event)" />
-
-                  <div class="dash-timeline__tooltip">
-                    <div class="dash-timeline__tooltip-title">{{ block.name }}</div>
-                    <div class="dash-timeline__tooltip-time">{{ blockTimeLabel(block) }}</div>
-                    <div v-for="(line, i) in block.details" :key="i" class="dash-timeline__tooltip-line">{{ line }}</div>
-                  </div>
                 </div>
               </div>
             </div>
@@ -1089,6 +1105,7 @@ const upcoming = computed(() => {
         </div>
       </div>
     </div>
+    <FloatingTooltip :tooltip="tooltip" />
   </AppShell>
 </template>
 
@@ -1327,6 +1344,13 @@ const upcoming = computed(() => {
      les noms de jour à gauche des pistes. Le défilement vertical doit
      rester celui de la page, qui fait bouger les deux colonnes ensemble. */
   overflow-y: hidden;
+  /* Marge sous la dernière piste (2026-08-03, signalé par Samuel) : la
+     barre de défilement horizontale (visible dès que le zoom élargit le
+     contenu au-delà de la largeur disponible) se dessine DANS la boîte de
+     ce conteneur, au ras du bas — sans cette marge, elle se superpose aux
+     blocs de la dernière ligne sur les navigateurs/systèmes qui réservent
+     de la place pour la barre (scrollbar « classique », pas en survol). */
+  padding-bottom: 16px;
 }
 
 .dash-timeline__scroll-content {
@@ -1353,8 +1377,6 @@ const upcoming = computed(() => {
   position: relative;
   background: var(--bg-row);
   border-radius: var(--radius-notch-sm);
-  /* Pas d'overflow:hidden : l'info-bulle au survol (position absolue,
-     ancrée au bloc) doit pouvoir déborder au-dessus de la piste. */
 }
 
 .dash-timeline__gridline {
@@ -1387,20 +1409,12 @@ const upcoming = computed(() => {
   cursor: grab;
   user-select: none;
   touch-action: none;
-  /* Pas d'overflow:hidden ici : l'info-bulle (enfant, position absolue)
-     doit pouvoir déborder du bloc. Le nom/l'heure ont déjà leur propre
-     ellipsis (voir .dash-timeline__block-name/-time) donc rien n'est perdu
-     visuellement à l'intérieur du bloc. */
 }
 
 .dash-timeline__block--dragging {
   cursor: grabbing;
   z-index: 25;
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
-}
-
-.dash-timeline__block--dragging .dash-timeline__tooltip {
-  display: none;
 }
 
 /* Poignées de redimensionnement (début/fin) — fines bandes aux bords,
@@ -1426,49 +1440,6 @@ const upcoming = computed(() => {
    en plus de sa couleur (vert/fuchsia/orange/rouge — voir `timeline`). */
 .dash-timeline__block--transport {
   border: 1px dashed rgba(0, 0, 0, 0.25);
-}
-
-.dash-timeline__tooltip {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
-  min-width: 170px;
-  max-width: 240px;
-  padding: 10px 12px;
-  border-radius: var(--radius-notch-sm);
-  background: var(--bg-deep);
-  border: 1px solid rgba(var(--fg-rgb), 0.12);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transition: opacity 0.12s ease;
-  z-index: 30;
-}
-
-.dash-timeline__block:hover .dash-timeline__tooltip {
-  opacity: 1;
-  visibility: visible;
-}
-
-.dash-timeline__tooltip-title {
-  font: 700 12px system-ui;
-  color: rgb(var(--fg-rgb));
-  white-space: normal;
-  margin-bottom: 4px;
-}
-
-.dash-timeline__tooltip-time {
-  font: 600 11px system-ui;
-  color: rgba(var(--fg-rgb), 0.55);
-  margin-bottom: 6px;
-}
-
-.dash-timeline__tooltip-line {
-  font: 500 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.75);
-  line-height: 1.4;
 }
 
 .dash-timeline__block-name {

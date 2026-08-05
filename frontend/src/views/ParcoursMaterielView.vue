@@ -3,10 +3,12 @@ import { ref, computed, watch } from 'vue'
 import AppShell from '../components/AppShell.vue'
 import ParcoursDayPicker from '../components/ParcoursDayPicker.vue'
 import ZoomControls from '../components/ZoomControls.vue'
+import FloatingTooltip from '../components/FloatingTooltip.vue'
 import { api } from '../api/client'
 import { useActiveProject } from '../composables/useActiveProject'
 import { useParcours } from '../composables/useParcours'
 import { useZoomScroll } from '../composables/useZoomScroll'
+import { useFloatingTooltip } from '../composables/useFloatingTooltip'
 import { VENUE_PALETTE } from '../constants/venuePalette'
 
 /**
@@ -133,6 +135,17 @@ import { VENUE_PALETTE } from '../constants/venuePalette'
  * dans la sélection courante (orphelin affiché à plat sinon, même principe
  * que le panneau). Uniquement la colonne d'étiquettes est indentée — les
  * pistes/segments de la timeline elle-même n'ont pas bougé.
+ *
+ * Info-bulle flottante (2026-08-03, demande de Samuel) : les info-bulles de
+ * séjour/transit/marqueur ne sont plus des `<div>` imbriquées révélées en
+ * CSS-only par `:hover` — `.parcours-scroll` (`overflow-x: auto`, pour le
+ * défilement sous zoom) les clippait dès qu'elles dépassaient sa boîte,
+ * peu importe le sens d'ouverture (même bug que sur le Dashboard, voir
+ * `useFloatingTooltip.js`). `showTooltip`/`hideTooltip` au survol de chaque
+ * élément, un seul `<FloatingTooltip>` positionné en JS
+ * (`position: fixed`, échappe à tout ancêtre) pour tout l'écran. Les champs
+ * `tooltipTitle`/`tooltipTime`/`tooltipLines` déjà calculés dans `decorated`
+ * n'ont pas changé — seule leur consommation dans le template change.
  */
 
 const { activeProjectId } = useActiveProject()
@@ -157,6 +170,10 @@ const {
 // navigateur gérer seul le défilement manuel.
 const scrollRef = ref(null)
 useZoomScroll(scrollRef, zoomLevel, scrollFraction)
+
+// Info-bulle flottante (2026-08-03) — voir la note de tête et
+// `useFloatingTooltip.js`.
+const { tooltip, show: showTooltip, hide: hideTooltip } = useFloatingTooltip()
 
 // --- Filtre par catégorie ---
 
@@ -667,45 +684,30 @@ const decorated = computed(() =>
                       :key="`s${i}`"
                       class="parcours-seg"
                       :style="stay.style"
+                      @mouseenter="showTooltip($event, { title: stay.tooltipTitle, time: stay.tooltipTime, lines: stay.tooltipLines })"
+                      @mouseleave="hideTooltip"
                     >
                       <span class="parcours-seg__label">{{ stay.label }}</span>
-                      <div class="parcours-tooltip">
-                        <div class="parcours-tooltip__title">{{ stay.tooltipTitle }}</div>
-                        <div class="parcours-tooltip__time">{{ stay.tooltipTime }}</div>
-                        <div v-for="(line, li) in stay.tooltipLines" :key="li" class="parcours-tooltip__line">
-                          {{ line }}
-                        </div>
-                      </div>
                     </div>
                     <div
                       v-for="(t, i) in row.transports"
                       :key="`t${i}`"
                       class="parcours-transit"
                       :style="t.style"
+                      @mouseenter="showTooltip($event, { title: t.tooltipTitle, time: t.tooltipTime, lines: t.tooltipLines })"
+                      @mouseleave="hideTooltip"
                     >
                       <span class="parcours-seg__label">{{ t.label }}</span>
-                      <div class="parcours-tooltip">
-                        <div class="parcours-tooltip__title">{{ t.tooltipTitle }}</div>
-                        <div class="parcours-tooltip__time">{{ t.tooltipTime }}</div>
-                        <div v-for="(line, li) in t.tooltipLines" :key="li" class="parcours-tooltip__line">
-                          {{ line }}
-                        </div>
-                      </div>
                     </div>
                     <div
                       v-for="(mark, i) in row.marks"
                       :key="`m${i}`"
                       class="parcours-mark"
                       :style="mark.style"
+                      @mouseenter="showTooltip($event, { title: mark.tooltipTitle, time: mark.tooltipTime, lines: mark.tooltipLines })"
+                      @mouseleave="hideTooltip"
                     >
                       <span class="parcours-mark__label">{{ mark.show_title }}</span>
-                      <div class="parcours-tooltip">
-                        <div class="parcours-tooltip__title">{{ mark.tooltipTitle }}</div>
-                        <div class="parcours-tooltip__time">{{ mark.tooltipTime }}</div>
-                        <div v-for="(line, li) in mark.tooltipLines" :key="li" class="parcours-tooltip__line">
-                          {{ line }}
-                        </div>
-                      </div>
                     </div>
                   </div>
                 </div>
@@ -727,6 +729,7 @@ const decorated = computed(() =>
         </div>
       </div>
     </div>
+    <FloatingTooltip :tooltip="tooltip" />
   </AppShell>
 </template>
 
