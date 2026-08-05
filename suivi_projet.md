@@ -4,12 +4,13 @@ Tableau de bord manuel. À mettre à jour à chaque étape franchie ou décision
 prise. Complète `recapitulatif_projet.md` (contenu fonctionnel) sans le
 dupliquer — ce fichier ne suit que **l'avancement**, pas le scope.
 
-Dernière mise à jour : 2026-08-05 — **toutes les étapes du plan initial (1
-à 17) sont faites, mergées et déployées.** PR #17 (import/export CSV+JSON)
-mergée sur GitHub et déployée — confirmé côté Railway : dernier déploiement
-SUCCESS du 2026-08-05 01:38 UTC. Chacun des trois derniers chantiers (15,
-16, 17) est passé par une revue `code-reviewer` avant merge, chacun ayant
-trouvé et fait corriger un vrai problème avant qu'il n'atteigne la prod.
+Dernière mise à jour : 2026-08-05 (suite) — étapes 1 à 17 mergées et
+déployées. **Étape 18 (info-bulle flottante Dashboard/Parcours + rattrapage
+doc de référence) committée sur `feature/floating-tooltip`, prête à
+pousser** — pas encore en PR. Revue `code-reviewer` : rien de bloquant sur
+le code (aucune régression du checkpoint périmé dont le tooltip a été
+extrait), 1 oubli corrigé avant push (la doc rattrapée n'avait pas été
+committée avec le code).
 
 ## Statut global
 
@@ -78,26 +79,29 @@ sur plusieurs fonctionnalités déjà codées et déployées.
 | 15 | Module transport en tournées multi-arrêts : `TransportStop`, matériel par portion, retrait de `transport_type`, migration `0025`, manifeste par arrêt | ✅ Mergée dans `main` et déployée. Revue `code-reviewer` : 1 correctif (durée négative acceptée sur le chemin de compat A→B) | 2026-08-04 |
 | 16 | Onboarding de projet (écran bloquant + garde de route), suppression cascade de projet/matériel/technicien | ✅ Mergée dans `main` et déployée — migration `0026` (renumérotée depuis `0025`, collision avec l'étape 15 résolue). Revue `code-reviewer` : 1 **bug bloquant** corrigé (`DELETE /api/projects/{id}/` en 500 sur tout projet réel) + exemption `/utilisateurs` de la garde d'onboarding | 2026-08-04 |
 | 17 | Export/import CSV par section (matériel/lieux/techniciens/spectacles) + export/import JSON complet du projet (réimportable) et XML (lecture seule) | ✅ Mergée dans `main` (PR #17) et déployée. `portability.py` réparé pour `TransportStop` (remappage des arrêts par position, pas par id). Revue `code-reviewer` : 1 bug corrigé (import replace des lieux ne bloquait pas sur le matériel qui en fait son origine, contrairement à `VenueViewSet.destroy`) + 2 suggestions de tests ajoutées (permissions `export-csv`, tournée à 3 arrêts). Suite à 393 tests, flake8 propre, aucune migration | 2026-08-05 |
+| 18 | Info-bulle flottante Dashboard/Parcours (`FloatingTooltip.vue`, remplace l'ancienne info-bulle CSS-only piégée par le clipping du défilement zoomé) + rattrapage de `schema.md`/`architecture.md`/`recapitulatif_projet.md` sur les étapes 14-17 | ✅ Committé sur `feature/floating-tooltip`, pas encore poussé/PR. Extrait à la main de `wip/checkpoint-2026-08-04` (périmé — prédate les tournées, aurait régressé Transport/Dashboard si appliqué tel quel). Revue `code-reviewer` : code propre (aucune régression du checkpoint périmé), 1 oubli corrigé (doc rattrapée pas committée avec le code au premier passage). Frontend + doc seulement, aucun changement backend | 2026-08-05 |
 
 ## Prochaine action concrète
 
-Aucune étape bloquante en attente — l'étape 17 (import/export CSV+JSON) est
-mergée et déployée. Les nouvelles actions API : `POST/GET /api/{materials,
-venues,technicians,shows}/import-csv/` et `/export-csv/`, plus
-`GET /api/projects/{id}/export/` (`?format=xml` pour le XML) et
-`POST /api/projects/import/`. **Rien côté frontend encore** (pas demandé
-pour cette étape) — juste les endpoints, à brancher sur un écran
-(probablement Réglages/fiche projet) si Samuel veut s'en servir depuis
-l'interface plutôt qu'en appel API direct.
+→ **Pousser `feature/floating-tooltip` et ouvrir la PR** (étape 18, prête —
+voir tableau ci-dessus). `git push -u origin feature/floating-tooltip` puis
+PR sur GitHub. Un seul commit, 9 fichiers (tooltip + les 3 docs de
+référence rattrapées).
 
-→ **`wip/checkpoint-2026-08-04` à trier** : le tooltip flottant
-du Dashboard/Parcours (`FloatingTooltip.vue`, remplace l'ancienne info-bulle
-CSS-only piégée par le clipping du défilement zoomé) n'a pas de branche
-dédiée — à extraire séparément si Samuel veut le garder.
+Après ça, plus rien de bloquant en attente. Reste en approche ouverte :
 
-→ **Désync doc/code** : `recapitulatif_projet.md`/`schema.md`/
-`architecture.md` à rattraper sur plusieurs fonctionnalités déjà codées
-(voir « Points de vigilance »).
+→ **Frontend de l'export/import CSV+JSON** (étape 17) : les endpoints
+existent (`import-csv`/`export-csv` sur les 4 listes,
+`export`/`import` sur les projets) mais rien ne les expose encore dans
+l'interface — à brancher sur un écran (probablement Réglages/fiche projet)
+si Samuel veut s'en servir sans appel API direct.
+
+→ **Divergence de numérotation dans `schema.md`** (signalée par la revue
+de l'étape 18, non corrigée) : pas de section 12, un renvoi dans
+`architecture.md` (ligne ~210, `transport_materials`) pointe encore
+dessus alors que c'est en réalité la section 9. Pré-existante, pas
+introduite par l'étape 18 — à corriger si Samuel confirme que ça vaut le
+détour (toucherait potentiellement d'autres renvois croisés non audités).
 
 ## Points de vigilance
 
@@ -113,9 +117,6 @@ dédiée — à extraire séparément si Samuel veut le garder.
   confirmé de nouveau en tentant ce fetch le 2026-08-05 : « Host key
   verification failed » ; le statut de déploiement est vérifié via l'API
   Railway, pas via git.)
-- **🟡 La branche `docs/suivi-post-merge-2026-08-04` (mises à jour de ce
-  fichier) est locale seulement** — à pousser et passer en PR (la protection
-  de `main` s'applique aussi aux changements doc).
 - **🟡 Fichiers à nettoyer dans l'arbre de travail** (untracked, rien
   supprimé automatiquement — confirmation de Samuel requise) : `_to_delete/`,
   `backend/db.sqlite3.avant-tournees`, `frontend/_to_delete_dist_check/` et
@@ -125,18 +126,22 @@ dédiée — à extraire séparément si Samuel veut le garder.
   le même dossier peuvent se marcher dessus (branche qui change seule,
   fichier modifié en double, lock git orphelin). Rien perdu cette fois, mais
   à éviter activement.
-- **🟡 `wip/checkpoint-2026-08-04` : reste le tooltip flottant** — plus de
-  code CSV import/export dessus (rapatrié dans `feature/import-export`),
-  seul `FloatingTooltip.vue` (Dashboard/Parcours) n'a pas encore de branche
-  propre. Voir « Prochaine action concrète ».
-- **🔴 Désync doc/code** — `recapitulatif_projet.md` reste en retard sur
-  `CLAUDE.md` pour plusieurs fonctionnalités déjà codées et déployées :
-  puces ⌘+clic, fermeture des modales à Échap, zoom + défilement sur
-  Dashboard/Parcours, thème clair, gestion des accès par projet
-  (`ProjectMembership`), tournées multi-arrêts, onboarding de projet,
-  suppression cascade, export/import CSV+JSON (étape 17).
-  `Material.is_kit_parent` et les couleurs personnalisables de `Settings`
-  restent absentes même de `CLAUDE.md`.
+- **`wip/checkpoint-2026-08-04` entièrement vidé de ce qui était récupérable**
+  — CSV import/export rapatrié dans l'étape 17, tooltip flottant dans
+  l'étape 18. Le reste du checkpoint est périmé (prédate les tournées
+  multi-arrêts) — plus rien à en extraire, la branche peut être nettoyée à
+  l'occasion.
+- **🟡 `schema.md`/`architecture.md`/`recapitulatif_projet.md` rattrapés sur
+  la plupart des étapes 14-17** (étape 18, 2026-08-05) — accès par projet,
+  tournées multi-arrêts, suppression cascade, export/import CSV+JSON,
+  `Venue.color`, `Material.is_kit_parent`. **Reste volontairement non
+  documenté** (fonctionnalités frontend pures, sans modèle backend à
+  décrire) : puces ⌘+clic, fermeture des modales à Échap, zoom + défilement
+  Dashboard/Parcours, thème clair, info-bulle flottante — `CLAUDE.md` reste
+  la seule trace de ces détails d'implémentation Vue. **Divergence connue,
+  non corrigée** : `schema.md` n'a pas de section 12 (saut de numérotation
+  pré-existant), un renvoi dans `architecture.md` (~ligne 210) pointe
+  encore dessus pour `transport_materials`, en réalité section 9.
 - **Filtres `?show`/`?material`/`?technician` toujours sans test** — présents
   dans `views.py` et utilisés par le frontend, mais aucun test ne les
   couvre. Régression silencieuse possible (le frontend renverrait toutes les
