@@ -17,11 +17,17 @@ dans `conflicts.py`, ajoutée le 2026-07-30 pour l'écran « Conflits » du
 frontend, qui n'a pas d'équivalent par-show unique côté Vue).
 """
 
+import json
 import unicodedata
 
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db import transaction
+from django.http import HttpResponse
+from django.utils.text import slugify
 from rest_framework import generics, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.renderers import BaseRenderer, JSONRenderer
 from rest_framework.response import Response
 
 from .conflicts import (
@@ -34,13 +40,39 @@ from .conflicts import (
     serialize_technician_conflict,
     serialize_venue_conflict,
 )
+from .csv_export import (
+    MATERIAL_CSV_HEADER,
+    SHOW_CSV_HEADER,
+    TECHNICIAN_CSV_HEADER,
+    VENUE_CSV_HEADER,
+    csv_response,
+    materials_export_rows,
+    shows_export_rows,
+    technicians_export_rows,
+    venues_export_rows,
+)
+from .csv_import import (
+    CsvImportError,
+    import_materials_csv,
+    import_shows_csv,
+    import_technicians_csv,
+    import_venues_csv,
+)
 from .duplication import duplicate_project
 from .permissions import (
     HasProjectAccess,
     IsStaffGlobal,
     bypasses_project_access,
+    can_access_project,
+    can_edit_project,
     resolve_inventory_user,
     restrict_queryset_to_membership,
+)
+from .portability import (
+    PortabilityError,
+    build_project_xml,
+    export_project_data,
+    import_project_data,
 )
 from .transport_coherence import (
     get_material_journey,
@@ -120,6 +152,70 @@ class ProjectMembershipQuerysetMixin:
     def get_queryset(self):
         queryset = super().get_queryset()
         return restrict_queryset_to_membership(self.request, queryset, self.project_lookup)
+
+
+class _ProjectXmlRenderer(BaseRenderer):
+    """Renderer factice pour `ProjectViewSet.export?format=xml` — la vue
+    renvoie déjà un `HttpResponse` XML construit à la main (voir
+    `portability.build_project_xml`), ce renderer ne sert donc jamais à
+    convertir quoi que ce soit. Il existe uniquement pour que DRF reconnaisse
+    `format=xml` comme un format VALIDE pendant la négociation de contenu
+    (`initial()`, avant même que le corps de l'action ne s'exécute) : sans
+    lui, `DefaultContentNegotiation.select_renderer` lève un `Http404`
+    (aucun renderer enregistré n'a `format == 'xml'`, seul JSONRenderer
+    l'est par défaut) — piège DRF, pas une question d'accès."""
+
+    media_type = 'application/xml'
+    format = 'xml'
+    charset = None
+
+    def render(self, data, accepted_media_type=None, renderer_context=None):
+        return data
+
+
+def _resolve_csv_project(request, project_id_raw, required_edit):
+    """Résout et vérifie l'accès au projet visé par une action `import-csv`/
+    `export-csv` (`@action(detail=False)`) — ces actions ne passent PAS par
+    `get_object()`, donc pas par `has_object_permission` (voir
+    `HasProjectAccess`/`permissions.can_access_project`, dont c'est le point
+    d'accroche pour ce genre d'action). `required_edit=True` exige le rôle
+    editor (import), `False` se contente du rôle viewer (export). Lève
+    `NotFound` (404, pas 403 — même convention que le reste de l'API) pour un
+    projet manquant ou inaccessible ; retourne `None` si `project_id_raw` est
+    vide/non numérique, à charge de l'appelant de renvoyer une 400 explicite
+    (« le projet est requis », plutôt qu'un 404 trompeur)."""
+    try:
+        project_id = int(project_id_raw) if project_id_raw not in (None, '') else None
+    except (TypeError, ValueError):
+        project_id = None
+    if project_id is None:
+        return None
+    has_access = can_edit_project(request, project_id) if required_edit else can_access_project(request, project_id)
+    if not has_access:
+        raise NotFound()
+    project = Project.objects.filter(id=project_id).first()
+    if project is None:
+        raise NotFound()
+    return project
+
+
+def _import_csv_response(request, import_func):
+    """Fabrique commune aux 4 actions `import-csv` (Material/Venue/
+    Technician/Show, voir csv_import.py) : résout le projet visé
+    (`request.data['project']`), vérifie l'accès en écriture, délègue à
+    `import_func(project, csv_text, mode)` et normalise `CsvImportError` en
+    400 — même contrat de réponse pour les 4 sections
+    (`{'imported': {...}}`, `201`)."""
+    project = _resolve_csv_project(request, request.data.get('project'), required_edit=True)
+    if project is None:
+        return Response({'project': "Le projet est requis."}, status=status.HTTP_400_BAD_REQUEST)
+    mode = request.data.get('mode')
+    csv_text = request.data.get('csv') or ''
+    try:
+        counts = import_func(project, csv_text, mode)
+    except CsvImportError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response({'imported': counts}, status=status.HTTP_201_CREATED)
 
 
 class UserViewSet(viewsets.ModelViewSet):
@@ -579,6 +675,58 @@ class ProjectViewSet(viewsets.ModelViewSet):
         total = sum(len(v) for v in report.values())
         return Response({**report, 'conflict_count': total})
 
+    @action(detail=True, methods=['get'], renderer_classes=[JSONRenderer, _ProjectXmlRenderer])
+    def export(self, request, pk=None):
+        """Export complet et portable du projet — JSON (réimportable, défaut)
+        ou XML (`?format=xml`, lecture seule) — voir `portability.py`. Lecture
+        seule : le contrôle d'accès (rôle viewer minimum) passe par
+        `has_object_permission`, comme tout GET détail de ce ViewSet — pas de
+        vérification supplémentaire ici. `renderer_classes` inclut
+        `_ProjectXmlRenderer` (voir plus haut) pour que `?format=xml` passe
+        la négociation de contenu DRF."""
+        project = self.get_object()
+        data = export_project_data(project)
+        slug = slugify(project.name) or 'projet'
+        if (request.query_params.get('format') or '').strip().lower() == 'xml':
+            response = HttpResponse(
+                build_project_xml(data), content_type='application/xml; charset=utf-8',
+            )
+            response['Content-Disposition'] = f'attachment; filename="{slug}.xml"'
+            return response
+        body = json.dumps(data, cls=DjangoJSONEncoder, ensure_ascii=False, indent=2)
+        response = HttpResponse(body, content_type='application/json; charset=utf-8')
+        response['Content-Disposition'] = f'attachment; filename="{slug}.json"'
+        return response
+
+    @action(detail=False, methods=['post'], url_path='import')
+    def import_project(self, request):
+        """Crée un NOUVEAU projet à partir d'un fichier produit par `export`
+        (JSON désérialisé par DRF) — voir `portability.import_project_data`.
+        N'écrase jamais un projet existant, même logique de sécurité que
+        `duplicate`. Corps de requête : soit le contenu exporté directement,
+        soit `{'data': ..., 'name': ..., 'client_name': ...}` pour renommer à
+        l'import sans modifier le fichier source. `import` est un mot réservé
+        Python — d'où `import_project`/`url_path='import'`, comme documenté
+        dans le docstring de module."""
+        payload = request.data
+        if isinstance(payload, dict) and 'data' in payload:
+            data = payload.get('data')
+            name = payload.get('name')
+            client_name = payload.get('client_name')
+        else:
+            data = payload
+            name = None
+            client_name = None
+        try:
+            new_project, counts = import_project_data(data, name=name, client_name=client_name)
+        except PortabilityError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        self._grant_owner_membership(new_project)
+        return Response(
+            {'project': ProjectSerializer(new_project).data, 'imported': counts},
+            status=status.HTTP_201_CREATED,
+        )
+
 
 class VenueViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewsets.ModelViewSet):
     """CRUD standard sur les lieux, filtrable par projet (`?project=<id>`).
@@ -629,6 +777,24 @@ class VenueViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewset
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return super().destroy(request, *args, **kwargs)
+
+    @action(detail=False, methods=['post'], url_path='import-csv')
+    def import_csv(self, request):
+        """Importe un CSV lieux (`{'project', 'mode', 'csv'}`, voir
+        `csv_import.import_venues_csv`) — `mode=replace` refuse (sans rien
+        supprimer) si un lieu existant est encore référencé par un spectacle
+        ou un arrêt de tournée, même logique que `destroy` ci-dessus."""
+        return _import_csv_response(request, import_venues_csv)
+
+    @action(detail=False, methods=['get'], url_path='export-csv')
+    def export_csv(self, request):
+        """Exporte les lieux du projet visé (`?project=<id>`) en CSV — voir
+        `csv_export.venues_export_rows`."""
+        project = _resolve_csv_project(request, request.query_params.get('project'), required_edit=False)
+        if project is None:
+            raise ValidationError({'project': "Le projet est requis."})
+        rows = venues_export_rows(project)
+        return csv_response('lieux.csv', VENUE_CSV_HEADER, rows)
 
 
 class MaterialCategoryViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewsets.ModelViewSet):
@@ -800,6 +966,28 @@ class MaterialViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, view
             'transports': get_material_transports(material, window_start, window_end),
         })
 
+    @action(detail=False, methods=['post'], url_path='import-csv')
+    def import_csv(self, request):
+        """Importe un CSV matériel (`{'project', 'mode', 'csv'}`, voir
+        `csv_import.import_materials_csv`) — export/import par section,
+        ajouté le 2026-08-04 pour un passage vers Excel."""
+        return _import_csv_response(request, import_materials_csv)
+
+    @action(detail=False, methods=['get'], url_path='export-csv')
+    def export_csv(self, request):
+        """Exporte le matériel du projet visé (`?project=<id>`) en CSV —
+        voir `csv_export.materials_export_rows`. `?include_inactive=false`
+        exclut le matériel désactivé (inclus par défaut, contrairement à
+        `GET /api/materials/`)."""
+        project = _resolve_csv_project(request, request.query_params.get('project'), required_edit=False)
+        if project is None:
+            raise ValidationError({'project': "Le projet est requis."})
+        include_inactive = request.query_params.get('include_inactive', 'true').strip().lower() not in (
+            'false', '0', 'non', 'no',
+        )
+        rows = materials_export_rows(project, include_inactive=include_inactive)
+        return csv_response('materiel.csv', MATERIAL_CSV_HEADER, rows)
+
 
 class ShowViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewsets.ModelViewSet):
     """CRUD standard sur les fiches spectacles, filtrable par projet (`?project=<id>`),
@@ -866,6 +1054,24 @@ class ShowViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewsets
         issues = get_show_coherence_report(show)
         return Response({'issues': issues, 'issue_count': len(issues)})
 
+    @action(detail=False, methods=['post'], url_path='import-csv')
+    def import_csv(self, request):
+        """Importe un CSV spectacles (`{'project', 'mode', 'csv'}`, voir
+        `csv_import.import_shows_csv`) — événements top-level uniquement, pas
+        de colonne pour rattacher un bloc à un parent (voir le docstring de
+        `import_shows_csv` — utiliser l'export/import JSON complet pour ça)."""
+        return _import_csv_response(request, import_shows_csv)
+
+    @action(detail=False, methods=['get'], url_path='export-csv')
+    def export_csv(self, request):
+        """Exporte les spectacles top-level du projet visé (`?project=<id>`)
+        en CSV — voir `csv_export.shows_export_rows`."""
+        project = _resolve_csv_project(request, request.query_params.get('project'), required_edit=False)
+        if project is None:
+            raise ValidationError({'project': "Le projet est requis."})
+        rows = shows_export_rows(project)
+        return csv_response('spectacles.csv', SHOW_CSV_HEADER, rows)
+
 
 class ShowMaterialViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
     """CRUD standard sur les assignations de matériel (validation de conflit dans le serializer).
@@ -912,6 +1118,22 @@ class TechnicianViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, vi
     queryset = Technician.objects.select_related('project').all()
     serializer_class = TechnicianSerializer
     permission_classes = [HasProjectAccess]
+
+    @action(detail=False, methods=['post'], url_path='import-csv')
+    def import_csv(self, request):
+        """Importe un CSV techniciens (`{'project', 'mode', 'csv'}`, voir
+        `csv_import.import_technicians_csv`)."""
+        return _import_csv_response(request, import_technicians_csv)
+
+    @action(detail=False, methods=['get'], url_path='export-csv')
+    def export_csv(self, request):
+        """Exporte les techniciens du projet visé (`?project=<id>`) en CSV —
+        voir `csv_export.technicians_export_rows`."""
+        project = _resolve_csv_project(request, request.query_params.get('project'), required_edit=False)
+        if project is None:
+            raise ValidationError({'project': "Le projet est requis."})
+        rows = technicians_export_rows(project)
+        return csv_response('techniciens.csv', TECHNICIAN_CSV_HEADER, rows)
 
 
 class ShowTechnicianViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):

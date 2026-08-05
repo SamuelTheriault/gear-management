@@ -191,6 +191,30 @@ class HasProjectAccess(BasePermission):
         return _has_role(profile, project_id, required)
 
 
+def can_access_project(request, project_id, required=ProjectMembership.ROLE_VIEWER):
+    """True si `request` a au moins le rôle `required` sur `project_id` —
+    version autonome de `_has_role`/`HasProjectAccess`, pour les actions
+    `@action` (detail=False) qui ne passent PAS par `get_object()` et donc
+    pas par `has_object_permission` (ex. `import-csv`/`export-csv`,
+    `ProjectViewSet.export`/`import_project` — voir views.py). Ces actions
+    doivent vérifier l'accès explicitement dans leur corps, avec le même
+    résultat 404 (pas 403) que le reste de l'API pour un accès insuffisant —
+    voir `CsvImportPermissionTests`/`ProjectExportImportAPITests`."""
+    if bypasses_project_access(request):
+        return True
+    profile = resolve_inventory_user(request)
+    if profile is None:
+        return False
+    return _has_role(profile, project_id, required)
+
+
+def can_edit_project(request, project_id):
+    """Raccourci `can_access_project(..., ROLE_EDITOR)` — le rôle minimal
+    pour une écriture (import CSV, import JSON complet), même seuil que le
+    reste de l'API en dehors des actions `owner_only_actions`."""
+    return can_access_project(request, project_id, ProjectMembership.ROLE_EDITOR)
+
+
 class IsStaffGlobal(BasePermission):
     """Réservé aux comptes staff (accès de dépannage plateforme, voir
     `User.is_staff_global`) — la liste complète des comptes de la plateforme
