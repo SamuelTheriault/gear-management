@@ -4,9 +4,10 @@ Tableau de bord manuel. À mettre à jour à chaque étape franchie ou décision
 prise. Complète `recapitulatif_projet.md` (contenu fonctionnel) sans le
 dupliquer — ce fichier ne suit que **l'avancement**, pas le scope.
 
-Dernière mise à jour : 2026-08-05 (suite) — **étape 19 mergée et
-déployée.** PR #22 mergée sur GitHub — confirmé côté Railway : déploiement
-SUCCESS du 2026-08-05 12:58 UTC.
+Dernière mise à jour : 2026-08-05 (suite) — **étape 20 prête** (tests des
+filtres `?show`/`?material`/`?technician` + correctif de renvoi
+`schema.md`/`architecture.md`) sur `chore/schema-xref-filter-tests-2026-08-05`,
+en attente de push/PR/merge par Samuel.
 
 ## Statut global
 
@@ -71,29 +72,13 @@ modèle backend) : voir « Points de vigilance ».
 | 17 | Export/import CSV par section (matériel/lieux/techniciens/spectacles) + export/import JSON complet du projet (réimportable) et XML (lecture seule) | ✅ Mergée dans `main` (PR #17) et déployée. `portability.py` réparé pour `TransportStop` (remappage des arrêts par position, pas par id). Revue `code-reviewer` : 1 bug corrigé (import replace des lieux ne bloquait pas sur le matériel qui en fait son origine, contrairement à `VenueViewSet.destroy`) + 2 suggestions de tests ajoutées (permissions `export-csv`, tournée à 3 arrêts). Suite à 393 tests, flake8 propre, aucune migration | 2026-08-05 |
 | 18 | Info-bulle flottante Dashboard/Parcours (`FloatingTooltip.vue`, remplace l'ancienne info-bulle CSS-only piégée par le clipping du défilement zoomé) + rattrapage de `schema.md`/`architecture.md`/`recapitulatif_projet.md` sur les étapes 14-17 | ✅ Mergée dans `main` (PR #18) et déployée. Extrait à la main de `wip/checkpoint-2026-08-04` (périmé — prédate les tournées, aurait régressé Transport/Dashboard si appliqué tel quel). Revue `code-reviewer` : code propre (aucune régression du checkpoint périmé), 1 oubli corrigé (doc rattrapée pas committée avec le code au premier passage). Frontend + doc seulement, aucun changement backend | 2026-08-05 |
 | 19 | Interface Import/Export (étape 17 côté frontend) : section « Import / Export » sur Réglages — export JSON/XML complet d'un projet, export CSV par section (matériel/lieux/techniciens/spectacles), import JSON (nouveau projet), import CSV par section (append/remplace, confirmé par modale) | ✅ Mergée dans `main` (PR #22) et déployée. Brouillon retrouvé déjà présent, non committé, dans l'arbre de travail — complété par le seul chaînon manquant (`api.downloadUrl()` dans `client.js`) plutôt que réécrit, après vérification champ par champ contre l'API réelle. Inclut au passage le rattrapage `CLAUDE.md` de l'étape 18 (tooltip), resté non committé lui aussi. Revue `code-reviewer` : rien à corriger, 3 suggestions mineures non bloquantes. Frontend + doc seulement, aucun changement backend | 2026-08-05 |
+| 20 | Correctif de renvoi `schema.md`/`architecture.md` (section 12 → 9 pour `transport_materials`) + tests des filtres `?show`/`?material`/`?technician` (`ShowMaterialViewSet`/`ShowTechnicianViewSet`/`TransportViewSet`) et `?project=` (`TransportViewSet`), jusqu'ici sans couverture | 🟡 Prête sur `chore/schema-xref-filter-tests-2026-08-05`, en attente de push/PR/merge. 8 tests ajoutés (`QueryParamFilterAPITests`), suite à 401 tests, flake8 propre, aucune migration | 2026-08-05 |
 
 ## Prochaine action concrète
 
-Aucune étape bloquante en attente — l'étape 19 (interface Import/Export)
-est mergée et déployée. Reste en approche ouverte :
-
-→ **Divergence de numérotation dans `schema.md`** (signalée par la revue
-de l'étape 18, non corrigée) : pas de section 12, un renvoi dans
-`architecture.md` (ligne ~210, `transport_materials`) pointe encore
-dessus alors que c'est en réalité la section 9. Pré-existante — à corriger
-si Samuel confirme que ça vaut le détour.
-
-→ **Nettoyage optionnel** : branche `wip/checkpoint-2026-08-04` entièrement
-vidée, peut être supprimée sur GitHub (les 4 fichiers/dossiers de l'arbre
-de travail flagués précédemment ont été supprimés le 2026-08-05, confirmé
-par Samuel).
-
-→ **Divergence de numérotation dans `schema.md`** (signalée par la revue
-de l'étape 18, non corrigée) : pas de section 12, un renvoi dans
-`architecture.md` (ligne ~210, `transport_materials`) pointe encore
-dessus alors que c'est en réalité la section 9. Pré-existante, pas
-introduite par l'étape 18 — à corriger si Samuel confirme que ça vaut le
-détour (toucherait potentiellement d'autres renvois croisés non audités).
+**Étape 20 à pousser/merger.** Reste en approche ouverte (backlog, non
+prioritaire pour l'instant — voir section Backlog) : listes de matériel par
+technicien, budget de location, géocodage d'adresse.
 
 ## Points de vigilance
 
@@ -128,14 +113,11 @@ détour (toucherait potentiellement d'autres renvois croisés non audités).
   documenté** (fonctionnalités frontend pures, sans modèle backend à
   décrire) : puces ⌘+clic, fermeture des modales à Échap, zoom + défilement
   Dashboard/Parcours, thème clair, info-bulle flottante — `CLAUDE.md` reste
-  la seule trace de ces détails d'implémentation Vue. **Divergence connue,
-  non corrigée** : `schema.md` n'a pas de section 12 (saut de numérotation
-  pré-existant), un renvoi dans `architecture.md` (~ligne 210) pointe
-  encore dessus pour `transport_materials`, en réalité section 9.
-- **Filtres `?show`/`?material`/`?technician` toujours sans test** — présents
-  dans `views.py` et utilisés par le frontend, mais aucun test ne les
-  couvre. Régression silencieuse possible (le frontend renverrait toutes les
-  assignations, tous projets confondus) — à couvrir en priorité.
+  la seule trace de ces détails d'implémentation Vue. Le renvoi cassé vers
+  `transport_materials` (`architecture.md`, ~ligne 210) est corrigé (étape
+  20) — `schema.md` garde volontairement son saut de numérotation (11 → 13,
+  pas de section 12) puisque plus rien n'y renvoie, pas de raison de
+  renuméroter.
 - `HelloWorld.vue` : résidu du scaffold Vue, plus importé nulle part — à
   supprimer au passage.
 - Railway ne supporte pas la phase `release:` — `migrate`/`collectstatic`

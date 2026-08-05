@@ -1454,6 +1454,158 @@ class ProjectScopingTests(TestCase):
         self.assertEqual(self.project_a.status, Project.STATUS_ARCHIVED)
 
 
+class QueryParamFilterAPITests(TestCase):
+    """Couvre `?show=`/`?material=`/`?technician=` (ShowMaterialViewSet,
+    ShowTechnicianViewSet, TransportViewSet) et `?project=` (TransportViewSet)
+    — ajoutés le 2026-07-28/29 (voir docstrings de `get_queryset` dans
+    `views.py`) mais jamais testés jusqu'ici (trou signalé dans
+    `suivi_projet.md`, « Points de vigilance »).
+
+    Le risque n'est pas hypothétique : ces ViewSets n'ont pas de
+    `filter_backends` configuré, donc DRF ignore silencieusement un
+    paramètre de requête qu'aucun `get_queryset` ne lit explicitement — une
+    régression sur ces méthodes (ex. renommage de paramètre, filtre retiré
+    par erreur) ne lèverait aucune erreur, elle ferait simplement fuiter
+    TOUTES les lignes, tous spectacles/techniciens/projets confondus,
+    exactement le bug trouvé le 2026-07-28 en portant `MaterielDetail`. Deux
+    projets distincts dans chaque test, pas seulement deux spectacles du même
+    projet, pour que ce scénario de fuite soit vraiment couvert."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin2', 'admin2@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+
+        self.project_a = Project.objects.create(name="Projet A")
+        self.project_b = Project.objects.create(name="Projet B")
+
+        self.venue_a = Venue.objects.create(project=self.project_a, name="Salle A")
+        self.venue_b = Venue.objects.create(project=self.project_b, name="Salle B")
+
+        self.material_a = Material.objects.create(project=self.project_a, name="Console A", category=_cat(self.project_a, "Audio"))
+        self.material_a2 = Material.objects.create(project=self.project_a, name="Console A2", category=_cat(self.project_a, "Audio"))
+        self.material_b = Material.objects.create(project=self.project_b, name="Console B", category=_cat(self.project_b, "Audio"))
+
+        self.technician_a = Technician.objects.create(project=self.project_a, name="Alex")
+        self.technician_a2 = Technician.objects.create(project=self.project_a, name="Bo")
+        self.technician_b = Technician.objects.create(project=self.project_b, name="Sam")
+
+        self.show_a = Show.objects.create(
+            project=self.project_a, title="Show A", venue=self.venue_a, event_type="rehearsal",
+            start_datetime=_dt(14), end_datetime=_dt(16),
+        )
+        self.show_a2 = Show.objects.create(
+            project=self.project_a, title="Show A2", venue=self.venue_a, event_type="rehearsal",
+            start_datetime=_dt(14, day=2), end_datetime=_dt(16, day=2),
+        )
+        self.show_b = Show.objects.create(
+            project=self.project_b, title="Show B", venue=self.venue_b, event_type="rehearsal",
+            start_datetime=_dt(14), end_datetime=_dt(16),
+        )
+
+    # --- ShowMaterialViewSet : ?show= / ?material= ---
+
+    def test_show_materials_filtered_by_show(self):
+        sm_a = ShowMaterial.objects.create(show=self.show_a, material=self.material_a)
+        ShowMaterial.objects.create(show=self.show_a2, material=self.material_a2)
+        ShowMaterial.objects.create(show=self.show_b, material=self.material_b)
+
+        response = self.client.get(f'/api/show-materials/?show={self.show_a.id}')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [row['id'] for row in response.data]
+        self.assertEqual(ids, [sm_a.id])
+
+    def test_show_materials_filtered_by_material(self):
+        ShowMaterial.objects.create(show=self.show_a, material=self.material_a)
+        sm_a2 = ShowMaterial.objects.create(show=self.show_a2, material=self.material_a2)
+        ShowMaterial.objects.create(show=self.show_b, material=self.material_b)
+
+        response = self.client.get(f'/api/show-materials/?material={self.material_a2.id}')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [row['id'] for row in response.data]
+        self.assertEqual(ids, [sm_a2.id])
+
+    def test_show_materials_without_filter_returns_everything(self):
+        # Comportement documenté (pas de restriction par défaut, comme
+        # ProjectFilteredMixin) -- confirme que ce n'est pas un oubli mais un
+        # choix : le frontend passe toujours ?show= ou ?material=.
+        ShowMaterial.objects.create(show=self.show_a, material=self.material_a)
+        ShowMaterial.objects.create(show=self.show_b, material=self.material_b)
+
+        response = self.client.get('/api/show-materials/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+
+    # --- ShowTechnicianViewSet : ?show= / ?technician= ---
+
+    def test_show_technicians_filtered_by_show(self):
+        st_a = ShowTechnician.objects.create(show=self.show_a, technician=self.technician_a)
+        ShowTechnician.objects.create(show=self.show_a2, technician=self.technician_a2)
+        ShowTechnician.objects.create(show=self.show_b, technician=self.technician_b)
+
+        response = self.client.get(f'/api/show-technicians/?show={self.show_a.id}')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [row['id'] for row in response.data]
+        self.assertEqual(ids, [st_a.id])
+
+    def test_show_technicians_filtered_by_technician(self):
+        ShowTechnician.objects.create(show=self.show_a, technician=self.technician_a)
+        st_a2 = ShowTechnician.objects.create(show=self.show_a2, technician=self.technician_a2)
+        ShowTechnician.objects.create(show=self.show_b, technician=self.technician_b)
+
+        response = self.client.get(f'/api/show-technicians/?technician={self.technician_a2.id}')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [row['id'] for row in response.data]
+        self.assertEqual(ids, [st_a2.id])
+
+    # --- TransportViewSet : ?show= / ?technician= / ?project= ---
+
+    def test_transports_filtered_by_show(self):
+        storage_a = Venue.objects.create(project=self.project_a, name="Entrepôt A", is_storage=True)
+        storage_b = Venue.objects.create(project=self.project_b, name="Entrepôt B", is_storage=True)
+        t_a = _creer_transport(show=self.show_a, origin_venue=storage_a, destination_venue=self.venue_a, scheduled_datetime=_dt(10))
+        _creer_transport(show=self.show_a2, origin_venue=storage_a, destination_venue=self.venue_a, scheduled_datetime=_dt(10, day=2))
+        _creer_transport(show=self.show_b, origin_venue=storage_b, destination_venue=self.venue_b, scheduled_datetime=_dt(10))
+
+        response = self.client.get(f'/api/transports/?show={self.show_a.id}')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [row['id'] for row in response.data]
+        self.assertEqual(ids, [t_a.id])
+
+    def test_transports_filtered_by_technician(self):
+        storage_a = Venue.objects.create(project=self.project_a, name="Entrepôt A", is_storage=True)
+        storage_b = Venue.objects.create(project=self.project_b, name="Entrepôt B", is_storage=True)
+        t_a = _transport_avec_technicien(
+            self.technician_a, show=self.show_a, origin_venue=storage_a,
+            destination_venue=self.venue_a, scheduled_datetime=_dt(10),
+        )
+        _transport_avec_technicien(
+            self.technician_a2, show=self.show_a2, origin_venue=storage_a,
+            destination_venue=self.venue_a, scheduled_datetime=_dt(10, day=2),
+        )
+        _transport_avec_technicien(
+            self.technician_b, show=self.show_b, origin_venue=storage_b,
+            destination_venue=self.venue_b, scheduled_datetime=_dt(10),
+        )
+
+        response = self.client.get(f'/api/transports/?technician={self.technician_a.id}')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [row['id'] for row in response.data]
+        self.assertEqual(ids, [t_a.id])
+
+    def test_transports_filtered_by_project(self):
+        storage_a = Venue.objects.create(project=self.project_a, name="Entrepôt A", is_storage=True)
+        storage_b = Venue.objects.create(project=self.project_b, name="Entrepôt B", is_storage=True)
+        t_a = _creer_transport(show=self.show_a, origin_venue=storage_a, destination_venue=self.venue_a, scheduled_datetime=_dt(10))
+        t_a2 = _creer_transport(show=self.show_a2, origin_venue=storage_a, destination_venue=self.venue_a, scheduled_datetime=_dt(10, day=2))
+        _creer_transport(show=self.show_b, origin_venue=storage_b, destination_venue=self.venue_b, scheduled_datetime=_dt(10))
+
+        response = self.client.get(f'/api/transports/?project={self.project_a.id}')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = sorted(row['id'] for row in response.data)
+        self.assertEqual(ids, sorted([t_a.id, t_a2.id]))
+
+
 class ProjectDuplicationTests(TestCase):
     """Vérifie `POST /api/projects/{id}/duplicate/` (ajouté le 2026-07-19) :
     copie lieux/matériel/techniciens vers un nouveau projet, hiérarchie de
