@@ -11,6 +11,15 @@ du 2026-08-04, commit `9cd1d42` = merge de la PR #16 (onboarding), précédé
 de la PR #15 (tournées). Les deux derniers chantiers sont passés par une
 revue `code-reviewer` avant merge, chacune ayant trouvé et fait corriger un
 vrai problème avant qu'il n'atteigne la prod (voir étapes 15 et 16
+Dernière mise à jour : 2026-08-04 (suite) — **toutes les étapes du plan
+initial (1 à 16) sont faites, mergées et déployées.** Confirmé côté
+Railway : dernier déploiement SUCCESS du 2026-08-04, commit `9cd1d42` =
+merge de la PR #16 (onboarding), précédé de la PR #15 (tournées).
+`feature/import-export` (étape 17, export/import CSV + JSON complet du
+projet) est **committée localement, prête à pousser** — pas encore en PR.
+Chacun des trois derniers chantiers est passé par une revue
+`code-reviewer` avant merge, chacun ayant trouvé et fait corriger un vrai
+problème avant qu'il n'atteigne la prod (voir étapes 15, 16 et 17
 ci-dessous).
 
 ## Statut global
@@ -47,6 +56,19 @@ importent `csv_export.py`/`test_portability.py` qui n'existent que sur
 `wip/checkpoint-2026-08-04` — **tant que c'est le cas, `manage.py test`
 casse sur ImportError dans ce dossier.** À assembler dans
 `feature/import-export`.
+**Reste en dehors du dépôt principal** : `wip/checkpoint-2026-08-04` contient
+encore le tooltip flottant du Dashboard/Parcours (`FloatingTooltip.vue`) —
+pas de branche dédiée, à trier séparément (voir « Prochaine action
+concrète »). `portability.py`/`csv_export.py`/`test_portability.py` en ont
+été rapatriés dans `feature/import-export` (voir étape 17).
+
+**Étape 17 assemblée (2026-08-04, suite)** : `feature/import-export` réunit
+`csv_import.py`/`test_csv_import.py` (déjà écrits par Samuel) et
+`portability.py`/`csv_export.py`/`test_portability.py` (rapatriés depuis
+`wip/checkpoint-2026-08-04`, réparés pour le modèle `TransportStop` — voir
+étape 17). Deux commits locaux, suite complète (393 tests) verte, flake8
+propre, aucune migration — **committé, pas encore poussé** (le bac à sable
+Claude n'a pas les credentials git, comme d'habitude).
 
 **Désync doc/code toujours présente** (voir « Points de vigilance ») :
 `recapitulatif_projet.md`/`schema.md`/`architecture.md` restent en retard
@@ -96,6 +118,18 @@ fraîche depuis `main`, y rapatrier `portability.py`/`csv_export.py`/
 puis câbler les actions `import_csv` dans `views.py` (pas encore fait).
 Même routine que les deux dernières fois : vérif (flake8, migrations,
 tests) puis revue `code-reviewer` avant merge.
+| 17 | Export/import CSV par section (matériel/lieux/techniciens/spectacles) + export/import JSON complet du projet (réimportable) et XML (lecture seule) | ✅ Committé sur `feature/import-export`, pas encore poussé/PR. `portability.py` réparé pour `TransportStop` (remappage des arrêts par position, pas par id). Revue `code-reviewer` : 1 bug corrigé (import replace des lieux ne bloquait pas sur le matériel qui en fait son origine, contrairement à `VenueViewSet.destroy`) + 2 suggestions de tests ajoutées (permissions `export-csv`, tournée à 3 arrêts). Suite à 393 tests, flake8 propre, aucune migration | 2026-08-04 |
+
+## Prochaine action concrète
+
+→ **Pousser `feature/import-export` et ouvrir la PR** (étape 17, prête —
+voir tableau ci-dessus). Le bac à sable Claude n'a pas les credentials git :
+depuis ton poste, `git push -u origin feature/import-export` puis PR sur
+GitHub. Les nouvelles actions API : `POST/GET /api/{materials,venues,
+technicians,shows}/import-csv/` et `/export-csv/`, plus
+`GET /api/projects/{id}/export/` (`?format=xml` pour le XML) et
+`POST /api/projects/import/`. Rien côté frontend pour l'instant (pas
+demandé) — juste les endpoints.
 
 → **`wip/checkpoint-2026-08-04` à trier** : le tooltip flottant
 du Dashboard/Parcours (`FloatingTooltip.vue`, remplace l'ancienne info-bulle
@@ -136,6 +170,10 @@ dédiée — à extraire séparément si Samuel veut le garder.
 - **🟡 `wip/checkpoint-2026-08-04` non trié** — code pour CSV import/export
   et tooltip flottant, pas encore en branche propre. Voir « Prochaine action
   concrète ».
+- **🟡 `wip/checkpoint-2026-08-04` : reste le tooltip flottant** — plus de
+  code CSV import/export dessus (rapatrié dans `feature/import-export`),
+  seul `FloatingTooltip.vue` (Dashboard/Parcours) n'a pas encore de branche
+  propre. Voir « Prochaine action concrète ».
 - **🔴 Désync doc/code** — `recapitulatif_projet.md` reste en retard sur
   `CLAUDE.md` pour plusieurs fonctionnalités déjà codées et déployées :
   puces ⌘+clic, fermeture des modales à Échap, zoom + défilement sur
@@ -143,6 +181,9 @@ dédiée — à extraire séparément si Samuel veut le garder.
   (`ProjectMembership`), tournées multi-arrêts, onboarding de projet,
   suppression cascade. `Material.is_kit_parent` et les couleurs
   personnalisables de `Settings` restent absentes même de `CLAUDE.md`.
+  suppression cascade, export/import CSV+JSON (étape 17).
+  `Material.is_kit_parent` et les couleurs personnalisables de `Settings`
+  restent absentes même de `CLAUDE.md`.
 - **Filtres `?show`/`?material`/`?technician` toujours sans test** — présents
   dans `views.py` et utilisés par le frontend, mais aucun test ne les
   couvre. Régression silencieuse possible (le frontend renverrait toutes les
