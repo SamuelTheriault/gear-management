@@ -83,10 +83,10 @@ de l'étape 18, non corrigée) : pas de section 12, un renvoi dans
 dessus alors que c'est en réalité la section 9. Pré-existante — à corriger
 si Samuel confirme que ça vaut le détour.
 
-→ **Nettoyage optionnel** : fichiers marqués à supprimer (`_to_delete/`,
-`backend/db.sqlite3.avant-tournees`, `frontend/_to_delete_dist_check/`,
-`_to_delete_dist_check2/`) en attente de confirmation de Samuel ; branche
-`wip/checkpoint-2026-08-04` entièrement vidée, peut être supprimée.
+→ **Nettoyage optionnel** : branche `wip/checkpoint-2026-08-04` entièrement
+vidée, peut être supprimée sur GitHub (les 4 fichiers/dossiers de l'arbre
+de travail flagués précédemment ont été supprimés le 2026-08-05, confirmé
+par Samuel).
 
 → **Divergence de numérotation dans `schema.md`** (signalée par la revue
 de l'étape 18, non corrigée) : pas de section 12, un renvoi dans
@@ -117,10 +117,6 @@ détour (toucherait potentiellement d'autres renvois croisés non audités).
   par-dessus. (Le `git fetch` est impossible depuis le bac à sable Claude —
   confirmé à nouveau le 2026-08-05 : « Host key verification failed » ; le
   statut de déploiement est vérifié via l'API Railway, pas via git.)
-- **🟡 Fichiers à nettoyer dans l'arbre de travail** (untracked, rien
-  supprimé automatiquement — confirmation de Samuel requise) : `_to_delete/`,
-  `backend/db.sqlite3.avant-tournees`, `frontend/_to_delete_dist_check/` et
-  `_to_delete_dist_check2/`.
 - **Un seul chantier de code à la fois dans ce dossier** — voir l'incident
   du 2026-08-04 en « Statut global ». Deux sessions Cowork simultanées sur
   le même dossier peuvent se marcher dessus (branche qui change seule,
