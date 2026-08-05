@@ -28,6 +28,23 @@ contenait bien tout ce qui semblait manquant) et le travail des deux
 sessions a pu être mergé proprement. **Leçon à respecter à l'avenir : une
 seule session Cowork à la fois doit toucher le dossier de travail.**
 
+**Reste en dehors du dépôt principal** : `wip/checkpoint-2026-08-04`
+contient un chantier non encore scindé en branche propre — export/
+portabilité CSV (`portability.py`, `csv_export.py`) et le tooltip flottant
+du Dashboard/Parcours (`FloatingTooltip.vue`). Samuel prépare une nouvelle
+branche dédiée à l'import/export pour la suite ; le tooltip flottant reste
+à trier séparément (voir « Prochaine action concrète »).
+
+**Nouveau depuis la dernière vérification (constaté le 2026-08-04 en fin de
+journée)** : l'import CSV est commencé — `csv_import.py` +
+`test_csv_import.py` (15 tests) sont dans l'arbre de travail, **non
+commités** (untracked, sur la branche `docs/suivi-post-merge-2026-08-04`).
+Pas encore branchés dans `views.py` (aucune action `import_csv` sur les
+ViewSets, contrairement à ce que les docstrings annoncent), et ils
+importent `csv_export.py`/`test_portability.py` qui n'existent que sur
+`wip/checkpoint-2026-08-04` — **tant que c'est le cas, `manage.py test`
+casse sur ImportError dans ce dossier.** À assembler dans
+`feature/import-export`.
 **Reste en dehors du dépôt principal** : `wip/checkpoint-2026-08-04` contient
 encore le tooltip flottant du Dashboard/Parcours (`FloatingTooltip.vue`) —
 pas de branche dédiée, à trier séparément (voir « Prochaine action
@@ -101,6 +118,12 @@ dédiée — à extraire séparément si Samuel veut le garder.
 
 ## Points de vigilance
 
+- **🔴 `manage.py test` casse actuellement dans l'arbre de travail** :
+  `test_csv_import.py` (untracked) importe `csv_export.py` qui n'est pas
+  dans l'arbre (seulement sur `wip/checkpoint-2026-08-04`) — le découvreur
+  de tests Django échoue en ImportError. Se résout en assemblant
+  `feature/import-export` (ou en déplaçant temporairement les deux fichiers
+  untracked hors du package).
 - **🟡 `main` local a divergé de GitHub** : les étapes 15-16 ont été mergées
   localement (merges directs) PUIS via les PR #15/#16 sur GitHub (commits de
   merge différents, `9cd1d42` en tête là-bas) ; l'étape 17 (PR #17) a
@@ -125,6 +148,9 @@ dédiée — à extraire séparément si Samuel veut le garder.
   le même dossier peuvent se marcher dessus (branche qui change seule,
   fichier modifié en double, lock git orphelin). Rien perdu cette fois, mais
   à éviter activement.
+- **🟡 `wip/checkpoint-2026-08-04` non trié** — code pour CSV import/export
+  et tooltip flottant, pas encore en branche propre. Voir « Prochaine action
+  concrète ».
 - **🟡 `wip/checkpoint-2026-08-04` : reste le tooltip flottant** — plus de
   code CSV import/export dessus (rapatrié dans `feature/import-export`),
   seul `FloatingTooltip.vue` (Dashboard/Parcours) n'a pas encore de branche
@@ -134,6 +160,8 @@ dédiée — à extraire séparément si Samuel veut le garder.
   puces ⌘+clic, fermeture des modales à Échap, zoom + défilement sur
   Dashboard/Parcours, thème clair, gestion des accès par projet
   (`ProjectMembership`), tournées multi-arrêts, onboarding de projet,
+  suppression cascade. `Material.is_kit_parent` et les couleurs
+  personnalisables de `Settings` restent absentes même de `CLAUDE.md`.
   suppression cascade, export/import CSV+JSON (étape 17).
   `Material.is_kit_parent` et les couleurs personnalisables de `Settings`
   restent absentes même de `CLAUDE.md`.
@@ -150,6 +178,10 @@ dédiée — à extraire séparément si Samuel veut le garder.
 - Protection de branche `main` activée sur GitHub (confirmé le 2026-08-03) —
   PR obligatoire + 2 status checks, y compris pour un changement
   documentation seule.
+- ~~Protection de branche `main` non activée sur GitHub~~ — **résolu**,
+  confirmé activée le 2026-08-03 (push direct sur `main` refusé : « Changes
+  must be made through a pull request », 2 status checks requis). Tout
+  changement, même documentation seule, passe maintenant par une PR.
 - L'estimation automatique de trajet (Google Routes API) reste non testable
   en conditions réelles dans le bac à sable Claude (pas de réseau) — se
   dégrade silencieusement sur la valeur par défaut si la clé est absente.
