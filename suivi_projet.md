@@ -97,6 +97,12 @@ détour (toucherait potentiellement d'autres renvois croisés non audités).
 
 ## Points de vigilance
 
+- **🔴 `manage.py test` casse actuellement dans l'arbre de travail** :
+  `test_csv_import.py` (untracked) importe `csv_export.py` qui n'est pas
+  dans l'arbre (seulement sur `wip/checkpoint-2026-08-04`) — le découvreur
+  de tests Django échoue en ImportError. Se résout en assemblant
+  `feature/import-export` (ou en déplaçant temporairement les deux fichiers
+  untracked hors du package).
 - **🟡 `main` local a divergé de GitHub** : les étapes 15-16 ont été mergées
   localement (merges directs) PUIS via les PR #15/#16 sur GitHub (commits de
   merge différents, `9cd1d42` en tête là-bas) ; les étapes 17 et 18 ont
@@ -145,6 +151,10 @@ détour (toucherait potentiellement d'autres renvois croisés non audités).
 - Protection de branche `main` activée sur GitHub (confirmé le 2026-08-03) —
   PR obligatoire + 2 status checks, y compris pour un changement
   documentation seule.
+- ~~Protection de branche `main` non activée sur GitHub~~ — **résolu**,
+  confirmé activée le 2026-08-03 (push direct sur `main` refusé : « Changes
+  must be made through a pull request », 2 status checks requis). Tout
+  changement, même documentation seule, passe maintenant par une PR.
 - L'estimation automatique de trajet (Google Routes API) reste non testable
   en conditions réelles dans le bac à sable Claude (pas de réseau) — se
   dégrade silencieusement sur la valeur par défaut si la clé est absente.
