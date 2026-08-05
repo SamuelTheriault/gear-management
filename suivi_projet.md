@@ -4,13 +4,10 @@ Tableau de bord manuel. À mettre à jour à chaque étape franchie ou décision
 prise. Complète `recapitulatif_projet.md` (contenu fonctionnel) sans le
 dupliquer — ce fichier ne suit que **l'avancement**, pas le scope.
 
-Dernière mise à jour : 2026-08-05 (suite) — étapes 1 à 17 mergées et
-déployées. **Étape 18 (info-bulle flottante Dashboard/Parcours + rattrapage
-doc de référence) committée sur `feature/floating-tooltip`, prête à
-pousser** — pas encore en PR. Revue `code-reviewer` : rien de bloquant sur
-le code (aucune régression du checkpoint périmé dont le tooltip a été
-extrait), 1 oubli corrigé avant push (la doc rattrapée n'avait pas été
-committée avec le code).
+Dernière mise à jour : 2026-08-05 (suite) — **toutes les étapes du plan (1
+à 18) sont faites, mergées et déployées.** PR #18 (tooltip flottant +
+rattrapage doc de référence) mergée sur GitHub et déployée — confirmé côté
+Railway : dernier déploiement SUCCESS du 2026-08-05 10:51 UTC.
 
 ## Statut global
 
@@ -29,23 +26,17 @@ contenait bien tout ce qui semblait manquant) et le travail des deux
 sessions a pu être mergé proprement. **Leçon à respecter à l'avenir : une
 seule session Cowork à la fois doit toucher le dossier de travail.**
 
-**Reste en dehors du dépôt principal** : `wip/checkpoint-2026-08-04` contient
-encore le tooltip flottant du Dashboard/Parcours (`FloatingTooltip.vue`) —
-pas de branche dédiée, à trier séparément (voir « Prochaine action
-concrète »). `portability.py`/`csv_export.py`/`test_portability.py` en ont
-été rapatriés dans `feature/import-export` (voir étape 17).
+**`wip/checkpoint-2026-08-04` entièrement traité** : tout ce qui était
+récupérable en a été extrait — CSV import/export (étape 17) et tooltip
+flottant (étape 18). Le reste du checkpoint est périmé (prédate les
+tournées multi-arrêts) — la branche peut être nettoyée à l'occasion.
 
-**Étape 17 assemblée (2026-08-04, suite)** : `feature/import-export` réunit
-`csv_import.py`/`test_csv_import.py` (déjà écrits par Samuel) et
-`portability.py`/`csv_export.py`/`test_portability.py` (rapatriés depuis
-`wip/checkpoint-2026-08-04`, réparés pour le modèle `TransportStop` — voir
-étape 17). Deux commits locaux, suite complète (393 tests) verte, flake8
-propre, aucune migration — **committé, pas encore poussé** (le bac à sable
-Claude n'a pas les credentials git, comme d'habitude).
-
-**Désync doc/code toujours présente** (voir « Points de vigilance ») :
-`recapitulatif_projet.md`/`schema.md`/`architecture.md` restent en retard
-sur plusieurs fonctionnalités déjà codées et déployées.
+**Doc de référence rattrapée** (étape 18, 2026-08-05) :
+`schema.md`/`architecture.md`/`recapitulatif_projet.md` ont été mis à jour
+sur les étapes 14-17 (accès par projet, tournées multi-arrêts, suppression
+cascade, export/import CSV+JSON, `Venue.color`, `Material.is_kit_parent`.
+Reste volontairement non documenté (fonctionnalités frontend pures, sans
+modèle backend) : voir « Points de vigilance ».
 
 ## Ordre à respecter (ne pas brûler d'étape)
 
@@ -79,16 +70,12 @@ sur plusieurs fonctionnalités déjà codées et déployées.
 | 15 | Module transport en tournées multi-arrêts : `TransportStop`, matériel par portion, retrait de `transport_type`, migration `0025`, manifeste par arrêt | ✅ Mergée dans `main` et déployée. Revue `code-reviewer` : 1 correctif (durée négative acceptée sur le chemin de compat A→B) | 2026-08-04 |
 | 16 | Onboarding de projet (écran bloquant + garde de route), suppression cascade de projet/matériel/technicien | ✅ Mergée dans `main` et déployée — migration `0026` (renumérotée depuis `0025`, collision avec l'étape 15 résolue). Revue `code-reviewer` : 1 **bug bloquant** corrigé (`DELETE /api/projects/{id}/` en 500 sur tout projet réel) + exemption `/utilisateurs` de la garde d'onboarding | 2026-08-04 |
 | 17 | Export/import CSV par section (matériel/lieux/techniciens/spectacles) + export/import JSON complet du projet (réimportable) et XML (lecture seule) | ✅ Mergée dans `main` (PR #17) et déployée. `portability.py` réparé pour `TransportStop` (remappage des arrêts par position, pas par id). Revue `code-reviewer` : 1 bug corrigé (import replace des lieux ne bloquait pas sur le matériel qui en fait son origine, contrairement à `VenueViewSet.destroy`) + 2 suggestions de tests ajoutées (permissions `export-csv`, tournée à 3 arrêts). Suite à 393 tests, flake8 propre, aucune migration | 2026-08-05 |
-| 18 | Info-bulle flottante Dashboard/Parcours (`FloatingTooltip.vue`, remplace l'ancienne info-bulle CSS-only piégée par le clipping du défilement zoomé) + rattrapage de `schema.md`/`architecture.md`/`recapitulatif_projet.md` sur les étapes 14-17 | ✅ Committé sur `feature/floating-tooltip`, pas encore poussé/PR. Extrait à la main de `wip/checkpoint-2026-08-04` (périmé — prédate les tournées, aurait régressé Transport/Dashboard si appliqué tel quel). Revue `code-reviewer` : code propre (aucune régression du checkpoint périmé), 1 oubli corrigé (doc rattrapée pas committée avec le code au premier passage). Frontend + doc seulement, aucun changement backend | 2026-08-05 |
+| 18 | Info-bulle flottante Dashboard/Parcours (`FloatingTooltip.vue`, remplace l'ancienne info-bulle CSS-only piégée par le clipping du défilement zoomé) + rattrapage de `schema.md`/`architecture.md`/`recapitulatif_projet.md` sur les étapes 14-17 | ✅ Mergée dans `main` (PR #18) et déployée. Extrait à la main de `wip/checkpoint-2026-08-04` (périmé — prédate les tournées, aurait régressé Transport/Dashboard si appliqué tel quel). Revue `code-reviewer` : code propre (aucune régression du checkpoint périmé), 1 oubli corrigé (doc rattrapée pas committée avec le code au premier passage). Frontend + doc seulement, aucun changement backend | 2026-08-05 |
 
 ## Prochaine action concrète
 
-→ **Pousser `feature/floating-tooltip` et ouvrir la PR** (étape 18, prête —
-voir tableau ci-dessus). `git push -u origin feature/floating-tooltip` puis
-PR sur GitHub. Un seul commit, 9 fichiers (tooltip + les 3 docs de
-référence rattrapées).
-
-Après ça, plus rien de bloquant en attente. Reste en approche ouverte :
+Aucune étape bloquante en attente — l'étape 18 (tooltip flottant + doc
+rattrapée) est mergée et déployée. Reste en approche ouverte :
 
 → **Frontend de l'export/import CSV+JSON** (étape 17) : les endpoints
 existent (`import-csv`/`export-csv` sur les 4 listes,
@@ -107,16 +94,18 @@ détour (toucherait potentiellement d'autres renvois croisés non audités).
 
 - **🟡 `main` local a divergé de GitHub** : les étapes 15-16 ont été mergées
   localement (merges directs) PUIS via les PR #15/#16 sur GitHub (commits de
-  merge différents, `9cd1d42` en tête là-bas) ; l'étape 17 (PR #17) a
-  ensuite été mergée directement sur GitHub sans passer par un merge local
-  équivalent — le `main` local du bac à sable est donc maintenant encore
-  plus en retard sur `origin/main` (contenu identique jusqu'à `9cd1d42`,
-  divergent ensuite). Au prochain passage sur `main` : `git fetch` puis
+  merge différents, `9cd1d42` en tête là-bas) ; les étapes 17 et 18 ont
+  ensuite été mergées directement sur GitHub sans passer par un merge local
+  équivalent — le `main` local du bac à sable est donc encore plus en
+  retard sur `origin/main` (contenu identique jusqu'à `9cd1d42`, divergent
+  ensuite). Chaque nouvelle branche de travail continue de partir du dernier
+  état connu localement (pas de `main` fraîchement fetché) — sans incident
+  jusqu'ici (le contenu reste identique, seuls les SHA de merge diffèrent),
+  mais à garder en tête. Au prochain accès réseau : `git fetch` puis
   réaligner le `main` local sur `origin/main` plutôt que de pousser
   par-dessus. (Le `git fetch` est impossible depuis le bac à sable Claude —
-  confirmé de nouveau en tentant ce fetch le 2026-08-05 : « Host key
-  verification failed » ; le statut de déploiement est vérifié via l'API
-  Railway, pas via git.)
+  confirmé à nouveau le 2026-08-05 : « Host key verification failed » ; le
+  statut de déploiement est vérifié via l'API Railway, pas via git.)
 - **🟡 Fichiers à nettoyer dans l'arbre de travail** (untracked, rien
   supprimé automatiquement — confirmation de Samuel requise) : `_to_delete/`,
   `backend/db.sqlite3.avant-tournees`, `frontend/_to_delete_dist_check/` et
