@@ -11,13 +11,14 @@ Application web interne pour gérer l'inventaire de matériel de production (son
 - **Fiches spectacles (`shows`)** : titre, lieu, type (répétition/représentation), horaires. Une fenêtre effective d'utilisation est calculée automatiquement en ajoutant 1h avant et 1h après (buffers configurables) pour couvrir le transport et l'installation.
 - **Assignation de matériel** (`show_materials`) : associer du matériel de l'inventaire à un spectacle, avec une quantité (`quantity`, défaut 1 — ex. assigner 5 des 20 rallonges en inventaire) et possibilité d'indiquer si ce matériel est loué spécifiquement pour ce spectacle (`is_rental` + `rental_vendor`).
 - **Techniciens** (`technicians`) et leur assignation aux spectacles (`show_technicians`).
-- **Déplacements (`transports`)** : livraison/ramassage de matériel entre deux lieux pour un spectacle donné, avec heure prévue, durée estimée et technicien assigné — voir note dédiée plus bas.
+- **Déplacements (`transports`)** : depuis le 2026-08-04, une **tournée** — une séquence ordonnée d'arrêts (`transport_stops`), plus seulement un aller A → B — avec heure de départ, durée par segment et technicien(s) assigné(s). Voir note dédiée plus bas.
 - **Détection de conflits** : le système vérifie automatiquement, pour le matériel comme pour les techniciens, qu'il n'y a pas de chevauchement entre les fenêtres effectives de deux spectacles différents — et, depuis l'ajout de `transports`, qu'un technicien n'est pas sur un spectacle en même temps qu'il fait un déplacement.
 - **Listes par technicien** : possibilité de sortir une liste de matériel et d'horaire propre à chaque technicien, utile sur le terrain.
-- **Authentification** : login via Google OAuth (pas de gestion de mot de passe custom), avec rôles admin / viewer.
-- **Réglages globaux (`settings`)** : buffers par défaut, durée de transport par défaut, format d'affichage des dates/heures — ajustables via l'API sans redéploiement, en prévision d'une page de réglages côté frontend. Voir note dédiée plus bas.
-- **Productions (`projects`)** : Samuel travaille en parallèle sur plusieurs productions sans rien en commun (compagnies de danse, musées, biennales) — `venues`, `materials`, `technicians` et `shows` sont isolés par production, `settings` reste commun à toutes. Bascule d'une production à l'autre entièrement côté frontend (à venir), sans recharger/exporter de fichier. Voir note dédiée plus bas.
+- **Authentification** : login via Google OAuth (pas de gestion de mot de passe custom). `User.role` (admin/viewer) est un rôle global purement d'affichage depuis le 2026-08-02 — l'accès réel est **par projet**, via `ProjectMembership` (owner/editor/viewer). Voir note dédiée plus bas.
+- **Réglages globaux (`settings`)** : buffers par défaut, durée de transport par défaut, format d'affichage des dates/heures, couleurs des types d'événement/du transport, ordre d'affichage des types — ajustables via l'API sans redéploiement, reflétés dans une page de réglages côté frontend. Voir note dédiée plus bas.
+- **Productions (`projects`)** : Samuel travaille en parallèle sur plusieurs productions sans rien en commun (compagnies de danse, musées, biennales) — `venues`, `material_categories`, `materials`, `technicians` et `shows` sont isolés par production, `settings` reste commun à toutes. Bascule d'une production à l'autre entièrement côté frontend, sans recharger/exporter de fichier. Une production peut être archivée ou, depuis le 2026-08-04, supprimée définitivement (cascade complète). Voir notes dédiées plus bas.
 - **Duplication de projet** (`POST /api/projects/{id}/duplicate/`) : démarrer une nouvelle édition d'un mandat (ex. Furies 2027 après Furies 2026) en copiant lieux/matériel/techniciens de l'édition précédente, sans copier ni spectacles ni assignations — le calendrier repart vierge. Voir note dédiée plus bas.
+- **Export/import** (2026-08-04) : CSV par section (matériel/lieux/techniciens/spectacles, pour un passage par Excel) et export/import JSON (ou XML en lecture seule) d'un projet complet, pour l'archiver ou le faire migrer vers une autre instance. Voir note dédiée plus bas.
 
 ## Ce qui a été volontairement exclu de la V1
 
@@ -39,7 +40,7 @@ Application web interne pour gérer l'inventaire de matériel de production (son
 
 ## Tables principales
 
-`users` · `venues` · `materials` (avec hiérarchie parent/enfant + catégorie) · `shows` · `show_materials` · `technicians` · `show_technicians` · `transports` (ajoutée le 2026-07-18) · `settings` (singleton, ajoutée le 2026-07-18) · `projects` (ajoutée le 2026-07-19 — isole `venues`/`materials`/`technicians`/`shows`) · `transport_materials` (liaison transport↔matériel, ajoutée le 2026-07-24 — alimente le module de cohérence des emplacements)
+`users` · `venues` · `materials` (avec hiérarchie parent/enfant + catégorie) · `shows` · `show_materials` · `technicians` · `show_technicians` · `transports` (ajoutée le 2026-07-18) · `transport_stops` (arrêts d'une tournée, ajoutée le 2026-08-04) · `settings` (singleton, ajoutée le 2026-07-18) · `projects` (ajoutée le 2026-07-19 — isole `venues`/`material_categories`/`materials`/`technicians`/`shows`, en `CASCADE` depuis le 2026-08-04) · `material_categories` (ajoutée le 2026-07-30, remplace `Material.category` figé) · `transport_technicians` (liaison transport↔technicien, ajoutée le 2026-07-30) · `transport_materials` (liaison transport↔matériel, ajoutée le 2026-07-24 — alimente le module de cohérence des emplacements) · `project_memberships` (accès par projet, ajoutée le 2026-08-02)
 
 `departments` (table avec couleur d'identification par département) a été ajoutée le 2026-07-18 puis **retirée le 2026-07-29** — voir note dédiée plus bas.
 
@@ -63,6 +64,12 @@ Détails complets des champs → voir `schema.md`.
 14. ~~Duplication de projet (`POST /api/projects/{id}/duplicate/`) pour démarrer une nouvelle édition d'un mandat.~~ ✅ (2026-07-19) — voir note ci-dessous
 15. ~~Code court par lieu (`Venue.code`).~~ ✅ (2026-07-19) — voir note ci-dessous
 16. ~~Conflit de lieu entre spectacles.~~ ✅ (2026-07-19) — voir note ci-dessous
+17. ~~Gestion des accès par projet (multi-tenant, `ProjectMembership`).~~ ✅ (2026-08-02) — voir note ci-dessous
+18. ~~Frontend en ligne (Django sert le build Vue via WhiteNoise).~~ ✅ (2026-08-03) — voir note ci-dessous
+19. ~~Tournées multi-arrêts (`TransportStop`, backend + frontend).~~ ✅ (2026-08-04) — voir note ci-dessous
+20. ~~Suppression d'un projet (cascade complète).~~ ✅ (2026-08-04) — voir note ci-dessous
+21. ~~Export/import CSV par section + export/import JSON/XML complet d'un projet.~~ ✅ (2026-08-04) — voir note ci-dessous
+22. ~~Écran d'onboarding bloquant pour un compte sans projet.~~ ✅ (2026-08-04) — voir note ci-dessous
 
 ### Notes de déploiement (piège à retenir)
 
@@ -1237,6 +1244,157 @@ de chaque ligne.
   été retiré : il aurait menti dès le premier réordonnancement.
 - 8 tests (`EventTypeOrderTests`). Suite complète à **340 tests**, flake8
   propre.
+
+### Note sur la gestion des accès par projet (étape 17, 2026-08-02)
+
+- Constat de départ, en vue de vendre des abonnements à l'outil à d'autres
+  directeurs techniques/compagnies : il n'y avait **aucune isolation
+  multi-tenant réelle** — `IsAuthenticated` seul suffisait, n'importe quel
+  compte provisionné (même pensé `viewer`) pouvait lire ET modifier tous les
+  projets de tout le monde via l'API. `?project=<id>` n'était qu'un filtre
+  optionnel, pas une barrière.
+- Nouveau modèle `ProjectMembership` (table `project_memberships`) : relie un
+  `User` à un `Project` avec un rôle `owner`/`editor`/`viewer` et un statut
+  `pending`/`active`. Pas d'envoi de courriel automatique (aucune infra SMTP)
+  — une invitation reste « en attente » jusqu'au premier login Google de
+  l'email invité, qui l'active automatiquement.
+- `User.is_staff_global` (distinct de l'ancien `User.role`, qui devient
+  purement d'affichage côté frontend et ne gate plus rien côté API) donne un
+  accès de dépannage plateforme réservé à Samuel, qui court-circuite le
+  contrôle par projet.
+- `HasProjectAccess` (nouveau `backend/inventory/permissions.py`) est câblée
+  sur tous les ViewSets isolés par projet. Une LISTE ne renvoie jamais 403 :
+  elle est filtrée au queryset accessible (`ProjectMembershipQuerysetMixin`) ;
+  un détail d'un projet inaccessible répond 404, pas 403.
+- Bypass superutilisateur Django (`is_superuser`), en plus de
+  `is_staff_global` — nécessaire pour ne pas casser ~290 tests existants qui
+  s'authentifient via `create_superuser` sans profil applicatif.
+- Migration de données (`0020_project_access_data`) : Samuel devient `owner`
+  actif de tous les projets préexistants ; chaque compte `role='admin'`
+  devient `is_staff_global=True`. Gardée par `if not Project.objects.exists()`
+  pour ne pas polluer chaque base de test fraîchement créée.
+- 26 nouveaux tests (`test_project_access.py`). Suite complète à **317
+  tests**, flake8 propre. Migrations `0019_project_access` et
+  `0020_project_access_data`. Voir `architecture.md`, section 3bis.
+
+### Note sur le frontend en ligne (étape 18, 2026-08-03)
+
+- Le frontend n'était déployé nulle part — Railway ne servait que `backend/`.
+  Option retenue avec Samuel (comparatif à 3 options) : Django sert le build
+  Vue via WhiteNoise, même service Railway, plutôt qu'un 2e service ou un
+  hébergeur statique séparé.
+- Nouveau `Dockerfile` à la racine (build multi-étapes Node puis Python) —
+  le Root Directory du service Railway passe de `backend` à la racine du
+  repo. `frontend/vite.config.js` : `base` devient `/static/` en build.
+  Django sert `frontend/dist/assets` sous `/static/assets/...`, et un
+  catch-all (`config/urls.py`) sert `index.html` pour toute route non API
+  (à charge de vue-router de prendre le relais côté client).
+- Chemin de migration vers un hébergeur statique séparé gardé ouvert (le
+  frontend lit déjà `VITE_API_BASE_URL`, repli sur `/api` en même origine) —
+  pas fait maintenant.
+- Vérifié en bac à sable : build + `collectstatic` + route SPA profonde en
+  200 + `/api/venues/` toujours 403 (pas avalé par le catch-all) +
+  `/admin/login/` en 200. flake8 propre, `makemigrations --check` propre.
+
+### Note sur les tournées multi-arrêts (étape 19, 2026-08-04)
+
+- Demande de Samuel : un transport n'est plus « lieu A → lieu B » mais une
+  **tournée** — une séquence ordonnée d'arrêts (on ramasse à l'un, on ajoute
+  à l'autre, on décharge au suivant). Trois options comparées ; retenue parce
+  que les segments d'une tournée sont couplés (même camion, même équipe) —
+  un modèle parent-enfant façon `Show.parent_show` aurait stocké chaque lieu
+  intermédiaire deux fois. `transport_type` (livraison/ramassage) retiré en
+  même temps, Samuel n'en voyait plus l'utilité.
+- Nouveau modèle `TransportStop` (table `transport_stops`) : lieu, position
+  (`order`), durée du segment depuis l'arrêt précédent. `Transport` perd
+  `transport_type`/`origin_venue`/`destination_venue`/
+  `estimated_duration_minutes` comme champs réels — ce sont maintenant des
+  propriétés dérivées des arrêts. `TransportMaterial` gagne `load_stop`/
+  `unload_stop` : chaque ligne pointe sa portion de la séquence.
+  Migration `0025_transport_stops` en 3 temps, irréversible.
+- Horaire : une seule heure d'ancrage (`scheduled_datetime`, départ du
+  premier arrêt) + une durée par segment — les heures d'arrivée aux arrêts
+  sont dérivées (`Transport.arrival_at`), pour que décaler toute la tournée
+  reste un seul champ à changer (le glisser-déposer du Dashboard en dépend).
+- Logique adaptée : `transport_coherence.py` raisonne par LIGNE de matériel
+  (quitte l'origine à l'arrivée à l'arrêt de chargement, livré à l'arrivée à
+  l'arrêt de déchargement) ; `conflicts.py` — fenêtre technicien = tournée
+  entière, `get_transport_reference_shows` déduit départ/arrivée du lieu du
+  PREMIER/DERNIER arrêt (remplace le test sur `transport_type`).
+- **Chemin de compat frontend** : `origin_venue`/`destination_venue` et
+  `estimated_duration_minutes` restent acceptés en écriture sur une tournée
+  à 2 arrêts, pour que l'ancien contrat API continue de fonctionner pendant
+  la bascule du Vue.
+- Frontend (même jour, second volet) : `TransportDetailView.vue` devient une
+  fiche de tournée (éditeur de séquence d'arrêts réordonnable, matériel par
+  portion à deux sélecteurs d'arrêts, modale « Ajouter du matériel » par
+  arrêt via `?stop=`). Carte « Matériel par arrêt » en lecture — sectionnée
+  par arrêt, ce qu'on dépose puis ce qu'on prend, dans l'ordre physique
+  d'une tournée. `TransportsView`/`DashboardView`/`SpectacleDetailView`/
+  `TechnicienDetailView`/`ConflitsView` affichent la séquence complète des
+  codes de lieux plutôt qu'un simple A → B.
+- 14 nouveaux tests backend. Suite complète à **354 tests**, flake8 propre.
+  Voir `architecture.md` sections 4c/4e/4quinquies et `schema.md` sections
+  8/8bis/9.
+
+### Note sur la suppression cascade de projet (étape 20, 2026-08-04)
+
+- Jusque-là volontairement non implémentée (les FK `project` de `Venue`,
+  `MaterialCategory`, `Material`, `Show`, `Technician` étaient en `PROTECT` —
+  supprimer une production terminée passait obligatoirement par
+  l'archivage). Décision de Samuel : ajouter un vrai bouton de suppression,
+  irréversible, pour un vrai nettoyage définitif.
+- Les 5 FK passent à `on_delete=CASCADE` (migration
+  `0026_project_cascade_delete`, `AlterField` pur, aucune donnée touchée à
+  la migration elle-même).
+- Piège rencontré (revue code-reviewer) : `project.delete()` seul lève quand
+  même un `ProtectedError` (→ 500), parce que 3 FK restent en `PROTECT`
+  ailleurs dans le modèle (`Show.venue`, `TransportStop.venue`,
+  `Material.category`) et protègent leur cible même si celle-ci est promise
+  à la suppression par un autre chemin `CASCADE` dans le même appel.
+  `ProjectViewSet.destroy` contourne en supprimant d'abord les `Show` du
+  projet (lève la protection sur `Venue`/`TransportStop.venue`) puis en
+  vidant `Material.category` (lève la protection sur `MaterialCategory`),
+  le tout dans une transaction.
+- Réservé au rôle `owner`/staff (`owner_only_actions` sur `ProjectViewSet`).
+  Le frontend (`ProjetDetailView.vue`) exige de retaper le nom du projet
+  avant d'activer le bouton. Voir `schema.md` section 11 et `architecture.md`
+  section 4quater.
+
+### Note sur l'export/import CSV et l'export/import complet d'un projet (étape 21, 2026-08-04)
+
+- Deux besoins distincts exprimés par Samuel : (1) sortir/rentrer UNE section
+  (matériel, lieux, techniciens, spectacles) via Excel, et (2) archiver ou
+  déplacer un projet COMPLET, avec tout son calendrier.
+- **CSV par section** (`csv_export.py`/`csv_import.py`, nouveaux) :
+  `GET`/`POST /api/materials/export-csv/` `/import-csv/` (et les mêmes sur
+  `venues`, `technicians`, `shows`). Séparateur `;` et BOM UTF-8 pour Excel
+  en français. Deux modes (`append`/`replace`). Objets créés directement
+  (pas via les serializers DRF, pour ne pas déclencher de détection de
+  conflit sur des données réimportées). `shows` ne couvre que les
+  événements top-level (pas de colonne pour un bloc rattaché).
+- **Export/import complet** (`portability.py`, nouveau) :
+  `GET /api/projects/{id}/export/` (JSON réimportable, ou `?format=xml`
+  lecture seule) et `POST /api/projects/import/` — couvre TOUTES les tables,
+  assignations et déplacements compris. Crée toujours un NOUVEAU projet,
+  jamais n'écrase un projet existant. Import en deux passes pour les
+  hiérarchies auto-référentielles (matériel parent/enfant, blocs de
+  spectacle), atomique.
+- Voir `architecture.md`, nouvelles sections 4sexies et 4septies, pour le
+  détail des deux mécanismes et les endpoints.
+
+### Note sur l'écran d'onboarding (étape 22, 2026-08-04)
+
+- Bug de suivi (pas de code, backlog) : un compte flambant neuf (aucun
+  `Project`, donc aucun `ProjectMembership`) atterrissait sur un Tableau de
+  bord vide, et les formulaires d'ajout échouaient en 400 silencieux
+  (`project` envoyé `null`) sans indice.
+- Décision avec Samuel : un écran **bloquant** (`OnboardingView.vue`,
+  frontend seulement, aucun modèle backend nouveau) plutôt qu'un simple
+  bandeau — le garde de route redirige vers cet écran tant qu'aucun projet
+  actif n'existe, et l'écran lui-même redirige vers `/` dès qu'un projet
+  existe. Formulaire complet dès la première création (les mêmes champs et
+  conversions que l'édition de fiche projet), pas juste un nom.
 
 ## Fichiers produits
 

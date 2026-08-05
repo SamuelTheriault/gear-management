@@ -38,6 +38,7 @@ Lieux (salles, théâtres, sites de représentation, entrepôts). Isolés par pr
 | is_storage | BOOLEAN (default false) | Lieu d'entreposage (entrepôt) plutôt qu'un vrai lieu de spectacle — voir règle d'exemption dans la section `show_materials` |
 | latitude | DECIMAL(9,6), nullable | Coordonnée GPS (ex. copiée depuis Google Maps) — voir section 10, calcul de trajet |
 | longitude | DECIMAL(9,6), nullable | Coordonnée GPS — voir latitude |
+| color | VARCHAR(64), vide par défaut | Couleur d'affichage optionnelle des bandes représentant ce lieu (Parcours Matériel) — chaîne CSS libre (ex. `oklch(...)` ou hex du sélecteur natif). Vide = couleur générée automatiquement (palette `VENUE_PALETTE` cyclée par ordre d'apparition dans `ParcoursMaterielView.vue`). Ajouté le 2026-08-02 |
 
 **Suppression d'un lieu** (décision du 2026-07-30) : **refusée** tant que le lieu est référencé par un spectacle, un déplacement ou du matériel qui en fait son origine. `Show.venue` et les deux FK de `Transport` sont en `PROTECT` (Django lèverait un `ProtectedError`, rendu en 500 par DRF sans traitement) ; `Material.venue` est en `SET_NULL`, mais le laisser vider silencieusement l'origine contredirait la règle du lieu obligatoire — il bloque donc aussi. `VenueViewSet.destroy` renvoie un 400 avec le décompte de chaque catégorie (`shows`, `transports`, `materials`).
 
@@ -57,6 +58,7 @@ Inventaire de matériel. Supporte une hiérarchie parent/enfant (kits contenant 
 | description | TEXT | Description / détails techniques |
 | category_id | INT, FK → material_categories.id (nullable) | Catégorie de matériel — était un ENUM figé jusqu'au 2026-07-30, voir section 13 |
 | parent_material_id | INT, FK → materials.id (nullable) | Matériel parent (ex. "Kit Audio" est parent de "Micro sans fil") |
+| is_kit_parent | BOOLEAN (default false) | Active ce matériel comme parent de kit possible — voir note « Parent de kit explicite » ci-dessous. Ajouté le 2026-08-02 |
 | venue_id | INT, FK → venues.id (nullable en base, **obligatoire via l'API**) | Lieu d'**origine** du matériel — son point de départ et l'endroit où il doit revenir en fin de projet |
 | ownership_status | ENUM('owned','rental') | Propriété ou location générale |
 | quantity | INT (default 1) | Quantité totale possédée de ce matériel identique (ex. 20 rallonges électriques) — voir note quantité ci-dessous |
@@ -74,6 +76,10 @@ Inventaire de matériel. Supporte une hiérarchie parent/enfant (kits contenant 
 **Lieu d'origine obligatoire** (décision du 2026-07-30) : `venue` était optionnel ; il est désormais **exigé par `MaterialSerializer`** à la création comme à la mise à jour, et ne peut plus être vidé. Sans point de départ, la timeline de position (`transport_coherence.py`) ne peut rien vérifier — ni la disponibilité au départ d'un transport, ni le retour en fin de projet. Le champ reste **nullable en base** pour ne pas invalider l'historique déjà saisi et pour garder l'issue `origine_inconnue` significative ; c'est l'API qui impose la règle, pas une contrainte DB.
 
 **Catégorie devenue une table** (décision du 2026-07-30) : `category` était un `VARCHAR` restreint à 9 slugs codés en dur dans le modèle Django (`CATEGORY_CHOICES`), avec leurs couleurs codées en dur côté Vue — donc impossible d'ajouter « Machinerie » sans redéployer. C'est maintenant une FK vers `material_categories` (section 13). Migration `0014_material_category` : création de la table, seed des 9 catégories historiques pour chaque projet existant, remappage du matériel, puis remplacement du champ texte. Ce n'est **pas** un retour du modèle `Department` retiré la veille — une catégorie ne porte ni responsable ni contact, seulement un nom et une couleur.
+
+**Parent de kit explicite** (décision du 2026-08-02) : `is_kit_parent` doit être coché sur un matériel avant qu'un autre puisse le choisir comme `parent_material` — le sélecteur « Fait partie du kit » du frontend ne propose que les matériels ainsi activés, et `MaterialSerializer.validate_parent_material` refuse aussi côté API un parent qui n'a pas ce drapeau. Un matériel à `quantity > 1` ne peut pas être marqué `is_kit_parent` (même contrainte que la hiérarchie kit ci-dessus). Décision assumée de ne pas basculer automatiquement les kits déjà existants (matériels ayant déjà des composants) à l'ajout de ce champ — à réactiver manuellement au cas par cas.
+
+**Suppression d'un matériel** (2026-08-04) : `ShowMaterial.material` et `TransportMaterial.material` sont en `CASCADE` — supprimer un matériel déjà utilisé n'est **pas bloqué**, contrairement à `MaterialCategory` qui reste en `PROTECT`. Un composant de kit n'est pas perdu mais seulement **détaché** (`parent_material` en `SET_NULL`). `MaterialSerializer.deletion_impact` (lecture seule) expose les décomptes `shows`/`transports`/`components` pour que le frontend annonce ce qui va disparaître ou se détacher avant confirmation.
 
 **Département retiré** (décision du 2026-07-29) : le matériel portait auparavant un `department_id` (FK vers une table `departments` — responsable/contact par type de matériel), retiré à la demande de Samuel : `category` suffisait déjà à classer le matériel, et faisait doublon en pratique avec les noms de département (Son/Éclairage/etc. des deux côtés). Voir migration `0013_remove_department`.
 
@@ -314,7 +320,9 @@ Table ajoutée le 2026-07-19 (hors des 8 tables initiales) à la demande de Samu
 | notes | TEXT | Notes diverses |
 | created_at | DATETIME | Date de création |
 
-**Isolation par projet** : `venues`, `materials`, `technicians` et `shows` portent chacun un `project_id` obligatoire (FK `on_delete=PROTECT` — impossible de supprimer une `project` tant qu'il lui reste des données rattachées ; archiver via `status` est la voie normale pour retirer une production terminée sans rien perdre). `settings` reste **commun à tous les projets** (décision explicite de Samuel) — voir section 10.
+**Isolation par projet** : `venues`, `material_categories`, `materials`, `technicians` et `shows` portent chacun un `project_id` obligatoire. `settings` reste **commun à tous les projets** (décision explicite de Samuel) — voir section 10.
+
+**Suppression d'un projet** (décision du 2026-08-04, révise l'affirmation « impossible de supprimer » qui vivait ici avant cette date) : ces 5 FK sont passées de `on_delete=PROTECT` à `on_delete=CASCADE` (migration `0026_project_cascade_delete`, `AlterField` pur, aucune donnée touchée) — supprimer un `Project` efface désormais **toute** la production (lieux, catégories, matériel, techniciens, spectacles, et par ricochet leurs transports/assignations, déjà en CASCADE plus bas dans la chaîne). Irréversible, sans corbeille. `ProjectViewSet.destroy` (réservé au rôle `owner`/staff, voir section 13ter) supprime d'abord les `shows` du projet puis met `Material.category` à `null`, avant `project.delete()` — sans cet ordre, `Django` lève un `ProtectedError` (→ 500) à cause des 3 FK qui restent en `PROTECT` ailleurs dans le modèle (`Show.venue`, `TransportStop.venue`, `Material.category`), qui protègent l'objet visé même s'il est lui-même promis à la suppression par un autre chemin CASCADE dans le même appel. Le frontend (`ProjetDetailView.vue`) exige de retaper le nom du projet avant d'activer le bouton — friction purement côté UI. Archiver via `status` reste la voie normale pour retirer une production terminée **sans rien perdre** — la suppression est réservée à un vrai nettoyage définitif.
 
 **Pas de vue « tous projets confondus »** (décision validée) : chaque liste de l'API se filtre par `?project=<id>` (optionnel — voir `inventory/views.py`, `ProjectFilteredMixin`), et bascule d'un projet à l'autre se fait entièrement côté frontend, sans recharger/exporter de fichier. Conséquence assumée : aucune détection de conflit entre deux projets différents (un même technicien réel entré dans deux projets isolés n'est jamais reconnu comme la même personne — voir `architecture.md`).
 
@@ -398,22 +406,21 @@ Décision du 2026-07-18 : `venues.latitude`/`longitude` (section 2) permettent d
 ## Relations — vue d'ensemble
 
 ```
-projects 1───N venues
-projects 1───N material_categories
-projects 1───N materials
-materials N───1 material_categories (nullable, PROTECT)
-projects 1───N technicians
-projects 1───N shows
-venues 1───N shows
+projects 1───N venues (CASCADE depuis le 2026-08-04, était PROTECT)
+projects 1───N material_categories (CASCADE depuis le 2026-08-04, était PROTECT)
+projects 1───N materials (CASCADE depuis le 2026-08-04, était PROTECT)
+materials N───1 material_categories (nullable, PROTECT — inchangé, protège la catégorie, pas le projet)
+projects 1───N technicians (CASCADE depuis le 2026-08-04, était PROTECT)
+projects 1───N shows (CASCADE depuis le 2026-08-04, était PROTECT)
+venues 1───N shows (PROTECT — inchangé, un lieu encore référencé bloque sa propre suppression)
 materials N───1 materials (self, parent/enfant)
 materials N───1 venues (entreposage)
 shows 1───N show_materials N───1 materials
 shows 1───N show_technicians N───1 technicians
 shows 1───N transports
-transports N───1 venues (origin_venue_id)
-transports N───1 venues (destination_venue_id)
+transports 1───N transport_stops N───1 venues (PROTECT — séquence ordonnée d'arrêts, remplace origin_venue/destination_venue depuis le 2026-08-04)
 transports 1───N transport_technicians N───1 technicians
-transports 1───N transport_materials N───1 materials
+transports 1───N transport_materials N───1 materials (chaque ligne référence aussi load_stop/unload_stop → transport_stops)
 materials N───1 venues (entreposage = point de départ des timelines de cohérence)
 settings (singleton, COMMUN à tous les projets — lu par shows/transports comme source de leurs valeurs par défaut)
 projects 1───N project_memberships N───1 users (accès par projet, rôle owner/editor/viewer)

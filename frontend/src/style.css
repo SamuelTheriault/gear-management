@@ -705,19 +705,17 @@ body {
   background: var(--bg-card);
   border: 1px solid var(--border-card);
   border-radius: var(--radius-notch-lg);
-  padding: 16px 16px 28px;
+  padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 10px;
   overflow-x: auto;
   /* Le défilement horizontal (`overflow-x`) force `overflow-y` à `auto` même
-     sans le déclarer (règle CSS standard) : l'info-bulle qui déborde en bas
-     du dernier événement pourrait donc se faire couper. Le padding-bottom
-     agrandi ci-dessus lui laisse de la place — voir `.parcours-tooltip`,
-     qui s'ouvre volontairement VERS LE BAS (pas au-dessus comme sur le
-     Dashboard) pour la même raison : au-dessus, la seule marge disponible
-     est le padding-top du panneau + la hauteur de l'axe, insuffisant pour
-     la première ligne. */
+     sans le déclarer (règle CSS standard), ce qui en ferait un conteneur qui
+     clippe verticalement aussi. Ça n'a plus d'incidence depuis 2026-08-03 :
+     l'info-bulle (`useFloatingTooltip.js`) est `position: fixed`, elle
+     n'est plus filleule de ce conteneur. Avant ce changement, un
+     padding-bottom agrandi (16→28px) compensait — plus la peine. */
 }
 
 /* Ligne commune au sélecteur de journée et aux contrôles de zoom
@@ -780,6 +778,12 @@ body {
      retombe sur la page, qui fait bouger étiquettes et pistes ensemble
      (siblings du même flux normal dans `.parcours-timeline`). */
   overflow-y: hidden;
+  /* Marge sous la dernière piste (2026-08-03, signalé par Samuel, même
+     correctif que `.dash-timeline__scroll`) : la barre de défilement
+     horizontale se dessine DANS la boîte de ce conteneur, au ras du bas —
+     sans cette marge, elle se superpose à la dernière piste sur les
+     navigateurs/systèmes qui réservent de la place pour la barre. */
+  padding-bottom: 16px;
 }
 
 .parcours-scroll__content {
@@ -859,11 +863,6 @@ body {
   color: rgba(var(--fg-rgb), 0.85);
   white-space: nowrap;
   cursor: default;
-  /* Pas d'overflow:hidden ici (2026-07-31) : l'info-bulle au survol (enfant,
-     position absolue) doit pouvoir déborder du segment. Le libellé porte son
-     propre ellipsis (`.parcours-seg__label`) donc rien n'est perdu
-     visuellement à l'intérieur de la barre — même pattern que
-     `.dash-timeline__block` sur le Dashboard. */
 }
 
 .parcours-seg__label {
@@ -872,59 +871,13 @@ body {
   white-space: nowrap;
 }
 
-/* Info-bulle au survol d'un segment (2026-07-31, demande de Samuel : « comme
-   sur le dashboard principal »). Contrairement au Dashboard, elle s'ouvre
-   VERS LE BAS — voir la note sur `.parcours-board`. */
-.parcours-tooltip {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
-  min-width: 170px;
-  max-width: 240px;
-  padding: 10px 12px;
-  border-radius: var(--radius-notch-sm);
-  background: var(--bg-deep);
-  border: 1px solid rgba(var(--fg-rgb), 0.12);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transition: opacity 0.12s ease;
-  white-space: normal;
-  z-index: 30;
-}
-
-.parcours-seg:hover .parcours-tooltip {
-  opacity: 1;
-  visibility: visible;
-}
-
-.parcours-tooltip__title {
-  font: 700 12px system-ui;
-  color: rgb(var(--fg-rgb));
-  margin-bottom: 4px;
-}
-
-.parcours-tooltip__time {
-  font: 600 11px system-ui;
-  color: rgba(var(--fg-rgb), 0.55);
-  margin-bottom: 6px;
-}
-
-.parcours-tooltip__line {
-  font: 500 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.75);
-  line-height: 1.4;
-}
-
 /* Marqueur d'assignation posé PAR-DESSUS le séjour : un liseré en bas de la
    piste, pour voir « il est à la Chapelle, et c'est là qu'il sert ». Agrandi
    le 2026-07-31 (demande de Samuel : « plus visible », puis 15px) — remonte
    maintenant sur une bonne partie du segment de séjour, chevauchement
-   volontaire (« posé PAR-DESSUS »). Son info-bulle réutilise
-   `.parcours-tooltip`, ancrée sur le marqueur lui-même plutôt que sur le
-   séjour.
+   volontaire (« posé PAR-DESSUS »). Son info-bulle (voir
+   `useFloatingTooltip.js`, 2026-08-03) s'ancre sur le marqueur lui-même
+   plutôt que sur le séjour.
 
    Bleu depuis le 2026-08-02 (demande de Samuel) : il partageait `var(--accent)`
    avec le bloc de transit, les deux étaient devenus indistinguables. Le bleu
@@ -959,11 +912,6 @@ body {
   color: #101828;
 }
 
-.parcours-mark:hover .parcours-tooltip {
-  opacity: 1;
-  visibility: visible;
-}
-
 /* Bloc de transit (2026-08-01, révisé — remplace l'ancien liseré fin
    `.parcours-transport`) : un transport confirmé occupe maintenant sa vraie
    durée prévue DANS la ligne (lane) où se trouvait le matériel juste avant,
@@ -996,11 +944,6 @@ body {
 
 .parcours-transit:hover {
   background: oklch(0.72 0.18 340);
-}
-
-.parcours-transit:hover .parcours-tooltip {
-  opacity: 1;
-  visibility: visible;
 }
 
 /* Connecteur en équerre entre deux lanes d'un même matériel (2026-08-01,

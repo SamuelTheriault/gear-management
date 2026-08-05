@@ -3,8 +3,10 @@ import { computed, ref } from 'vue'
 import AppShell from '../components/AppShell.vue'
 import ParcoursDayPicker from '../components/ParcoursDayPicker.vue'
 import ZoomControls from '../components/ZoomControls.vue'
+import FloatingTooltip from '../components/FloatingTooltip.vue'
 import { useParcours } from '../composables/useParcours'
 import { useZoomScroll } from '../composables/useZoomScroll'
+import { useFloatingTooltip } from '../composables/useFloatingTooltip'
 
 /**
  * Parcours des techniciens (`/parcours/techniciens`, sous-menu du Tableau de
@@ -45,6 +47,11 @@ import { useZoomScroll } from '../composables/useZoomScroll'
  * resetZoom. Même structure à deux colonnes que `ParcoursMaterielView`
  * (étiquettes fixes, timeline scrollable) — voir sa note de tête pour le
  * détail, identique ici.
+ *
+ * Info-bulle flottante (2026-08-03, demande de Samuel) — même composable
+ * `useFloatingTooltip` que `ParcoursMaterielView`/le Tableau de bord : évite
+ * le clipping de `.parcours-scroll` (`overflow-x: auto`) qui piégeait
+ * l'ancienne info-bulle CSS-only, voir `useFloatingTooltip.js`.
  */
 
 const {
@@ -62,6 +69,9 @@ const {
 
 const scrollRef = ref(null)
 useZoomScroll(scrollRef, zoomLevel, scrollFraction)
+
+// Info-bulle flottante (2026-08-03) — voir la note de tête.
+const { tooltip, show: showTooltip, hide: hideTooltip } = useFloatingTooltip()
 
 const KIND_COLORS = {
   show: 'oklch(0.55 0.13 290)',
@@ -187,15 +197,10 @@ const decorated = computed(() =>
                       :key="i"
                       class="parcours-seg"
                       :style="b.style"
+                      @mouseenter="showTooltip($event, { title: b.tooltipTitle, time: b.tooltipTime, lines: b.tooltipLines })"
+                      @mouseleave="hideTooltip"
                     >
                       <span class="parcours-seg__label">{{ b.label }}</span>
-                      <div class="parcours-tooltip">
-                        <div class="parcours-tooltip__title">{{ b.tooltipTitle }}</div>
-                        <div class="parcours-tooltip__time">{{ b.tooltipTime }}</div>
-                        <div v-for="(line, li) in b.tooltipLines" :key="li" class="parcours-tooltip__line">
-                          {{ line }}
-                        </div>
-                      </div>
                     </div>
                     <div v-if="row.blocks.length === 0" class="track-empty">Aucun engagement</div>
                   </div>
@@ -218,6 +223,7 @@ const decorated = computed(() =>
         </div>
       </div>
     </div>
+    <FloatingTooltip :tooltip="tooltip" />
   </AppShell>
 </template>
 
