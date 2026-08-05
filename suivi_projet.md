@@ -4,9 +4,9 @@ Tableau de bord manuel. À mettre à jour à chaque étape franchie ou décision
 prise. Complète `recapitulatif_projet.md` (contenu fonctionnel) sans le
 dupliquer — ce fichier ne suit que **l'avancement**, pas le scope.
 
-Dernière mise à jour : 2026-08-05 (suite) — **étape 19 prête** : interface
-Import/Export (JSON projet + CSV par section) sur `feature/import-export-ui`,
-en attente de push/PR/merge par Samuel.
+Dernière mise à jour : 2026-08-05 (suite) — **étape 19 mergée et
+déployée.** PR #22 mergée sur GitHub — confirmé côté Railway : déploiement
+SUCCESS du 2026-08-05 12:58 UTC.
 
 ## Statut global
 
@@ -70,23 +70,23 @@ modèle backend) : voir « Points de vigilance ».
 | 16 | Onboarding de projet (écran bloquant + garde de route), suppression cascade de projet/matériel/technicien | ✅ Mergée dans `main` et déployée — migration `0026` (renumérotée depuis `0025`, collision avec l'étape 15 résolue). Revue `code-reviewer` : 1 **bug bloquant** corrigé (`DELETE /api/projects/{id}/` en 500 sur tout projet réel) + exemption `/utilisateurs` de la garde d'onboarding | 2026-08-04 |
 | 17 | Export/import CSV par section (matériel/lieux/techniciens/spectacles) + export/import JSON complet du projet (réimportable) et XML (lecture seule) | ✅ Mergée dans `main` (PR #17) et déployée. `portability.py` réparé pour `TransportStop` (remappage des arrêts par position, pas par id). Revue `code-reviewer` : 1 bug corrigé (import replace des lieux ne bloquait pas sur le matériel qui en fait son origine, contrairement à `VenueViewSet.destroy`) + 2 suggestions de tests ajoutées (permissions `export-csv`, tournée à 3 arrêts). Suite à 393 tests, flake8 propre, aucune migration | 2026-08-05 |
 | 18 | Info-bulle flottante Dashboard/Parcours (`FloatingTooltip.vue`, remplace l'ancienne info-bulle CSS-only piégée par le clipping du défilement zoomé) + rattrapage de `schema.md`/`architecture.md`/`recapitulatif_projet.md` sur les étapes 14-17 | ✅ Mergée dans `main` (PR #18) et déployée. Extrait à la main de `wip/checkpoint-2026-08-04` (périmé — prédate les tournées, aurait régressé Transport/Dashboard si appliqué tel quel). Revue `code-reviewer` : code propre (aucune régression du checkpoint périmé), 1 oubli corrigé (doc rattrapée pas committée avec le code au premier passage). Frontend + doc seulement, aucun changement backend | 2026-08-05 |
-| 19 | Interface Import/Export (étape 17 côté frontend) : section « Import / Export » sur Réglages — export JSON/XML complet d'un projet, export CSV par section (matériel/lieux/techniciens/spectacles), import JSON (nouveau projet), import CSV par section (append/remplace, confirmé par modale) | 🟡 Prête sur `feature/import-export-ui`, en attente de push/PR/merge | 2026-08-05 |
+| 19 | Interface Import/Export (étape 17 côté frontend) : section « Import / Export » sur Réglages — export JSON/XML complet d'un projet, export CSV par section (matériel/lieux/techniciens/spectacles), import JSON (nouveau projet), import CSV par section (append/remplace, confirmé par modale) | ✅ Mergée dans `main` (PR #22) et déployée. Brouillon retrouvé déjà présent, non committé, dans l'arbre de travail — complété par le seul chaînon manquant (`api.downloadUrl()` dans `client.js`) plutôt que réécrit, après vérification champ par champ contre l'API réelle. Inclut au passage le rattrapage `CLAUDE.md` de l'étape 18 (tooltip), resté non committé lui aussi. Revue `code-reviewer` : rien à corriger, 3 suggestions mineures non bloquantes. Frontend + doc seulement, aucun changement backend | 2026-08-05 |
 
 ## Prochaine action concrète
 
-**Étape 19 à pousser/merger** : Samuel a signalé ne pas voir les options
-import/export sur le site — normal, l'étape 17 n'avait câblé que le
-backend. En creusant, la quasi-totalité de l'interface (section « Import /
-Export » sur Réglages, ~370 lignes) existait déjà **non committée** dans
-l'arbre de travail — un brouillon déjà complet et cohérent avec l'API
-réelle (routes, formes de réponse vérifiées une à une), qui ne manquait que
-`api.downloadUrl()` (ajouté à `client.js`) pour fonctionner. Vérifié :
-compile (`compileScript`/`compileTemplate`), `npm run build` propre, aucune
-modification parallèle sur `MaterielView.vue`/`LieuxView.vue`/
-`SpectaclesView.vue`/`TechniciensView.vue`/`ProjetDetailView.vue` (tout est
-centralisé sur Réglages, rien à rattraper ailleurs). Un rattrapage
-`CLAUDE.md` resté non committé depuis l'étape 18 (section tooltip flottant)
-est inclus dans le même commit — doc seulement, sans lien avec cette étape.
+Aucune étape bloquante en attente — l'étape 19 (interface Import/Export)
+est mergée et déployée. Reste en approche ouverte :
+
+→ **Divergence de numérotation dans `schema.md`** (signalée par la revue
+de l'étape 18, non corrigée) : pas de section 12, un renvoi dans
+`architecture.md` (ligne ~210, `transport_materials`) pointe encore
+dessus alors que c'est en réalité la section 9. Pré-existante — à corriger
+si Samuel confirme que ça vaut le détour.
+
+→ **Nettoyage optionnel** : fichiers marqués à supprimer (`_to_delete/`,
+`backend/db.sqlite3.avant-tournees`, `frontend/_to_delete_dist_check/`,
+`_to_delete_dist_check2/`) en attente de confirmation de Samuel ; branche
+`wip/checkpoint-2026-08-04` entièrement vidée, peut être supprimée.
 
 → **Divergence de numérotation dans `schema.md`** (signalée par la revue
 de l'étape 18, non corrigée) : pas de section 12, un renvoi dans
