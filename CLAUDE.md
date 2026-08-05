@@ -2586,6 +2586,71 @@ depuis l'API par Claude avec confirmation de Samuel, ou par Samuel
 lui-même dans le dashboard) et ajouter la variable `FRONTEND_URL` — voir
 `suivi_projet.md` pour le statut à jour de cette étape.
 
+## Mise à jour (2026-08-03, suite) — Info-bulles converties en tooltip flottant (JS)
+
+Signalé par Samuel : les info-bulles des blocs du Tableau de bord et des
+deux écrans Parcours disparaissaient dès qu'elles dépassaient de leur boîte
+— surtout visible sur les lignes du haut. Un premier correctif (ouverture
+vers le bas + `padding-bottom` tampon, même recette que celle déjà en place
+sur les Parcours depuis le 2026-07-31) réglait le symptôme mais pas la
+cause : `.dash-timeline__scroll`/`.parcours-scroll` (`overflow-x: auto`,
+nécessaire au défilement horizontal sous zoom) clippent TOUT enfant qui
+dépasse leur boîte, dans n'importe quelle direction — repousser le padding
+ne fait que déplacer la limite, pas la supprimer. Samuel a demandé si on
+pouvait « simplement l'afficher au-dessus de tout » : pas avec `z-index`
+(le clipping se joue avant la mise en couches), seulement en sortant
+l'info-bulle du conteneur qui la piège.
+
+- **`useFloatingTooltip.js`** (nouveau composable) + **`FloatingTooltip.vue`**
+  (nouveau composant, `frontend/src/components/`) : l'info-bulle n'est plus
+  une `<div>` imbriquée dans le bloc survolé, révélée en CSS-only par
+  `:hover`. C'est maintenant un unique élément par écran, `position: fixed`
+  + `Teleport to="body"`, positionné en JS au survol
+  (`getBoundingClientRect()` de l'élément survolé). `position: fixed`
+  échappe à TOUT ancêtre avec un `overflow` non `visible`, tant qu'aucun
+  n'a de `transform`/`filter`/`will-change` (vérifié : aucun cas dans cette
+  app) — donc plus aucun padding tampon ni sens d'ouverture imposé par un
+  conteneur.
+- **Positionnement** : centré horizontalement sur l'élément, clampé aux
+  bords de la fenêtre (`EDGE_PADDING`) pour ne jamais déborder hors écran
+  sur un bloc proche d'un bord. Ouverture vers le bas par défaut, bascule
+  vers le haut s'il n'y a pas assez de place en dessous DANS LA FENÊTRE
+  (`ESTIMATED_HEIGHT`) — logique de bascule vérifiée en Node sur 6 cas
+  (centre, bords gauche/droit, première/dernière ligne, fenêtre minuscule).
+- **3 écrans branchés** : `DashboardView.vue` (`.dash-timeline__block`),
+  `ParcoursMaterielView.vue` (`.parcours-seg`/`.parcours-transit`/
+  `.parcours-mark`, trois éléments distincts par ligne), et
+  `ParcoursTechniciensView.vue` (`.parcours-seg`). Chaque élément gagne
+  `@mouseenter="showTooltip($event, {title, time, lines})"` +
+  `@mouseleave="hideTooltip"` ; les champs `tooltipTitle`/`tooltipTime`/
+  `tooltipLines` déjà calculés dans les `decorated` de chaque écran n'ont
+  pas changé, seule leur consommation dans le template change. Un seul
+  `<FloatingTooltip :tooltip="tooltip" />` par écran.
+- **Glisser-déposer du Dashboard** : `beginDrag` appelle maintenant
+  `hideTooltip()` au début d'un glisser réel — l'ancienne règle CSS
+  `.dash-timeline__block--dragging .dash-timeline__tooltip { display: none
+  }` n'a plus d'équivalent puisque l'info-bulle n'est plus un enfant du
+  bloc (elle ne se cacherait plus toute seule au survol perdu pendant un
+  glisser, le pointeur restant capté par le bloc).
+- **Nettoyage** : suppression de toutes les règles CSS
+  `.dash-timeline__tooltip*`/`.parcours-tooltip*` devenues mortes, plus
+  aucune trace de l'ancien pattern.
+- **Barre de défilement** (signalé par Samuel juste après) : en retirant le
+  padding tampon pensé pour l'ancienne info-bulle, la barre de défilement
+  horizontale (qui se dessine DANS la boîte du conteneur, au ras du bas sur
+  les systèmes qui réservent de la place pour elle plutôt qu'une barre en
+  survol) s'est mise à chevaucher les blocs de la DERNIÈRE ligne.
+  `.dash-timeline__scroll` et `.parcours-scroll` gagnent chacun un
+  `padding-bottom: 16px` — plus modeste que l'ancien tampon (qui visait la
+  hauteur d'une info-bulle entière, ~160px sur le Dashboard), puisqu'il ne
+  compense plus qu'une barre de défilement.
+
+Frontend-only, aucun changement backend, aucune migration. Vérifié : les 4
+fichiers touchés (`DashboardView.vue`, `ParcoursMaterielView.vue`,
+`ParcoursTechniciensView.vue`, `FloatingTooltip.vue`) compilent
+(`compileScript` + `compileTemplate`), `npm run build` complet sans erreur ;
+logique de positionnement/bascule simulée en Node sur 6 cas.
+
 ## Mise à jour (2026-08-04) — Module transport : tournées multi-arrêts (backend)
 
 **Décision de Samuel** : un transport n'est plus « lieu A → lieu B » mais une

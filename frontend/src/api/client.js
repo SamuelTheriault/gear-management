@@ -66,4 +66,11 @@ export const api = {
   patch: (path, body) => request('PATCH', path, { body }),
   put: (path, body) => request('PUT', path, { body }),
   delete: (path) => request('DELETE', path),
+  // Export CSV/JSON/XML (2026-08-05) : les actions `export`/`export-csv`
+  // renvoient directement un fichier (`Content-Disposition: attachment`),
+  // pas du JSON — inutile de passer par `request()`. Un simple `<a :href>`
+  // suffit : le navigateur envoie le cookie de session tout seul sur une
+  // navigation/téléchargement même origine (`SameSite=Lax`), pas besoin de
+  // `fetch(..., { credentials: 'include' })` ici.
+  downloadUrl: (path, params) => buildUrl(path, params),
 }
