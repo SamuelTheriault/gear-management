@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
 import ColorField from '../components/ColorField.vue'
 import { EVENT_TYPE_ORDER } from '../constants/eventTypeMeta'
@@ -41,9 +42,31 @@ import { useEventDisplay } from '../composables/useEventDisplay'
  * (`useEventDisplay.js`) est appelée après le PATCH pour que les CSS vars
  * (`--transport`, `--event-*`) se mettent à jour partout dans l'app sans
  * recharger la page.
+ *
+ * Section « Import / Export » (2026-08-04/05, demande de Samuel — export
+ * complet JSON/XML d'un projet + export CSV par section + import CSV,
+ * regroupés ici : « on va faire une section avec tout les import/export »).
+ * Le backend (portability.py/csv_export.py/csv_import.py, views.py) a été
+ * construit par une autre session en parallèle — cette section frontend
+ * s'y branche mais n'a pas encore été câblée nulle part, d'où son ajout ici.
+ * Un seul sélecteur de projet (`ioProjectId`, indépendant du projet actif
+ * global) pilote l'export complet (JSON réimportable / XML lecture seule),
+ * les 4 exports CSV par section et le SÉLECTEUR de liste pour l'import CSV.
+ *
+ * Import CSV par section (« on ajoute l'option d'importer un csv. On
+ * vérifie que les entetes correspondent avant d'importer. On demande à
+ * l'utilisateur si on ajoute à la suite de la liste ou si on écrasse tout
+ * le contenu pour cette liste ») : contrairement à l'import de projet
+ * (toujours un NOUVEAU projet), celui-ci écrit dans le projet SÉLECTIONNÉ
+ * (`ioProjectId`). Le choix append/remplace se fait dans une confirmation
+ * modale (`showCsvModeDialog`, gabarit `.fiche-confirm` déjà utilisé pour
+ * le retrait d'accès sur `ProjetDetailView.vue`) — jamais d'écrasement
+ * silencieux. La validation des en-têtes se fait côté backend, avant toute
+ * écriture (voir `csv_export.parse_csv_rows`).
  */
 
-const { projects, allProjects, refreshProjects } = useActiveProject()
+const router = useRouter()
+const { projects, allProjects, activeProjectId, refreshProjects } = useActiveProject()
 const { refreshEventDisplay } = useEventDisplay()
 
 const COLOR_DEFAULTS = {
@@ -269,6 +292,147 @@ async function reactivateProject(p) {
     reactivatingId.value = null
   }
 }
+
+// --- Import / Export (2026-08-04/05) ---
+//
+// `ioProjectId` : sélecteur dédié, tous statuts confondus (`allProjects` —
+// exporter un projet archivé doit rester possible), plutôt que de dépendre
+// du projet actif global (`activeProjectId`) qu'on ne veut pas forcer à
+// changer juste pour exporter/importer. Initialisé sur le projet actif s'il
+// y en a un, sinon le premier projet de la liste.
+const ioProjectId = ref(activeProjectId.value || null)
+const ioProjects = computed(() => allProjects.value)
+
+function ensureIoProjectSelected() {
+  if (ioProjectId.value) return
+  ioProjectId.value = activeProjectId.value || ioProjects.value[0]?.id || null
+}
+
+const importFileInput = ref(null)
+const importFile = ref(null)
+const importError = ref(null)
+const importing = ref(false)
+
+function onImportFileChange(event) {
+  importFile.value = event.target.files?.[0] ?? null
+  importError.value = null
+}
+
+async function importProject() {
+  if (!importFile.value) {
+    importError.value = 'Choisis un fichier .json exporté depuis un projet.'
+    return
+  }
+  importError.value = null
+  importing.value = true
+  try {
+    const text = await importFile.value.text()
+    let parsed
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      importError.value = "Ce fichier n'est pas un JSON valide."
+      return
+    }
+    const created = await api.post('/projects/import/', parsed)
+    importFile.value = null
+    if (importFileInput.value) importFileInput.value.value = ''
+    await refreshProjects()
+    router.push(`/projets/${created.project.id}`)
+  } catch (e) {
+    importError.value = e.data?.detail ?? "Impossible d'importer ce fichier."
+  } finally {
+    importing.value = false
+  }
+}
+
+// --- Import CSV par section (2026-08-04/05) ---
+//
+// `replaceWarning` alimente le texte de la confirmation modale — spécifique
+// à chaque liste puisque la cascade de suppression diffère (voir
+// csv_import.py) : Lieux est en réalité REFUSÉ plutôt que supprimé si des
+// références existent encore, les trois autres suppriment réellement et
+// entraînent la perte des assignations/déplacements liés.
+const CSV_SECTIONS = [
+  {
+    key: 'materials', label: 'Matériel', path: '/materials/import-csv/',
+    replaceWarning:
+      "supprime tout le matériel existant de ce projet — y compris ses assignations aux spectacles et déplacements.",
+  },
+  {
+    key: 'venues', label: 'Lieux', path: '/venues/import-csv/',
+    replaceWarning:
+      "supprime tous les lieux existants de ce projet — refusé (sans rien supprimer) si un lieu est encore utilisé par un spectacle, un déplacement ou du matériel qui en fait son lieu d'origine.",
+  },
+  {
+    key: 'technicians', label: 'Techniciens', path: '/technicians/import-csv/',
+    replaceWarning:
+      "supprime tous les techniciens existants de ce projet — y compris leurs assignations aux spectacles et déplacements.",
+  },
+  {
+    key: 'shows', label: 'Spectacles', path: '/shows/import-csv/',
+    replaceWarning:
+      "supprime tous les spectacles existants de ce projet — y compris leur matériel, techniciens et déplacements assignés.",
+  },
+]
+
+const csvSectionKey = ref('materials')
+const csvSection = computed(() => CSV_SECTIONS.find((s) => s.key === csvSectionKey.value))
+
+const csvFileInput = ref(null)
+const csvFile = ref(null)
+const csvError = ref(null)
+const csvImporting = ref(false)
+const csvResult = ref(null)
+const showCsvModeDialog = ref(false)
+
+function onCsvFileChange(event) {
+  csvFile.value = event.target.files?.[0] ?? null
+  csvError.value = null
+  csvResult.value = null
+}
+
+function askCsvMode() {
+  if (!csvFile.value) {
+    csvError.value = 'Choisis un fichier .csv exporté depuis cette même liste.'
+    return
+  }
+  if (!ioProjectId.value) {
+    csvError.value = 'Choisis un projet.'
+    return
+  }
+  csvError.value = null
+  csvResult.value = null
+  showCsvModeDialog.value = true
+}
+
+function cancelCsvImport() {
+  showCsvModeDialog.value = false
+}
+
+async function confirmCsvImport(mode) {
+  showCsvModeDialog.value = false
+  csvImporting.value = true
+  csvError.value = null
+  try {
+    const text = await csvFile.value.text()
+    const result = await api.post(csvSection.value.path, {
+      project: ioProjectId.value,
+      mode,
+      csv: text,
+    })
+    const count = Object.values(result.imported ?? {})[0] ?? 0
+    csvResult.value =
+      `${count} ligne(s) importée(s) dans « ${csvSection.value.label} »` +
+      (mode === 'replace' ? ' (contenu existant remplacé).' : ' (ajoutées à la suite).')
+    csvFile.value = null
+    if (csvFileInput.value) csvFileInput.value.value = ''
+  } catch (e) {
+    csvError.value = e.data?.detail ?? "Impossible d'importer ce fichier."
+  } finally {
+    csvImporting.value = false
+  }
+}
 </script>
 
 <template>
@@ -339,6 +503,175 @@ async function reactivateProject(p) {
             </div>
           </div>
         </section>
+
+        <!-- Import / Export (2026-08-04/05) : export complet JSON/XML d'un
+             projet, exports CSV par section (Excel), import de projet (crée
+             toujours un nouveau projet) et import CSV par section (append/
+             remplace, confirmé via une modale). -->
+        <section class="section">
+          <div class="section-title">Import / Export</div>
+          <div class="card">
+            <div class="field">
+              <label class="label">Projet</label>
+              <select v-model.number="ioProjectId" class="input" @focus="ensureIoProjectSelected">
+                <option v-if="!ioProjects.length" :value="null" disabled>Aucun projet</option>
+                <option v-for="p in ioProjects" :key="p.id" :value="p.id">
+                  {{ p.name }}{{ p.status === 'archived' ? ' (archivé)' : '' }}
+                </option>
+              </select>
+            </div>
+
+            <div class="io-group">
+              <div class="io-group__title">Exporter le projet</div>
+              <div class="io-actions">
+                <a
+                  class="fiche-btn"
+                  :class="{ 'fiche-btn--disabled': !ioProjectId }"
+                  :href="ioProjectId ? api.downloadUrl(`/projects/${ioProjectId}/export/`, { format: 'json' }) : undefined"
+                  download
+                >Exporter en JSON</a>
+                <a
+                  class="fiche-btn"
+                  :class="{ 'fiche-btn--disabled': !ioProjectId }"
+                  :href="ioProjectId ? api.downloadUrl(`/projects/${ioProjectId}/export/`, { format: 'xml' }) : undefined"
+                  download
+                >Exporter en XML</a>
+              </div>
+              <div class="hint-text">
+                Le projet en entier — lieux, matériel, techniciens, spectacles,
+                assignations et déplacements. Le JSON peut être réimporté comme
+                nouveau projet (voir « Importer un projet » ci-dessous) ; le
+                XML est pour consultation dans un autre outil seulement.
+              </div>
+            </div>
+
+            <div class="io-group">
+              <div class="io-group__title">Exporter en CSV (pour Excel)</div>
+              <div class="io-actions">
+                <a
+                  class="fiche-btn"
+                  :class="{ 'fiche-btn--disabled': !ioProjectId }"
+                  :href="ioProjectId ? api.downloadUrl('/materials/export-csv/', { project: ioProjectId }) : undefined"
+                  download
+                >Matériel</a>
+                <a
+                  class="fiche-btn"
+                  :class="{ 'fiche-btn--disabled': !ioProjectId }"
+                  :href="ioProjectId ? api.downloadUrl('/venues/export-csv/', { project: ioProjectId }) : undefined"
+                  download
+                >Lieux</a>
+                <a
+                  class="fiche-btn"
+                  :class="{ 'fiche-btn--disabled': !ioProjectId }"
+                  :href="ioProjectId ? api.downloadUrl('/technicians/export-csv/', { project: ioProjectId }) : undefined"
+                  download
+                >Techniciens</a>
+                <a
+                  class="fiche-btn"
+                  :class="{ 'fiche-btn--disabled': !ioProjectId }"
+                  :href="ioProjectId ? api.downloadUrl('/shows/export-csv/', { project: ioProjectId }) : undefined"
+                  download
+                >Spectacles</a>
+              </div>
+              <div class="hint-text">Une section à la fois, pour un passage vers un tableur.</div>
+            </div>
+
+            <div class="io-group">
+              <div class="io-group__title">Importer un projet</div>
+              <div class="create-row">
+                <input
+                  ref="importFileInput"
+                  type="file"
+                  accept="application/json"
+                  class="input input--wide"
+                  @change="onImportFileChange"
+                />
+                <div
+                  class="btn"
+                  :class="importFile && !importing ? 'btn--enabled' : 'btn--disabled'"
+                  @click="importFile && !importing && importProject()"
+                >
+                  {{ importing ? 'Import…' : '↑ Importer' }}
+                </div>
+              </div>
+              <div v-if="importError" class="error">{{ importError }}</div>
+              <div class="hint-text">
+                À partir d'un fichier JSON exporté ci-dessus — crée toujours un
+                nouveau projet, n'écrase jamais un projet existant.
+              </div>
+            </div>
+
+            <div class="io-group">
+              <div class="io-group__title">Importer un CSV (Excel)</div>
+              <div class="field">
+                <label class="label">Liste visée</label>
+                <div class="chips">
+                  <div
+                    v-for="s in CSV_SECTIONS"
+                    :key="s.key"
+                    class="chip"
+                    :class="{ 'chip--active': csvSectionKey === s.key }"
+                    @click="csvSectionKey = s.key"
+                  >
+                    {{ s.label }}
+                  </div>
+                </div>
+              </div>
+              <div class="create-row">
+                <input
+                  ref="csvFileInput"
+                  type="file"
+                  accept=".csv,text/csv"
+                  class="input input--wide"
+                  @change="onCsvFileChange"
+                />
+                <div
+                  class="btn"
+                  :class="csvFile && !csvImporting ? 'btn--enabled' : 'btn--disabled'"
+                  @click="csvFile && !csvImporting && askCsvMode()"
+                >
+                  {{ csvImporting ? 'Import…' : '↑ Importer' }}
+                </div>
+              </div>
+              <div v-if="csvError" class="error">{{ csvError }}</div>
+              <div v-if="csvResult" class="saved"><span class="saved__dot" />{{ csvResult }}</div>
+              <div class="hint-text">
+                À partir d'un export généré ci-dessus, pour la même liste — les
+                en-têtes de colonnes doivent correspondre (ordre libre,
+                colonnes en trop ignorées). On te demandera ensuite si les
+                lignes s'ajoutent à la suite ou remplacent tout le contenu
+                existant de cette liste, pour ce projet.
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div v-if="showCsvModeDialog" class="fiche-confirm-backdrop" @click.self="cancelCsvImport">
+          <div class="fiche-confirm">
+            <div class="fiche-confirm__title">Importer « {{ csvSection.label }} » — {{ csvFile?.name }}</div>
+            <p class="fiche-confirm__text">
+              À la suite : les lignes du fichier s'ajoutent au contenu existant, sans rien supprimer.<br />
+              Remplacer tout : {{ csvSection.replaceWarning }}
+            </p>
+            <div v-if="csvError" class="fiche-error">{{ csvError }}</div>
+            <div class="fiche-confirm__actions">
+              <button type="button" class="fiche-btn" :disabled="csvImporting" @click="cancelCsvImport">
+                Annuler
+              </button>
+              <button type="button" class="fiche-btn" :disabled="csvImporting" @click="confirmCsvImport('append')">
+                À la suite
+              </button>
+              <button
+                type="button"
+                class="fiche-btn fiche-btn--danger"
+                :disabled="csvImporting"
+                @click="confirmCsvImport('replace')"
+              >
+                Remplacer tout
+              </button>
+            </div>
+          </div>
+        </div>
 
         <section class="section">
           <div class="section-title">Fenêtres effectives</div>
@@ -562,9 +895,10 @@ async function reactivateProject(p) {
   padding: 10px;
 }
 
-/* Projets archivés (2026-08-04) : même carte que la liste active, ligne
-   grisée plutôt qu'un lien plein-largeur (le nom reste cliquable vers la
-   fiche, « Réactiver » agit directement depuis ici sans y entrer). */
+/* Projets archivés (2026-08-04) : même carte que la liste
+   active, ligne grisée plutôt qu'un lien plein-largeur (le nom reste
+   cliquable vers la fiche, « Réactiver » agit directement depuis ici sans y
+   entrer). */
 .project-list--archived {
   margin-top: 10px;
 }
@@ -627,6 +961,39 @@ async function reactivateProject(p) {
   font: 400 12px system-ui;
   color: rgba(var(--fg-rgb), 0.4);
   line-height: 1.5;
+}
+
+/* Import / Export (2026-08-04/05) : chaque sous-groupe (export complet, CSV,
+   import projet, import CSV) partage la même trame que .create-card
+   ci-dessus, sans la bordure pointillée — ce ne sont pas des zones de saisie
+   « brouillon », juste des regroupements dans la même carte. */
+.io-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.io-group + .io-group {
+  padding-top: 12px;
+  border-top: 1px solid rgba(var(--fg-rgb), 0.05);
+}
+
+.io-group__title {
+  font: 700 10.5px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(var(--fg-rgb), 0.4);
+}
+
+.io-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.fiche-btn--disabled {
+  opacity: 0.4;
+  pointer-events: none;
 }
 
 .field {
