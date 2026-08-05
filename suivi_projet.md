@@ -4,16 +4,12 @@ Tableau de bord manuel. À mettre à jour à chaque étape franchie ou décision
 prise. Complète `recapitulatif_projet.md` (contenu fonctionnel) sans le
 dupliquer — ce fichier ne suit que **l'avancement**, pas le scope.
 
-Dernière mise à jour : 2026-08-04 (suite) — **toutes les étapes du plan
-initial (1 à 16) sont faites, mergées et déployées.** Confirmé côté
-Railway : dernier déploiement SUCCESS du 2026-08-04, commit `9cd1d42` =
-merge de la PR #16 (onboarding), précédé de la PR #15 (tournées).
-`feature/import-export` (étape 17, export/import CSV + JSON complet du
-projet) est **committée localement, prête à pousser** — pas encore en PR.
-Chacun des trois derniers chantiers est passé par une revue
-`code-reviewer` avant merge, chacun ayant trouvé et fait corriger un vrai
-problème avant qu'il n'atteigne la prod (voir étapes 15, 16 et 17
-ci-dessous).
+Dernière mise à jour : 2026-08-05 — **toutes les étapes du plan initial (1
+à 17) sont faites, mergées et déployées.** PR #17 (import/export CSV+JSON)
+mergée sur GitHub et déployée — confirmé côté Railway : dernier déploiement
+SUCCESS du 2026-08-05 01:38 UTC. Chacun des trois derniers chantiers (15,
+16, 17) est passé par une revue `code-reviewer` avant merge, chacun ayant
+trouvé et fait corriger un vrai problème avant qu'il n'atteigne la prod.
 
 ## Statut global
 
@@ -81,18 +77,18 @@ sur plusieurs fonctionnalités déjà codées et déployées.
 | 14 | Gestion des accès par projet, kits, quantités, couleurs personnalisables, ordre des types réordonnable | ✅ Mergé et déployé — migrations `0018`→`0024` | 2026-08-03 |
 | 15 | Module transport en tournées multi-arrêts : `TransportStop`, matériel par portion, retrait de `transport_type`, migration `0025`, manifeste par arrêt | ✅ Mergée dans `main` et déployée. Revue `code-reviewer` : 1 correctif (durée négative acceptée sur le chemin de compat A→B) | 2026-08-04 |
 | 16 | Onboarding de projet (écran bloquant + garde de route), suppression cascade de projet/matériel/technicien | ✅ Mergée dans `main` et déployée — migration `0026` (renumérotée depuis `0025`, collision avec l'étape 15 résolue). Revue `code-reviewer` : 1 **bug bloquant** corrigé (`DELETE /api/projects/{id}/` en 500 sur tout projet réel) + exemption `/utilisateurs` de la garde d'onboarding | 2026-08-04 |
-| 17 | Export/import CSV par section (matériel/lieux/techniciens/spectacles) + export/import JSON complet du projet (réimportable) et XML (lecture seule) | ✅ Committé sur `feature/import-export`, pas encore poussé/PR. `portability.py` réparé pour `TransportStop` (remappage des arrêts par position, pas par id). Revue `code-reviewer` : 1 bug corrigé (import replace des lieux ne bloquait pas sur le matériel qui en fait son origine, contrairement à `VenueViewSet.destroy`) + 2 suggestions de tests ajoutées (permissions `export-csv`, tournée à 3 arrêts). Suite à 393 tests, flake8 propre, aucune migration | 2026-08-04 |
+| 17 | Export/import CSV par section (matériel/lieux/techniciens/spectacles) + export/import JSON complet du projet (réimportable) et XML (lecture seule) | ✅ Mergée dans `main` (PR #17) et déployée. `portability.py` réparé pour `TransportStop` (remappage des arrêts par position, pas par id). Revue `code-reviewer` : 1 bug corrigé (import replace des lieux ne bloquait pas sur le matériel qui en fait son origine, contrairement à `VenueViewSet.destroy`) + 2 suggestions de tests ajoutées (permissions `export-csv`, tournée à 3 arrêts). Suite à 393 tests, flake8 propre, aucune migration | 2026-08-05 |
 
 ## Prochaine action concrète
 
-→ **Pousser `feature/import-export` et ouvrir la PR** (étape 17, prête —
-voir tableau ci-dessus). Le bac à sable Claude n'a pas les credentials git :
-depuis ton poste, `git push -u origin feature/import-export` puis PR sur
-GitHub. Les nouvelles actions API : `POST/GET /api/{materials,venues,
-technicians,shows}/import-csv/` et `/export-csv/`, plus
+Aucune étape bloquante en attente — l'étape 17 (import/export CSV+JSON) est
+mergée et déployée. Les nouvelles actions API : `POST/GET /api/{materials,
+venues,technicians,shows}/import-csv/` et `/export-csv/`, plus
 `GET /api/projects/{id}/export/` (`?format=xml` pour le XML) et
-`POST /api/projects/import/`. Rien côté frontend pour l'instant (pas
-demandé) — juste les endpoints.
+`POST /api/projects/import/`. **Rien côté frontend encore** (pas demandé
+pour cette étape) — juste les endpoints, à brancher sur un écran
+(probablement Réglages/fiche projet) si Samuel veut s'en servir depuis
+l'interface plutôt qu'en appel API direct.
 
 → **`wip/checkpoint-2026-08-04` à trier** : le tooltip flottant
 du Dashboard/Parcours (`FloatingTooltip.vue`, remplace l'ancienne info-bulle
@@ -107,11 +103,16 @@ dédiée — à extraire séparément si Samuel veut le garder.
 
 - **🟡 `main` local a divergé de GitHub** : les étapes 15-16 ont été mergées
   localement (merges directs) PUIS via les PR #15/#16 sur GitHub (commits de
-  merge différents, `9cd1d42` en tête là-bas). Même contenu, deux
-  historiques. Au prochain passage sur `main` : `git fetch` puis réaligner
-  le `main` local sur `origin/main` plutôt que de pousser par-dessus.
-  (Le `git fetch` est impossible depuis le bac à sable Claude — vérifié via
-  l'API Railway, pas via git.)
+  merge différents, `9cd1d42` en tête là-bas) ; l'étape 17 (PR #17) a
+  ensuite été mergée directement sur GitHub sans passer par un merge local
+  équivalent — le `main` local du bac à sable est donc maintenant encore
+  plus en retard sur `origin/main` (contenu identique jusqu'à `9cd1d42`,
+  divergent ensuite). Au prochain passage sur `main` : `git fetch` puis
+  réaligner le `main` local sur `origin/main` plutôt que de pousser
+  par-dessus. (Le `git fetch` est impossible depuis le bac à sable Claude —
+  confirmé de nouveau en tentant ce fetch le 2026-08-05 : « Host key
+  verification failed » ; le statut de déploiement est vérifié via l'API
+  Railway, pas via git.)
 - **🟡 La branche `docs/suivi-post-merge-2026-08-04` (mises à jour de ce
   fichier) est locale seulement** — à pousser et passer en PR (la protection
   de `main` s'applique aussi aux changements doc).
