@@ -167,10 +167,16 @@ def import_venues_csv(project, text, mode):
     """Importe `text` (CSV lieux) dans `project`.
 
     `replace` : refuse (sans rien supprimer) si un lieu existant est encore
-    référencé par un spectacle ou un arrêt de tournée (`Show.venue`/
+    référencé par un spectacle, un arrêt de tournée (`Show.venue`/
     `TransportStop.venue` sont en `PROTECT` — voir models.py, tournées
-    multi-arrêts du 2026-08-04) — même logique que `VenueViewSet.destroy`,
-    appliquée ici à l'ensemble du projet avant de rien toucher."""
+    multi-arrêts du 2026-08-04), OU du matériel qui en fait son lieu
+    d'origine (`Material.venue` est en `SET_NULL` côté modèle, mais
+    obligatoire à la saisie depuis le 2026-07-30 — le vider silencieusement
+    contredirait cette règle) — même logique que `VenueViewSet.destroy`
+    (revue code-reviewer du 2026-08-04 : le premier passage ne vérifiait
+    que spectacles/transports, laissant un lieu encore utilisé comme
+    origine de matériel se faire supprimer sans avertissement), appliquée
+    ici à l'ensemble du projet avant de rien toucher."""
     _validate_mode(mode)
     rows = parse_csv_rows(text, VENUE_CSV_HEADER)
 
@@ -181,13 +187,14 @@ def import_venues_csv(project, text, mode):
             for venue in existing:
                 show_count = venue.shows.count()
                 transport_count = TransportStop.objects.filter(venue=venue).count()
-                if show_count or transport_count:
+                material_count = venue.materials.count()
+                if show_count or transport_count or material_count:
                     blocked.append(venue.name)
             if blocked:
                 raise CsvImportError(
-                    "Remplacement impossible : ces lieux sont encore utilisés par des spectacles ou "
-                    "déplacements — " + ', '.join(blocked) + ". Retire-les de ces fiches avant de "
-                    "remplacer, ou importe en mode « à la suite »."
+                    "Remplacement impossible : ces lieux sont encore utilisés par des spectacles, "
+                    "déplacements ou du matériel — " + ', '.join(blocked) + ". Retire-les de ces "
+                    "fiches avant de remplacer, ou importe en mode « à la suite »."
                 )
             project.venues.all().delete()
 

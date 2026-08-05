@@ -201,6 +201,29 @@ class CsvImportReplaceModeTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(Venue.objects.filter(project=self.project).count(), venues_before)
 
+    def test_replace_venues_blocked_when_only_referenced_by_material(self):
+        """Un lieu qui n'est référencé QUE comme origine de matériel (aucun
+        spectacle, aucun arrêt de tournée) doit aussi bloquer le remplacement
+        — le lieu de la fixture ci-dessus (`entrepot`) est *aussi* un arrêt
+        de transport, ce qui masquait ce cas isolé (bug trouvé en revue de
+        code le 2026-08-04 : le premier passage de `import_venues_csv` ne
+        vérifiait que spectacles/transports, laissant `Material.venue` se
+        faire vider silencieusement — `SET_NULL` — à l'import)."""
+        lonely_venue = Venue.objects.create(project=self.project, name="Local isolé", code="ISOL")
+        material = Material.objects.create(project=self.project, name="Ampli", venue=lonely_venue, quantity=1)
+        venues_before = Venue.objects.filter(project=self.project).count()
+        csv_text = _make_csv(
+            ['Nom', 'Code', 'Adresse', 'Contact', 'Coordonnées contact', 'Entrepôt', 'Latitude', 'Longitude', 'Notes'],
+            [['Studio B', 'STUB', '', '', '', 'Non', '', '', '']],
+        )
+        response = self.client.post(
+            '/api/venues/import-csv/', {'project': self.project.id, 'mode': 'replace', 'csv': csv_text}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Venue.objects.filter(project=self.project).count(), venues_before)
+        material.refresh_from_db()
+        self.assertEqual(material.venue_id, lonely_venue.id)
+
 
 class CsvImportPermissionTests(TestCase):
     """`can_edit_project` (permissions.py) gate ces actions — un viewer ou un

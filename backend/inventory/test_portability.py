@@ -23,6 +23,7 @@ from .models import (
     Material,
     MaterialCategory,
     Project,
+    ProjectMembership,
     Show,
     ShowMaterial,
     ShowTechnician,
@@ -38,6 +39,7 @@ from .portability import (
     export_project_data,
     import_project_data,
 )
+from .test_project_access import _make_member
 
 
 def _build_full_project():
@@ -154,6 +156,54 @@ class PortabilityRoundTripTests(TestCase):
 
         # Le projet source n'est jamais modifié.
         self.assertEqual(Material.objects.filter(project=project).count(), 2)
+
+    def test_round_trip_preserves_multi_stop_transport_material_portions(self):
+        """Le remappage des `stops` se fait par POSITION (`order`), pas par
+        id (les ids d'origine ne survivent pas à l'import) — le cas non
+        trivial est une ligne de matériel qui charge/décharge NI au premier
+        NI au dernier arrêt d'une tournée à 3 arrêts, le vrai scénario que
+        les tournées multi-arrêts (2026-08-04) sont censées couvrir.
+        `_build_full_project` ne teste qu'une tournée à 2 arrêts, où `order`
+        et l'index de la liste coïncident déjà — ce test isole le
+        remappage lui-même (suggéré en revue de code du 2026-08-04)."""
+        project = Project.objects.create(name="Tournée 3 arrêts")
+        venue_a = Venue.objects.create(project=project, name="Entrepôt", is_storage=True)
+        venue_b = Venue.objects.create(project=project, name="Salle B")
+        venue_c = Venue.objects.create(project=project, name="Salle C")
+        categorie = MaterialCategory.objects.get(project=project, name="Audio")
+        materiel = Material.objects.create(
+            project=project, name="Enceinte", category=categorie, venue=venue_b, quantity=1,
+        )
+        spectacle = Show.objects.create(
+            project=project, title="Filage", venue=venue_c, event_type=Show.EVENT_PERFORMANCE,
+            start_datetime=timezone.now(), end_datetime=timezone.now() + timezone.timedelta(hours=1),
+        )
+        transport = Transport.objects.create(show=spectacle, scheduled_datetime=timezone.now())
+        TransportStop.objects.create(transport=transport, venue=venue_a, order=0, travel_minutes_from_previous=0)
+        stop_b = TransportStop.objects.create(
+            transport=transport, venue=venue_b, order=1, travel_minutes_from_previous=20,
+        )
+        stop_c = TransportStop.objects.create(
+            transport=transport, venue=venue_c, order=2, travel_minutes_from_previous=30,
+        )
+        # Charge au 2e arrêt (B), décharge au 3e (C) — ni le premier ni le dernier.
+        TransportMaterial.objects.create(
+            transport=transport, material=materiel, quantity=1, load_stop=stop_b, unload_stop=stop_c,
+        )
+
+        data = export_project_data(project)
+        new_project, _counts = import_project_data(data)
+
+        new_transport = Transport.objects.get(show__project=new_project)
+        new_tm = new_transport.transport_materials.get()
+        self.assertEqual(new_tm.load_stop.venue.name, "Salle B")
+        self.assertEqual(new_tm.load_stop.order, 1)
+        self.assertEqual(new_tm.unload_stop.venue.name, "Salle C")
+        self.assertEqual(new_tm.unload_stop.order, 2)
+        self.assertEqual(
+            [s.venue.name for s in new_transport.ordered_stops],
+            ["Entrepôt", "Salle B", "Salle C"],
+        )
 
     def test_name_override_replaces_file_name(self):
         project, _refs = _build_full_project()
@@ -328,3 +378,27 @@ class SectionCsvExportTests(TestCase):
         response = self.client.get('/api/shows/export-csv/', {'project': self.project.id})
         content = self._assert_csv_response(response)
         self.assertIn('Vertiges', content)
+
+
+class CsvExportPermissionTests(TestCase):
+    """`can_access_project` (permissions.py, rôle viewer minimum en lecture)
+    gate `export-csv` — même famille de contrôle que `CsvImportPermissionTests`
+    (test_csv_import.py) pour `import-csv`, ajoutée en revue de code du
+    2026-08-04 : `SectionCsvExportTests` ci-dessus n'utilisait qu'un
+    superutilisateur, laissant la frontière de rôle non testée pour l'export."""
+
+    def setUp(self):
+        self.project, _refs = _build_full_project()
+        self.client = APIClient()
+
+    def test_viewer_can_export(self):
+        django_user, _profile = _make_member('viewer2@example.com', self.project, ProjectMembership.ROLE_VIEWER)
+        self.client.force_authenticate(user=django_user)
+        response = self.client.get('/api/materials/export-csv/', {'project': self.project.id})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_non_member_cannot_export(self):
+        django_user, _profile = _make_member('etranger2@example.com')
+        self.client.force_authenticate(user=django_user)
+        response = self.client.get('/api/materials/export-csv/', {'project': self.project.id})
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
