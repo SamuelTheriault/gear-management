@@ -98,6 +98,9 @@ const navItems = [
       { label: 'Cohérence', to: '/coherence' },
     ],
   },
+  // Transports en 2e position (2026-08-05, demande de Samuel) : c'est la
+  // section consultée le plus souvent après le Tableau de bord.
+  { label: 'Transports', to: '/transports' },
   {
     label: 'Matériel',
     to: '/materiel',
@@ -112,7 +115,6 @@ const navItems = [
   { label: 'Spectacles', to: '/spectacles' },
   { label: 'Lieux', to: '/lieux' },
   { label: 'Techniciens', to: '/techniciens' },
-  { label: 'Transports', to: '/transports' },
 ]
 
 const bottomNavItems = [
@@ -262,7 +264,7 @@ const activeProjectIdModel = computed({
   gap: 10px;
   padding: 10px 8px;
   border-radius: 8px;
-  color: rgba(var(--fg-rgb), 0.55);
+  color: rgba(var(--fg-rgb), 0.63);
   font: 500 13px system-ui;
   text-decoration: none;
 }
@@ -288,7 +290,7 @@ const activeProjectIdModel = computed({
 .shell-nav__subitem {
   padding: 7px 8px;
   border-radius: 8px;
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
   font: 500 12.5px system-ui;
   text-decoration: none;
 }
@@ -332,7 +334,7 @@ const activeProjectIdModel = computed({
   border: 1px solid var(--border-card);
   border-radius: var(--radius-notch-sm);
   background: rgba(var(--fg-rgb), 0.04);
-  color: rgba(var(--fg-rgb), 0.55);
+  color: rgba(var(--fg-rgb), 0.63);
   font: 600 11px system-ui;
   cursor: pointer;
 }
@@ -356,7 +358,7 @@ const activeProjectIdModel = computed({
 
 .shell-nav__email {
   font: 500 11px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

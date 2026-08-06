@@ -186,13 +186,13 @@ const groups = computed(() => [
 
 .header__count {
   font: 600 12.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .hint {
   padding: 32px 40px;
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .hint--error {
@@ -205,14 +205,14 @@ const groups = computed(() => [
   border-radius: var(--radius-notch-lg);
   padding: 24px;
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.55);
+  color: rgba(var(--fg-rgb), 0.63);
 }
 
 .group-title {
   font: 700 11px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
   margin: 4px 0 10px;
 }
 
@@ -286,7 +286,7 @@ const groups = computed(() => [
 
 .side__context {
   font: 400 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .side__time {

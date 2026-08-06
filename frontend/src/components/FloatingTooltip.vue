@@ -63,7 +63,7 @@ defineProps({
 
 .floating-tooltip__time {
   font: 600 11px system-ui;
-  color: rgba(var(--fg-rgb), 0.55);
+  color: rgba(var(--fg-rgb), 0.63);
   margin-bottom: 6px;
 }
 

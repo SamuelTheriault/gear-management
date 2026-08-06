@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
+import LeaveEditPrompt from '../components/LeaveEditPrompt.vue'
 import { api } from '../api/client'
 import { useFicheEdition } from '../composables/useFicheEdition'
 import { useSuppressionFiche } from '../composables/useSuppressionFiche'
@@ -368,6 +369,7 @@ const scheduleWindowLabel = computed(() => {
 const {
   editing, draft, saving, saveError, fieldErrors, canSave,
   startEdit, cancelEdit, save,
+  leavePrompt, leaveSaving, leaveError, stayOnPage, saveAndLeave,
 } = useFicheEdition({
   entity: material,
   endpoint: '/materials',
@@ -936,6 +938,16 @@ watch(() => route.params.id, cancelEdit)
         </div>
       </div>
     </div>
+
+    <!-- Quitter une fiche en cours d'édition demande d'abord quoi faire
+         (2026-08-05) — voir useLeaveGuard.js. -->
+    <LeaveEditPrompt
+      :visible="leavePrompt"
+      :saving="leaveSaving"
+      :error="leaveError"
+      @stay="stayOnPage"
+      @save="saveAndLeave"
+    />
   </AppShell>
 </template>
 
@@ -950,7 +962,7 @@ watch(() => route.params.id, cancelEdit)
 .hint {
   padding: 32px 40px;
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .hint--error {
@@ -959,7 +971,7 @@ watch(() => route.params.id, cancelEdit)
 
 .breadcrumb {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .breadcrumb :deep(a) {
@@ -990,7 +1002,7 @@ watch(() => route.params.id, cancelEdit)
 
 .header__meta {
   font: 400 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
   margin-top: 6px;
 }
 
@@ -1003,7 +1015,7 @@ watch(() => route.params.id, cancelEdit)
 }
 
 .header__badge--inactive {
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
   background: rgba(var(--fg-rgb), 0.08);
 }
 
@@ -1026,7 +1038,7 @@ watch(() => route.params.id, cancelEdit)
   font: 700 11px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
 }
 
 .summary-value {
@@ -1037,7 +1049,7 @@ watch(() => route.params.id, cancelEdit)
 
 .summary-value--muted {
   font-weight: 400;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .summary-link {
@@ -1045,12 +1057,6 @@ watch(() => route.params.id, cancelEdit)
   text-decoration: none;
 }
 
-.card-title {
-  font: 700 12px var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: rgba(var(--fg-rgb), 0.65);
-}
 
 .card-text {
   font: 400 13.5px/1.6 system-ui;
@@ -1101,7 +1107,7 @@ watch(() => route.params.id, cancelEdit)
 
 .tree-item__meta {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .badge {
@@ -1138,7 +1144,7 @@ watch(() => route.params.id, cancelEdit)
 
 .schedule-window {
   font: 600 12px var(--font-mono);
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .repartition {
@@ -1159,7 +1165,7 @@ watch(() => route.params.id, cancelEdit)
   position: absolute;
   transform: translateX(-50%);
   font: 500 10px var(--font-mono);
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
   white-space: nowrap;
 }
 
@@ -1181,7 +1187,7 @@ watch(() => route.params.id, cancelEdit)
 
 .repartition-row__detail {
   font: 400 10.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
 }
 
 .repartition-track {
@@ -1279,7 +1285,7 @@ watch(() => route.params.id, cancelEdit)
 
 .row__subtitle {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
   margin-top: 2px;
 }
 
@@ -1293,7 +1299,7 @@ watch(() => route.params.id, cancelEdit)
 
 .row-empty {
   font: 500 12.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   padding: 10px 12px;
 }
 </style>

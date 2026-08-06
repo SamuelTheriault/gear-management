@@ -175,7 +175,7 @@ function actionFor(issue) {
 
 .header__subtitle {
   font: 400 12.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
   margin-top: 6px;
 }
 
@@ -188,7 +188,7 @@ function actionFor(issue) {
 .hint {
   padding: 32px 40px;
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .hint--error {
@@ -216,7 +216,7 @@ function actionFor(issue) {
 
 .empty-card__label {
   font: 600 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
 }
 
 .group {
@@ -243,12 +243,12 @@ function actionFor(issue) {
   font: 700 11px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .group-count {
   font: 500 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.3);
+  color: rgba(var(--fg-rgb), 0.38);
 }
 
 .issue {
@@ -281,7 +281,7 @@ function actionFor(issue) {
 
 .issue__context {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
   margin-top: 2px;
 }
 

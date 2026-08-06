@@ -43,6 +43,72 @@ async function loadVenues() {
 
 watch(activeProjectId, loadVenues, { immediate: true })
 
+// --- Ordre des lieux (2026-08-05, demande de Samuel) ---
+//
+// L'ordre choisi ici est celui de `Venue.display_order` : il vaut pour toute
+// l'app, puisque `Venue.Meta.ordering` s'appuie dessus — et notamment pour
+// les puces de lieu du Tableau de bord, comme l'ordre des types réglé depuis
+// les Réglages.
+//
+// Le glisser-déposer enregistre IMMÉDIATEMENT (un seul appel `reorder`),
+// contrairement au brouillon des Réglages : il n'y a pas de bouton
+// « Enregistrer » sur cet écran, et laisser des cartes réordonnées à l'écran
+// sans que ce soit persisté serait trompeur.
+const draggedId = ref(null)
+const dropTargetId = ref(null)
+const savingOrder = ref(false)
+const orderError = ref(null)
+
+function onVenueDragStart(id, event) {
+  draggedId.value = id
+  // `effectAllowed`/`setData` : sans eux, Firefox refuse de démarrer le
+  // glisser. La donnée elle-même ne sert pas, l'état vit dans les `ref`.
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('text/plain', String(id))
+}
+
+function onVenueDragOver(id) {
+  if (draggedId.value && draggedId.value !== id) dropTargetId.value = id
+}
+
+function onVenueDragEnd() {
+  draggedId.value = null
+  dropTargetId.value = null
+}
+
+async function onVenueDrop(id) {
+  const source = draggedId.value
+  onVenueDragEnd()
+  if (!source || source === id) return
+
+  const ids = venues.value.map((v) => v.id)
+  const depuis = ids.indexOf(source)
+  const vers = ids.indexOf(id)
+  if (depuis === -1 || vers === -1) return
+  ids.splice(depuis, 1)
+  ids.splice(vers, 0, source)
+
+  // Réordonnancement optimiste : les cartes bougent tout de suite, l'appel
+  // suit. En cas d'échec, on recharge pour revenir à l'ordre réellement
+  // enregistré plutôt que de laisser l'écran mentir.
+  const avant = venues.value
+  venues.value = ids.map((venueId) => avant.find((v) => v.id === venueId))
+  savingOrder.value = true
+  orderError.value = null
+  try {
+    const data = await api.post('/venues/reorder/', {
+      project: activeProjectId.value,
+      order: ids,
+    })
+    venues.value = Array.isArray(data) ? data : (data.results ?? [])
+  } catch (e) {
+    orderError.value = e.data?.order?.[0] ?? e.data?.detail ?? "Impossible d'enregistrer l'ordre des lieux."
+    await loadVenues()
+  } finally {
+    savingOrder.value = false
+  }
+}
+
 // Aperçu déterministe par id — voir la note de tête du module et
 // LieuDetailView.vue pour la limite (approximation, pas la couleur exacte
 // du Parcours Matériel, qui cycle par ordre d'apparition dans les données).
@@ -127,6 +193,7 @@ async function addVenue() {
         <div class="page-count">{{ decorated.length }} lieu(x)</div>
       </div>
 
+      <div v-if="orderError" class="hint hint--error">{{ orderError }}</div>
       <div v-if="loading" class="hint">Chargement…</div>
       <div v-else-if="loadError" class="hint hint--error">
         Impossible de charger les lieux. Es-tu connecté (session Django) ?
@@ -134,7 +201,20 @@ async function addVenue() {
 
       <template v-else>
         <div v-if="decorated.length > 0" class="grid">
-          <div v-for="v in decorated" :key="v.id" class="card">
+          <div
+            v-for="v in decorated"
+            :key="v.id"
+            class="card"
+            :class="{
+              'card--dragging': draggedId === v.id,
+              'card--drop': dropTargetId === v.id,
+            }"
+            draggable="true"
+            @dragstart="onVenueDragStart(v.id, $event)"
+            @dragover.prevent="onVenueDragOver(v.id)"
+            @drop.prevent="onVenueDrop(v.id)"
+            @dragend="onVenueDragEnd"
+          >
             <div class="card-top">
               <div class="card-name" :title="v.name">
                 <span
@@ -147,6 +227,11 @@ async function addVenue() {
                 >{{ v.code }}</span>{{ v.name }}
               </div>
               <div class="card-tag" :style="{ color: v.tagColor, background: v.tagBg }">{{ v.tag }}</div>
+              <!-- Poignée à 4 points en carré, même geste que l'ordre des
+                   types dans les Réglages. -->
+              <span class="drag-handle" title="Glisser pour changer l'ordre">
+                <span v-for="n in 4" :key="n" class="drag-handle__dot" />
+              </span>
             </div>
             <div class="card-address">{{ v.address || 'Adresse non renseignée' }}</div>
             <div class="card-bottom">
@@ -231,12 +316,12 @@ async function addVenue() {
 
 .page-count {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .hint {
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .hint--error {
@@ -257,6 +342,17 @@ async function addVenue() {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* Réordonnancement (2026-08-05) : même retour visuel que les lignes de
+   couleurs des Réglages — la carte tirée s'estompe, celle survolée montre
+   où elle va atterrir. */
+.card--dragging {
+  opacity: 0.45;
+}
+
+.card--drop {
+  box-shadow: inset 0 2px 0 0 var(--accent);
 }
 
 .card-top {
@@ -292,13 +388,13 @@ async function addVenue() {
   background: rgba(var(--fg-rgb), 0.08);
   font: 700 10.5px var(--font-mono);
   letter-spacing: 0.06em;
-  color: rgba(var(--fg-rgb), 0.65);
+  color: rgba(var(--fg-rgb), 0.72);
   vertical-align: 1px;
 }
 
 .card-address {
   font: 400 12.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .card-bottom {
@@ -311,7 +407,7 @@ async function addVenue() {
 
 .card-contact {
   font: 400 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .card-link {
@@ -343,7 +439,7 @@ async function addVenue() {
 
 .empty__title {
   font: 600 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
 }
 
 </style>

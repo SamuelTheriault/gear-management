@@ -1,12 +1,18 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
+import LeaveEditPrompt from '../components/LeaveEditPrompt.vue'
 import AssignerMaterielModal from '../components/AssignerMaterielModal.vue'
 import AssignerTechnicienModal from '../components/AssignerTechnicienModal.vue'
 import { api } from '../api/client'
 import { useFicheEdition } from '../composables/useFicheEdition'
 import { useSuppressionFiche } from '../composables/useSuppressionFiche'
+import { useEscapeKey } from '../composables/useEscapeKey'
+// Chargé à la demande : TipTap pèse l'essentiel du paquet, et l'éditeur ne
+// sert qu'en mode ÉDITION de cette fiche. En import statique, tout visiteur
+// du Tableau de bord le téléchargerait sans jamais s'en servir.
+const RichTextEditor = defineAsyncComponent(() => import('../components/RichTextEditor.vue'))
 import { EVENT_TYPE_META } from '../constants/eventTypeMeta'
 
 /**
@@ -117,7 +123,11 @@ async function loadShow() {
       api.get(`/shows/${id}/conflicts/`),
       api.get('/show-materials/', { show: resourceId }),
       api.get('/show-technicians/', { show: resourceId }),
-      api.get('/transports/', { show: id }),
+      // Transports : un montage/démontage n'en porte pas lui-même, il
+      // travaille sur ceux de son événement — même règle d'héritage que le
+      // matériel et l'équipe (2026-08-05, demande de Samuel). Un bloc de
+      // RÉPÉTITION est autonome : il garde les siens.
+      api.get('/transports/', { show: resourceId }),
       // `phases` est toujours vide côté API pour un bloc (pas de récursion) —
       // pour afficher la même chronologie sur sa fiche, on va chercher les
       // blocs frères (et l'horaire de l'événement) sur le parent.
@@ -293,6 +303,7 @@ const venues = ref([])
 const {
   editing, draft, saving, saveError, fieldErrors, lastError, canSave,
   startEdit: beginEdit, cancelEdit, save,
+  leavePrompt, leaveSaving, leaveError, stayOnPage, saveAndLeave,
 } = useFicheEdition({
   entity: show,
   endpoint: '/shows',
@@ -324,7 +335,9 @@ const {
     end_datetime: new Date(d.end).toISOString(),
     buffer_before_minutes: d.buffer_before_minutes,
     buffer_after_minutes: d.buffer_after_minutes,
-    notes: d.notes.trim(),
+    // HTML depuis le 2026-08-05 : pas de `.trim()` sur une chaîne balisée,
+    // et l'éditeur renvoie déjà '' quand il est vide.
+    notes: d.notes,
   }),
 })
 
@@ -356,6 +369,11 @@ const deletionImpact = computed(() => show.value?.deletion_impact ?? null)
 const hasCascade = computed(
   () => !!deletionImpact.value && Object.values(deletionImpact.value).some((n) => n > 0),
 )
+
+// La confirmation du ✕ d'un bloc annonce la même chose que celle de l'entête,
+// mais pour LE BLOC visé, pas pour la fiche affichée — d'où ce second
+// décompte, lu sur l'entrée de chronologie.
+const phaseImpact = computed(() => phaseToDelete.value?.deletion_impact ?? null)
 
 // --- Blocs rattachés (montage / répétition / démontage) ---
 // Un bloc est un `Show` complet rattaché par `parent_show` : il a son lieu
@@ -534,9 +552,45 @@ async function savePhase(force = false) {
   }
 }
 
-async function removePhase(phase) {
-  await api.delete(`/shows/${phase.id}/`)
-  await loadShow()
+// Confirmation avant de retirer un bloc (2026-08-05, demande de Samuel) : le
+// ✕ supprimait un `Show` complet — avec ses assignations et ses déplacements
+// (FK en CASCADE) — sans rien demander, alors que la même suppression depuis
+// l'entête de la fiche passe par une confirmation. Un geste destructeur ne
+// doit pas dépendre de l'endroit d'où on le déclenche.
+const phaseToDelete = ref(null)
+const deletingPhase = ref(false)
+const phaseDeleteError = ref(null)
+
+function askRemovePhase(phase) {
+  phaseToDelete.value = phase
+  phaseDeleteError.value = null
+}
+
+function cancelRemovePhase() {
+  phaseToDelete.value = null
+  phaseDeleteError.value = null
+}
+
+// Échap ferme la confirmation, comme toutes les modales de l'app (point 6 de
+// l'audit ergonomie) — `useSuppressionFiche` le fait déjà pour celle de la
+// fiche, celle-ci est locale.
+useEscapeKey(() => {
+  if (phaseToDelete.value && !deletingPhase.value) cancelRemovePhase()
+})
+
+async function confirmRemovePhase() {
+  if (!phaseToDelete.value) return
+  deletingPhase.value = true
+  phaseDeleteError.value = null
+  try {
+    await api.delete(`/shows/${phaseToDelete.value.id}/`)
+    phaseToDelete.value = null
+    await loadShow()
+  } catch (e) {
+    phaseDeleteError.value = e.data?.detail ?? "Impossible de supprimer ce bloc."
+  } finally {
+    deletingPhase.value = false
+  }
 }
 
 watch(() => route.params.id, cancelEdit)
@@ -729,7 +783,10 @@ async function onTechnicienAssigned(payload) {
 
           <label class="fiche-field fiche-field--full">
             <span class="fiche-label">Notes</span>
-            <textarea v-model="draft.notes" rows="3" class="fiche-input fiche-input--area" />
+            <RichTextEditor
+              v-model="draft.notes"
+              placeholder="Gras, listes et liens acceptés — utile pour un plan de feu ou un contact de salle."
+            />
           </label>
         </div>
 
@@ -827,6 +884,13 @@ async function onTechnicienAssigned(payload) {
               <li v-if="deletionImpact.transports > 0">
                 {{ deletionImpact.transports }} déplacement(s)
               </li>
+              <!-- Une tournée qui dessert d'autres lieux n'est pas supprimée :
+                   elle perd l'arrêt de ce lieu et le matériel qu'on y
+                   manipule (2026-08-05). -->
+              <li v-if="deletionImpact.transports_shortened > 0">
+                {{ deletionImpact.transports_shortened }} déplacement(s) perdront
+                leur arrêt à ce lieu, sans être supprimés
+              </li>
             </ul>
           </template>
           <div v-if="deleteError" class="fiche-error">{{ deleteError }}</div>
@@ -846,9 +910,57 @@ async function onTechnicienAssigned(payload) {
         </div>
       </div>
 
+      <div v-if="phaseToDelete" class="fiche-confirm-backdrop" @click.self="cancelRemovePhase">
+        <div class="fiche-confirm">
+          <div class="fiche-confirm__title">Supprimer « {{ phaseToDelete.title }} » ?</div>
+          <p class="fiche-confirm__text">
+            Ce bloc est un événement à part entière. Cette action est définitive.
+          </p>
+          <template v-if="phaseImpact">
+            <p
+              v-if="phaseImpact.materials || phaseImpact.technicians || phaseImpact.transports || phaseImpact.transports_shortened"
+              class="fiche-confirm__text"
+            >
+              Conséquences :
+            </p>
+            <ul class="fiche-confirm__list">
+              <li v-if="phaseImpact.materials > 0">
+                {{ phaseImpact.materials }} assignation(s) de matériel
+              </li>
+              <li v-if="phaseImpact.technicians > 0">
+                {{ phaseImpact.technicians }} assignation(s) de technicien
+              </li>
+              <li v-if="phaseImpact.transports > 0">
+                {{ phaseImpact.transports }} déplacement(s) supprimé(s)
+              </li>
+              <li v-if="phaseImpact.transports_shortened > 0">
+                {{ phaseImpact.transports_shortened }} déplacement(s) perdront
+                leur arrêt à ce lieu, sans être supprimés
+              </li>
+            </ul>
+          </template>
+          <div v-if="phaseDeleteError" class="fiche-error">{{ phaseDeleteError }}</div>
+          <div class="fiche-confirm__actions">
+            <button type="button" class="fiche-btn" :disabled="deletingPhase" @click="cancelRemovePhase">
+              Annuler
+            </button>
+            <button
+              type="button"
+              class="fiche-btn fiche-btn--danger"
+              :disabled="deletingPhase"
+              @click="confirmRemovePhase"
+            >
+              {{ deletingPhase ? 'Suppression…' : 'Supprimer' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div v-if="!editing && show.notes" class="card">
         <div class="card-title">Notes</div>
-        <div class="card-text">{{ show.notes }}</div>
+        <!-- eslint-disable-next-line vue/no-v-html -- assaini à l'écriture
+             par `inventory/rich_text.py` (liste blanche de balises). -->
+        <div class="rich-text" v-html="show.notes" />
       </div>
 
       <div class="card">
@@ -968,7 +1080,7 @@ async function onTechnicienAssigned(payload) {
               v-if="!p.isEvent && !p.isCurrent"
               class="row__remove"
               title="Supprimer ce bloc"
-              @click.stop="removePhase(p)"
+              @click.stop="askRemovePhase(p)"
             >✕</div>
           </div>
           <div v-if="decoratedPhases.length === 0" class="row-empty">
@@ -1032,13 +1144,20 @@ async function onTechnicienAssigned(payload) {
       </div>
 
       <div class="card">
-        <div class="card-title" style="margin-bottom: 14px">Transports liés</div>
+        <div class="card-title" style="margin-bottom: 14px">
+          Transports liés<template v-if="inherited"> — de l'événement</template>
+        </div>
         <div class="row-list">
-          <div v-for="tr in decoratedTransports" :key="tr.id" class="row">
+          <RouterLink
+            v-for="tr in decoratedTransports"
+            :key="tr.id"
+            :to="`/transports/${tr.id}`"
+            class="row row--clickable"
+          >
             <div class="row__badge">Tournée</div>
             <div class="row__body row__body--flex">{{ tr.routeLabel }}</div>
             <div class="row__time">{{ tr.time }}</div>
-          </div>
+          </RouterLink>
           <div v-if="decoratedTransports.length === 0" class="row-empty">Aucun transport lié.</div>
         </div>
       </div>
@@ -1062,6 +1181,16 @@ async function onTechnicienAssigned(payload) {
       @close="showAssignTechnicien = false"
       @assigned="onTechnicienAssigned"
     />
+
+    <!-- Quitter une fiche en cours d'édition demande d'abord quoi faire
+         (2026-08-05) — voir useLeaveGuard.js. -->
+    <LeaveEditPrompt
+      :visible="leavePrompt"
+      :saving="leaveSaving"
+      :error="leaveError"
+      @stay="stayOnPage"
+      @save="saveAndLeave"
+    />
   </AppShell>
 </template>
 
@@ -1076,7 +1205,7 @@ async function onTechnicienAssigned(payload) {
 .hint {
   padding: 32px 40px;
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .hint--error {
@@ -1085,7 +1214,7 @@ async function onTechnicienAssigned(payload) {
 
 .breadcrumb {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .breadcrumb :deep(a) {
@@ -1118,7 +1247,7 @@ async function onTechnicienAssigned(payload) {
 
 .header__meta {
   font: 400 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
   margin-top: 6px;
 }
 
@@ -1165,12 +1294,6 @@ async function onTechnicienAssigned(payload) {
   margin-bottom: 14px;
 }
 
-.card-title {
-  font: 700 12px var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: rgba(var(--fg-rgb), 0.65);
-}
 
 .card-action {
   font: 600 11.5px system-ui;
@@ -1211,7 +1334,7 @@ async function onTechnicienAssigned(payload) {
 .row__remove {
   flex: none;
   padding: 2px 8px;
-  color: rgba(var(--fg-rgb), 0.3);
+  color: rgba(var(--fg-rgb), 0.38);
   font: 600 13px system-ui;
   cursor: pointer;
 }
@@ -1237,7 +1360,7 @@ async function onTechnicienAssigned(payload) {
   font: 700 11px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
 }
 
 .summary-value {
@@ -1311,7 +1434,7 @@ async function onTechnicienAssigned(payload) {
   text-overflow: ellipsis;
   white-space: nowrap;
   font: 400 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .row-list {
@@ -1342,6 +1465,11 @@ async function onTechnicienAssigned(payload) {
    curseur ne doit pas laisser croire qu'un clic ferait quelque chose. */
 .row--clickable {
   cursor: pointer;
+  /* La liste des transports liés utilise la même classe sur un
+     `<RouterLink>` (2026-08-05) : le soulignement d'un lien n'a rien à faire
+     sur une ligne de liste. */
+  text-decoration: none;
+  color: inherit;
 }
 
 /* Fiche actuellement affichée (2026-07-31) : surbrillance plus marquée que
@@ -1418,7 +1546,7 @@ async function onTechnicienAssigned(payload) {
 
 .row__subtitle {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 /* Catégorie du matériel, à la suite du titre sur la même ligne (2026-08-01,
@@ -1426,14 +1554,14 @@ async function onTechnicienAssigned(payload) {
    discrets que le titre pour rester secondaire. */
 .row__cat {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 /* Quantité entre parenthèses, à la suite (2026-08-01, remplace le `×N`
    accolé au titre). */
 .row__qty {
   font: 600 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
 }
 
 .row__conflict {
@@ -1446,7 +1574,7 @@ async function onTechnicienAssigned(payload) {
 
 .row__remove {
   font: 700 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
   cursor: pointer;
   padding: 2px 6px;
   flex: none;
@@ -1455,7 +1583,7 @@ async function onTechnicienAssigned(payload) {
 .row__badge {
   font: 700 10px system-ui;
   text-transform: uppercase;
-  color: rgba(var(--fg-rgb), 0.55);
+  color: rgba(var(--fg-rgb), 0.63);
   background: rgba(var(--fg-rgb), 0.08);
   padding: 2px 8px;
   border-radius: 0 6px 0 6px;
@@ -1463,12 +1591,12 @@ async function onTechnicienAssigned(payload) {
 
 .row__time {
   font: 600 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .row-empty {
   font: 500 12.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   padding: 10px 12px;
 }
 

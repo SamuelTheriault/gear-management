@@ -589,7 +589,7 @@ async function submitTransport(force = false) {
 
 .page-count {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .filters {
@@ -613,7 +613,7 @@ async function submitTransport(force = false) {
   font: 700 10.5px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
   margin-right: 2px;
 }
 
@@ -631,7 +631,7 @@ async function submitTransport(force = false) {
   border-radius: 0 6px 0 6px;
   font: 600 11.5px system-ui;
   cursor: pointer;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .group-toggle__item--active {
@@ -641,7 +641,7 @@ async function submitTransport(force = false) {
 
 .hint {
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .hint--error {
@@ -664,7 +664,7 @@ async function submitTransport(force = false) {
   font: 700 11px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .transport-row {
@@ -724,12 +724,12 @@ async function submitTransport(force = false) {
 }
 
 .transport-row__arrow {
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
 }
 
 .transport-row__show {
   font: 400 11px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -746,7 +746,7 @@ async function submitTransport(force = false) {
 
 .transport-row__time-sub {
   font: 400 11px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .transport-row__tech {
@@ -785,7 +785,7 @@ async function submitTransport(force = false) {
 
 .transport-row__materiel {
   font: 600 11px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
   min-width: 110px;
 }
 
@@ -828,7 +828,7 @@ async function submitTransport(force = false) {
 
 .empty__title {
   font: 600 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
 }
 
 .reference-times {
@@ -851,7 +851,7 @@ async function submitTransport(force = false) {
   font: 700 10px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .reference-times__value {

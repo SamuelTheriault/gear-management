@@ -189,7 +189,7 @@ body {
   font: 700 11px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
 }
 
 .fiche-input {
@@ -254,7 +254,7 @@ body {
 
 .fiche-hint {
   font: 500 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
 }
 
 /* Zone de suppression, en bas du formulaire d'édition et séparée du reste :
@@ -271,7 +271,7 @@ body {
 
 .fiche-danger__hint {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
   flex: 1;
   min-width: 180px;
 }
@@ -307,7 +307,7 @@ body {
 .fiche-confirm__text {
   margin: 0;
   font: 400 13px/1.5 system-ui;
-  color: rgba(var(--fg-rgb), 0.65);
+  color: rgba(var(--fg-rgb), 0.72);
 }
 
 /* Nom exact à retaper pour confirmer une suppression à confirmation textuelle
@@ -385,7 +385,7 @@ body {
   font: 600 12px system-ui;
   cursor: pointer;
   background: transparent;
-  color: rgba(var(--fg-rgb), 0.55);
+  color: rgba(var(--fg-rgb), 0.63);
   border: 1px solid rgba(var(--fg-rgb), 0.12);
 }
 
@@ -483,7 +483,7 @@ body {
   font: 700 10.5px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .add-form__row {
@@ -541,7 +541,7 @@ body {
   font: 700 9.5px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .add-form__input {
@@ -576,7 +576,7 @@ body {
 }
 
 .add-form__submit--disabled {
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
   background: rgba(var(--fg-rgb), 0.08);
   cursor: not-allowed;
 }
@@ -652,7 +652,7 @@ body {
   font: 700 10.5px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .parcours-picker__link {
@@ -814,7 +814,7 @@ body {
   top: 0;
   transform: translateX(-50%);
   font: 500 10px var(--font-mono);
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
   white-space: nowrap;
 }
 
@@ -837,7 +837,7 @@ body {
 
 .parcours-row__meta {
   font: 400 10.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -863,6 +863,15 @@ body {
   color: rgba(var(--fg-rgb), 0.85);
   white-space: nowrap;
   cursor: default;
+}
+
+/* Segment cliquable (2026-08-05, Parcours Technicien) : le bloc devient un
+   `<RouterLink>` vers la fiche de son spectacle ou de son déplacement. Le
+   texte reste celui du segment, pas un texte de lien. */
+.parcours-seg--clickable {
+  cursor: pointer;
+  text-decoration: none;
+  color: rgba(var(--fg-rgb), 0.85);
 }
 
 .parcours-seg__label {
@@ -974,5 +983,117 @@ body {
   padding: 28px 8px;
   text-align: center;
   font: 500 12.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
+}
+
+/* ---------------------------------------------------------------------------
+   Titre de carte (2026-08-05) — remontée en classe globale : les six fiches
+   de détail en portaient chacune une copie identique dans leur `<style
+   scoped>`, un cas de plus après `.page-title`/`.header__title`/`.chip`
+   (point 2 de l'audit ergonomie).
+
+   Agrandi et éclairci au passage, à la demande de Samuel (« un peu plus en
+   évidence, un peu plus gros ») : 12 → 13.5px et opacité 0.65 → 0.85. Reste
+   en majuscules espacées, ce qui le distingue de `.header__title` (titre de
+   fiche, jamais en majuscules).
+   ------------------------------------------------------------------------ */
+.card-title {
+  font: 700 13.5px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgba(var(--fg-rgb), 0.85);
+}
+
+/* ---------------------------------------------------------------------------
+   Poignée de réordonnancement (2026-08-05) — une grille CSS de 4 pastilles,
+   pas une image ni un caractère : elle suit la couleur du texte et reste
+   nette à n'importe quelle densité d'écran.
+
+   Globale depuis qu'elle sert à deux endroits : l'ordre des types dans les
+   Réglages et l'ordre des lieux sur la page Lieux. Dans les deux cas, c'est
+   la LIGNE entière qui est `draggable` — la poignée ne fait que l'annoncer.
+   ------------------------------------------------------------------------ */
+.drag-handle {
+  display: grid;
+  grid-template-columns: repeat(2, 4px);
+  gap: 3px;
+  padding: 6px;
+  border-radius: 4px;
+  cursor: grab;
+  flex: none;
+}
+
+.drag-handle:hover {
+  background: rgba(var(--fg-rgb), 0.06);
+}
+
+.drag-handle__dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgba(var(--fg-rgb), 0.35);
+}
+
+*:hover > .drag-handle .drag-handle__dot {
+  background: rgba(var(--fg-rgb), 0.55);
+}
+
+/* ---------------------------------------------------------------------------
+   Rendu des notes en texte riche (2026-08-05) — utilisé à la fois DANS
+   l'éditeur (`RichTextEditor.vue`) et en mode lecture sur les fiches, pour
+   que ce qu'on écrit ressemble à ce qu'on lira.
+
+   Le HTML affiché ici a été assaini à l'écriture (`inventory/rich_text.py`,
+   liste blanche) — c'est ce qui rend `v-html` acceptable de ce côté-ci.
+   ------------------------------------------------------------------------ */
+.rich-text {
+  font: 400 13.5px/1.6 system-ui;
+  color: rgba(var(--fg-rgb), 0.83);
+}
+
+.rich-text > :first-child {
+  margin-top: 0;
+}
+
+.rich-text > :last-child {
+  margin-bottom: 0;
+}
+
+.rich-text p {
+  margin: 0 0 8px;
+}
+
+.rich-text h3,
+.rich-text h4 {
+  margin: 14px 0 6px;
+  font: 700 13px system-ui;
+  color: rgb(var(--fg-rgb));
+}
+
+.rich-text ul,
+.rich-text ol {
+  margin: 0 0 8px;
+  padding-left: 22px;
+}
+
+.rich-text li {
+  margin-bottom: 2px;
+}
+
+.rich-text a {
+  color: var(--link);
+}
+
+.rich-text blockquote {
+  margin: 8px 0;
+  padding-left: 12px;
+  border-left: 2px solid rgba(var(--accent-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.68);
+}
+
+.rich-text code {
+  font: 500 12.5px var(--font-mono);
+  background: rgba(var(--fg-rgb), 0.08);
+  padding: 1px 5px;
+  border-radius: 4px;
 }

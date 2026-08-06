@@ -4593,3 +4593,540 @@ class TourneeMultiArretsCoherenceTests(TestCase):
         )]
         self.assertNotIn('retour_manquant', types)
         self.assertNotIn('origine_incoherente', types)
+
+
+class TransportTouchedShowsAPITests(TestCase):
+    """`touched_shows` — les spectacles des lieux desservis (2026-08-05).
+
+    Demande de Samuel : le champ « Spectacle » de la fiche transport ne
+    montrait que le spectacle explicitement rattaché, ce qui était trop peu
+    depuis les tournées multi-arrêts — un déplacement peut passer par trois
+    salles.
+
+    Portée choisie avec lui : TOUS les spectacles des lieux visités, sur la
+    fenêtre du projet. C'est une liste de contexte, volontairement large — à
+    distinguer de `departure_show`/`arrival_show`, qui bornent l'horaire.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.chapelle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.prospero = Venue.objects.create(project=self.project, name="Prospero")
+
+        self.vertiges = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.chapelle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        self.echos = Show.objects.create(
+            project=self.project, title="Échos", venue=self.prospero,
+            event_type='performance', start_datetime=_dt(20, day=3), end_datetime=_dt(22, day=3),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+
+    def _tournee(self, lieux):
+        transport = Transport.objects.create(
+            show=self.vertiges, scheduled_datetime=_dt(10), status='confirmed',
+        )
+        for i, lieu in enumerate(lieux):
+            TransportStop.objects.create(
+                transport=transport, venue=lieu, order=i,
+                travel_minutes_from_previous=0 if i == 0 else 60,
+            )
+        return transport
+
+    def _touched(self, transport):
+        response = self.client.get(f'/api/transports/{transport.id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return response.data['touched_shows']
+
+    def test_every_stop_venue_is_listed_in_stop_order(self):
+        transport = self._tournee([self.entrepot, self.chapelle, self.prospero])
+        groupes = self._touched(transport)
+        self.assertEqual(
+            [g['venue_name'] for g in groupes], ["Entrepôt", "Chapelle", "Prospero"],
+        )
+
+    def test_the_shows_of_each_venue_are_returned(self):
+        transport = self._tournee([self.chapelle, self.prospero])
+        par_lieu = {g['venue_name']: [s['title'] for s in g['shows']] for g in self._touched(transport)}
+        self.assertEqual(par_lieu["Chapelle"], ["Vertiges"])
+        self.assertEqual(par_lieu["Prospero"], ["Échos"])
+
+    def test_a_venue_without_shows_is_listed_empty(self):
+        # L'entrepôt n'accueille aucun spectacle : la ligne reste, vide — la
+        # faire disparaître donnerait l'impression d'un arrêt oublié.
+        transport = self._tournee([self.entrepot, self.chapelle])
+        entrepot = next(g for g in self._touched(transport) if g['venue_name'] == "Entrepôt")
+        self.assertEqual(entrepot['shows'], [])
+
+    def test_a_venue_visited_twice_appears_once(self):
+        # Aller-retour entrepôt → salle → entrepôt.
+        transport = self._tournee([self.entrepot, self.chapelle, self.entrepot])
+        noms = [g['venue_name'] for g in self._touched(transport)]
+        self.assertEqual(noms, ["Entrepôt", "Chapelle"])
+
+    def test_attached_blocks_are_not_listed_separately(self):
+        # Un montage appartient déjà à l'événement listé : le sortir à part
+        # doublerait la liste sans rien apprendre.
+        Show.objects.create(
+            project=self.project, title="", venue=self.chapelle,
+            event_type='setup', start_datetime=_dt(16), end_datetime=_dt(19),
+            buffer_before_minutes=0, buffer_after_minutes=0, parent_show=self.vertiges,
+        )
+        transport = self._tournee([self.chapelle])
+        self.assertEqual([s['title'] for s in self._touched(transport)[0]['shows']], ["Vertiges"])
+
+    def test_a_show_outside_the_project_window_is_excluded(self):
+        self.project.start_date = _dt(0).date()
+        self.project.end_date = _dt(0, day=2).date()
+        self.project.save()
+        transport = self._tournee([self.chapelle, self.prospero])
+        par_lieu = {g['venue_name']: [s['title'] for s in g['shows']] for g in self._touched(transport)}
+        self.assertEqual(par_lieu["Chapelle"], ["Vertiges"])
+        # « Échos » se joue le 3, hors de la fenêtre du projet.
+        self.assertEqual(par_lieu["Prospero"], [])
+
+
+class ShowTechnicianNamesAPITests(TestCase):
+    """`technician_names` sur `ShowSerializer` (2026-08-05).
+
+    Ajouté pour l'info-bulle du Tableau de bord, qui affichait déjà l'équipe
+    d'un déplacement mais pas celle d'un événement.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        self.alex = Technician.objects.create(project=self.project, name="Alex")
+
+    def test_the_assigned_technicians_are_listed(self):
+        ShowTechnician.objects.create(show=self.show, technician=self.alex)
+        response = self.client.get(f'/api/shows/{self.show.id}/')
+        self.assertEqual(response.data['technician_names'], ["Alex"])
+
+    def test_a_setup_block_reports_the_team_of_its_event(self):
+        # Le bloc n'a aucune assignation propre — c'est pourtant bien cette
+        # équipe qui y travaille (voir `Show.inherits_resources`).
+        ShowTechnician.objects.create(show=self.show, technician=self.alex)
+        montage = Show.objects.create(
+            project=self.project, title="", venue=self.salle,
+            event_type='setup', start_datetime=_dt(16), end_datetime=_dt(19),
+            buffer_before_minutes=0, buffer_after_minutes=0, parent_show=self.show,
+        )
+        response = self.client.get(f'/api/shows/{montage.id}/')
+        self.assertEqual(response.data['technician_names'], ["Alex"])
+
+    def test_an_event_without_a_team_returns_an_empty_list(self):
+        response = self.client.get(f'/api/shows/{self.show.id}/')
+        self.assertEqual(response.data['technician_names'], [])
+
+
+class ShowConflictsWithTransportRegressionTests(TestCase):
+    """`GET /shows/{id}/conflicts/` avec un déplacement assigné (2026-08-05).
+
+    Régression signalée par Samuel : « quand on clique sur l'événement dans la
+    fiche de transport on a une erreur, mais par le menu Spectacle ça
+    fonctionne ». La fiche spectacle appelle cet endpoint à son chargement ;
+    il plantait en 500 dès que le spectacle avait un déplacement horodaté AVEC
+    un technicien — d'où l'impression d'un problème de navigation, alors que
+    seuls les spectacles concernés étaient touchés.
+
+    Cause : `views.py` lisait encore `transport.estimated_duration_minutes`,
+    retiré du modèle au passage aux tournées multi-arrêts (2026-08-04). Le nom
+    survit côté API comme alias de lecture sur `TransportSerializer`, ce qui
+    l'a rendu invisible à la relecture.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        self.alex = Technician.objects.create(project=self.project, name="Alex")
+
+    def test_conflicts_endpoint_survives_a_transport_with_a_technician(self):
+        transport = _creer_transport(
+            show=self.show, origin_venue=self.entrepot, destination_venue=self.salle,
+            scheduled_datetime=_dt(10), estimated_duration_minutes=60, status='confirmed',
+        )
+        TransportTechnician.objects.create(transport=transport, technician=self.alex)
+        response = self.client.get(f'/api/shows/{self.show.id}/conflicts/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['technician_conflicts'], [])
+
+    def test_a_real_transport_conflict_is_still_reported(self):
+        # Le technicien est sur le déplacement ET sur un spectacle qui
+        # chevauche : le conflit doit remonter, pas seulement « ne pas planter ».
+        transport = _creer_transport(
+            show=self.show, origin_venue=self.entrepot, destination_venue=self.salle,
+            scheduled_datetime=_dt(10), estimated_duration_minutes=120, status='confirmed',
+        )
+        TransportTechnician.objects.create(transport=transport, technician=self.alex)
+        ailleurs = Show.objects.create(
+            project=self.project, title="Ailleurs", venue=self.salle,
+            event_type='rehearsal', start_datetime=_dt(11), end_datetime=_dt(12),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        ShowTechnician.objects.create(show=ailleurs, technician=self.alex)
+        response = self.client.get(f'/api/shows/{self.show.id}/conflicts/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['technician_conflicts'])
+
+
+class ShowDeletionDetachesTransportsTests(TestCase):
+    """Supprimer un spectacle n'emporte plus toute la tournée (2026-08-05).
+
+    Demande de Samuel : « si on efface un événement qui fait partie d'une
+    séquence de plusieurs autres arrêts, on retire l'arrêt et le matériel
+    associé mais on n'efface pas le transport ».
+
+    `Transport.show` est en CASCADE : avant ce changement, supprimer un
+    spectacle effaçait la tournée entière, arrêts d'autres salles compris.
+    Voir `transport_detach.py` pour la règle et les options écartées.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.chapelle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.prospero = Venue.objects.create(project=self.project, name="Prospero")
+
+        self.vertiges = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.chapelle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        self.echos = Show.objects.create(
+            project=self.project, title="Échos", venue=self.prospero,
+            event_type='performance', start_datetime=_dt(20, day=3), end_datetime=_dt(22, day=3),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        self.console = Material.objects.create(
+            project=self.project, name="Console", venue=self.entrepot, quantity=5,
+        )
+
+    def _tournee(self, lieux, show=None):
+        transport = Transport.objects.create(
+            show=show or self.vertiges, scheduled_datetime=_dt(10), status='confirmed',
+        )
+        arrets = []
+        for i, lieu in enumerate(lieux):
+            arrets.append(TransportStop.objects.create(
+                transport=transport, venue=lieu, order=i,
+                travel_minutes_from_previous=0 if i == 0 else 60,
+            ))
+        return transport, arrets
+
+    def test_a_three_stop_tour_survives_and_loses_only_its_stop(self):
+        transport, arrets = self._tournee([self.entrepot, self.chapelle, self.prospero])
+        TransportMaterial.objects.create(
+            transport=transport, material=self.console, quantity=2,
+            load_stop=arrets[0], unload_stop=arrets[1],   # déchargé à la Chapelle
+        )
+        TransportMaterial.objects.create(
+            transport=transport, material=self.console, quantity=3,
+            load_stop=arrets[0], unload_stop=arrets[2],   # déchargé à Prospero
+        )
+
+        response = self.client.delete(f'/api/shows/{self.vertiges.id}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+        transport.refresh_from_db()
+        self.assertEqual(
+            [s.venue_id for s in transport.stops.order_by('order')],
+            [self.entrepot.id, self.prospero.id],
+        )
+        # Renumérotation : les positions restent 0, 1 sans trou.
+        self.assertEqual([s.order for s in transport.stops.order_by('order')], [0, 1])
+        # Seule la ligne déchargée à la Chapelle disparaît.
+        restantes = transport.transport_materials.all()
+        self.assertEqual([line.quantity for line in restantes], [3])
+        # Réancré sur le spectacle d'un arrêt restant.
+        self.assertEqual(transport.show_id, self.echos.id)
+
+    def test_a_two_stop_tour_is_deleted_as_before(self):
+        # Il ne resterait qu'un arrêt : un trajet a besoin d'un départ ET
+        # d'une arrivée.
+        transport, _ = self._tournee([self.entrepot, self.chapelle])
+        self.client.delete(f'/api/shows/{self.vertiges.id}/')
+        self.assertFalse(Transport.objects.filter(id=transport.id).exists())
+
+    def test_a_tour_without_another_show_to_anchor_is_deleted(self):
+        # Trois arrêts, mais les deux restants sont des entrepôts : plus rien
+        # à desservir, et `Transport.show` n'est pas nullable.
+        autre_entrepot = Venue.objects.create(
+            project=self.project, name="Entrepôt 2", is_storage=True,
+        )
+        transport, _ = self._tournee([self.entrepot, self.chapelle, autre_entrepot])
+        self.client.delete(f'/api/shows/{self.vertiges.id}/')
+        self.assertFalse(Transport.objects.filter(id=transport.id).exists())
+
+    def test_a_round_trip_drops_every_stop_at_that_venue(self):
+        # Entrepôt → Chapelle → Prospero → Chapelle : les DEUX passages à la
+        # Chapelle partent avec le spectacle.
+        transport, _ = self._tournee(
+            [self.entrepot, self.chapelle, self.prospero, self.chapelle],
+        )
+        self.client.delete(f'/api/shows/{self.vertiges.id}/')
+        transport.refresh_from_db()
+        self.assertEqual(
+            [s.venue_id for s in transport.stops.order_by('order')],
+            [self.entrepot.id, self.prospero.id],
+        )
+
+    def test_the_confirmation_announces_the_real_effect(self):
+        garde, _ = self._tournee([self.entrepot, self.chapelle, self.prospero])
+        perdu, _ = self._tournee([self.entrepot, self.chapelle])
+        response = self.client.get(f'/api/shows/{self.vertiges.id}/')
+        impact = response.data['deletion_impact']
+        self.assertEqual(impact['transports'], 1)
+        self.assertEqual(impact['transports_shortened'], 1)
+        # Rien n'a bougé : le décompte est une projection, pas une exécution.
+        self.assertTrue(Transport.objects.filter(id=garde.id).exists())
+        self.assertTrue(Transport.objects.filter(id=perdu.id).exists())
+
+    def test_a_transport_of_another_show_is_untouched(self):
+        autre, _ = self._tournee([self.entrepot, self.prospero], show=self.echos)
+        self.client.delete(f'/api/shows/{self.vertiges.id}/')
+        autre.refresh_from_db()
+        self.assertEqual(autre.stops.count(), 2)
+        self.assertEqual(autre.show_id, self.echos.id)
+
+
+class VenueReorderAPITests(TestCase):
+    """Ordre d'affichage des lieux — `POST /api/venues/reorder/` (2026-08-05).
+
+    Demande de Samuel : réordonner les lieux depuis la page Lieux, et que cet
+    ordre se reflète sur les puces de filtre du Tableau de bord — même
+    principe que l'ordre des types réglé depuis les Réglages.
+
+    `Venue.Meta.ordering` s'appuie sur `display_order` puis sur le nom : les
+    lieux jamais réordonnés (tous à 0) restent donc classés alphabétiquement,
+    exactement comme avant ce changement.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.chapelle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt")
+        self.prospero = Venue.objects.create(project=self.project, name="Prospero")
+
+    def _noms(self):
+        response = self.client.get('/api/venues/', {'project': self.project.id})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return [v['name'] for v in response.data]
+
+    def test_the_default_order_stays_alphabetical(self):
+        self.assertEqual(self._noms(), ["Chapelle", "Entrepôt", "Prospero"])
+
+    def test_reorder_applies_the_given_sequence(self):
+        response = self.client.post('/api/venues/reorder/', {
+            'project': self.project.id,
+            'order': [self.prospero.id, self.chapelle.id, self.entrepot.id],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([v['name'] for v in response.data], ["Prospero", "Chapelle", "Entrepôt"])
+        self.assertEqual(self._noms(), ["Prospero", "Chapelle", "Entrepôt"])
+
+    def test_a_venue_left_out_falls_behind(self):
+        # Un lieu créé entre-temps n'a pas de rang : il passe derrière plutôt
+        # que devant, où le tri par nom reprend la main.
+        self.client.post('/api/venues/reorder/', {
+            'project': self.project.id,
+            'order': [self.prospero.id, self.chapelle.id],
+        }, format='json')
+        self.assertEqual(self._noms(), ["Prospero", "Chapelle", "Entrepôt"])
+
+    def test_a_venue_from_another_project_is_refused(self):
+        # Appliquer à moitié laisserait un ordre faux : on refuse en bloc.
+        autre = Project.objects.create(name="Autre")
+        etranger = Venue.objects.create(project=autre, name="Ailleurs")
+        response = self.client.post('/api/venues/reorder/', {
+            'project': self.project.id,
+            'order': [self.chapelle.id, etranger.id],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('order', response.data)
+        self.assertEqual(self._noms(), ["Chapelle", "Entrepôt", "Prospero"])
+
+    def test_the_project_is_required(self):
+        response = self.client.post('/api/venues/reorder/', {'order': []}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('project', response.data)
+
+    def test_the_order_must_be_a_list(self):
+        response = self.client.post('/api/venues/reorder/', {
+            'project': self.project.id, 'order': 'Chapelle',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('order', response.data)
+
+
+class TechnicianJourneyPhasesTests(TestCase):
+    """Montages et démontages au parcours technicien (2026-08-05).
+
+    Demande de Samuel : « on a juste les transports et spectacles, on va
+    changer pour tout afficher ». Un montage n'a AUCUNE assignation propre —
+    c'est l'équipe de l'événement qui y travaille (voir
+    `Show.inherits_resources`) — donc le parcours montrait un trou là où le
+    technicien est en réalité sur le plateau.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        self.alex = Technician.objects.create(project=self.project, name="Alex")
+        ShowTechnician.objects.create(show=self.show, technician=self.alex)
+
+    def _engagements(self):
+        response = self.client.get(f'/api/projects/{self.project.id}/technician-journey/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ligne = next(t for t in response.data['technicians'] if t['id'] == self.alex.id)
+        return ligne['engagements']
+
+    def test_the_setup_block_appears_as_inherited(self):
+        montage = Show.objects.create(
+            project=self.project, title="", venue=self.salle,
+            event_type='setup', start_datetime=_dt(16), end_datetime=_dt(19),
+            buffer_before_minutes=0, buffer_after_minutes=0, parent_show=self.show,
+        )
+        par_id = {e['id']: e for e in self._engagements()}
+        self.assertIn(montage.id, par_id)
+        self.assertTrue(par_id[montage.id]['inherited'])
+        self.assertEqual(par_id[montage.id]['event_type'], 'setup')
+        # L'événement lui-même reste, non hérité.
+        self.assertFalse(par_id[self.show.id]['inherited'])
+
+    def test_an_attached_rehearsal_is_not_duplicated(self):
+        # Un bloc de répétition porte SES assignations : il apparaît par la
+        # voie normale, pas comme entrée dérivée.
+        repetition = Show.objects.create(
+            project=self.project, title="", venue=self.salle,
+            event_type='rehearsal', start_datetime=_dt(14), end_datetime=_dt(16),
+            buffer_before_minutes=0, buffer_after_minutes=0, parent_show=self.show,
+        )
+        ShowTechnician.objects.create(show=repetition, technician=self.alex)
+        lignes = [e for e in self._engagements() if e['id'] == repetition.id]
+        self.assertEqual(len(lignes), 1)
+        self.assertFalse(lignes[0]['inherited'])
+
+    def test_engagements_carry_what_the_frontend_needs_to_navigate(self):
+        engagements = self._engagements()
+        self.assertTrue(all('id' in e and 'kind' in e for e in engagements))
+        self.assertEqual({e['kind'] for e in engagements}, {'show'})
+
+
+class RichTextNotesSanitizationTests(TestCase):
+    """Notes en texte riche — assainissement à l'écriture (2026-08-05).
+
+    Demande de Samuel : pouvoir mettre du texte riche et des liens dans les
+    notes d'un spectacle et d'un déplacement. Le contenu revenant par l'API,
+    rien n'oblige un client à passer par l'éditeur : un `PATCH` direct
+    suffirait à stocker `<script>`, qui serait ensuite rendu tel quel chez
+    tous ceux qui consultent la fiche (l'app est multi-tenant depuis le
+    2026-08-02).
+
+    Le nettoyage se fait donc à l'ÉCRITURE : ce qui est en base est propre, et
+    un futur consommateur qui oublierait de nettoyer à l'affichage ne peut pas
+    réintroduire la faille. Voir `inventory/rich_text.py`.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.show = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.salle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+
+    def _patch_show(self, notes):
+        response = self.client.patch(
+            f'/api/shows/{self.show.id}/', {'notes': notes}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.show.refresh_from_db()
+        return self.show.notes
+
+    def test_allowed_formatting_survives(self):
+        notes = self._patch_show('<p>Note <strong>importante</strong> et <em>utile</em></p>')
+        self.assertIn('<strong>importante</strong>', notes)
+        self.assertIn('<em>utile</em>', notes)
+
+    def test_a_link_is_kept_and_hardened(self):
+        notes = self._patch_show('<p><a href="https://exemple.com">plan de feu</a></p>')
+        self.assertIn('href="https://exemple.com"', notes)
+        # Sans `noopener`, la page ouverte peut manipuler la fenêtre d'origine.
+        self.assertIn('rel="noopener noreferrer"', notes)
+
+    def test_a_script_is_removed(self):
+        notes = self._patch_show('<p>ok</p><script>alert(1)</script>')
+        self.assertNotIn('script', notes)
+        self.assertIn('<p>ok</p>', notes)
+
+    def test_an_event_handler_is_removed(self):
+        notes = self._patch_show('<p onclick="alert(1)">clic</p>')
+        self.assertNotIn('onclick', notes)
+        self.assertIn('clic', notes)
+
+    def test_a_javascript_url_is_dropped(self):
+        notes = self._patch_show('<p><a href="javascript:alert(1)">piège</a></p>')
+        self.assertNotIn('javascript', notes)
+
+    def test_plain_text_written_before_the_change_is_untouched(self):
+        # Les notes déjà saisies ne contiennent aucune balise : rien à retirer.
+        self.assertEqual(self._patch_show('Accès par la ruelle, code 1234'),
+                         'Accès par la ruelle, code 1234')
+
+    def test_transport_notes_are_sanitized_too(self):
+        transport = _creer_transport(
+            show=self.show, origin_venue=self.entrepot, destination_venue=self.salle,
+            scheduled_datetime=_dt(10), estimated_duration_minutes=60, status='confirmed',
+        )
+        response = self.client.patch(
+            f'/api/transports/{transport.id}/',
+            {'notes': '<p>Code <strong>4321</strong></p><script>alert(1)</script>'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        transport.refresh_from_db()
+        self.assertIn('<strong>4321</strong>', transport.notes)
+        self.assertNotIn('script', transport.notes)

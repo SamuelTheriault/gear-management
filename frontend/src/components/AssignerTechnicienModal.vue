@@ -272,20 +272,20 @@ async function submit(force = false) {
 
 .modal__close {
   font: 400 20px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
   cursor: pointer;
   line-height: 1;
 }
 
 .modal__context {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
   margin-top: -8px;
 }
 
 .hint {
   font: 500 12.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
   padding: 8px 0;
 }
 
@@ -362,19 +362,19 @@ async function submit(force = false) {
 
 .tech-row__role {
   font: 400 11px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .modal__hint {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
   padding-bottom: 4px;
 }
 
 .modal__count {
   margin-right: auto;
   font: 500 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   align-self: center;
 }
 
@@ -421,7 +421,7 @@ async function submit(force = false) {
 }
 
 .btn--ghost {
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
   background: rgba(var(--fg-rgb), 0.06);
 }
 

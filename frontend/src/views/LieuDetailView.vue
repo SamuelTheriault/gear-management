@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
+import LeaveEditPrompt from '../components/LeaveEditPrompt.vue'
 import { api } from '../api/client'
 import { useFicheEdition } from '../composables/useFicheEdition'
 import { useSuppressionFiche } from '../composables/useSuppressionFiche'
@@ -74,9 +75,12 @@ async function loadVenue() {
 
     const showsData = await api.get('/shows/', { project: venue.value.project })
     const rawShows = Array.isArray(showsData) ? showsData : (showsData.results ?? [])
-    const now = new Date()
+    // Tous les spectacles de ce lieu, passés compris (2026-08-05) : le filtre
+    // « fin >= maintenant » qui traînait ici vidait la carte dès que la
+    // production était terminée, alors que la fiche sert justement à
+    // consulter ce qui s'y est joué.
     const atThisVenue = rawShows
-      .filter((s) => s.venue === Number(id) && new Date(s.end_datetime) >= now)
+      .filter((s) => s.venue === Number(id))
       .sort((a, b) => new Date(a.start_datetime) - new Date(b.start_datetime))
 
     const withConflicts = await Promise.all(
@@ -110,6 +114,12 @@ const decoratedShows = computed(() =>
     const end = new Date(s.end_datetime)
     return {
       ...s,
+      // `display_title` et non `title` (2026-08-05) : depuis que le nom d'un
+      // bloc est généré (« Montage — Vertiges », voir `Show.display_title`),
+      // `title` ne porte plus qu'une précision facultative — vide la plupart
+      // du temps. La liste affichait donc des lignes sans nom dès qu'un
+      // montage ou un démontage s'y trouvait.
+      label: s.display_title || s.title,
       date: dateFmt.format(start),
       time: `${timeFmt.format(start)}–${timeFmt.format(end)}`,
       dot: s.conflict ? 'oklch(0.7 0.16 35)' : 'oklch(0.72 0.13 165)',
@@ -127,6 +137,7 @@ const decoratedShows = computed(() =>
 const {
   editing, draft, saving, saveError, fieldErrors, canSave,
   startEdit, cancelEdit, save: saveVenue,
+  leavePrompt, leaveSaving, leaveError, stayOnPage, saveAndLeave,
 } = useFicheEdition({
   entity: venue,
   endpoint: '/venues',
@@ -463,20 +474,35 @@ const mapSrc = computed(() => {
       </div>
 
       <div class="card">
-        <div class="card-title" style="margin-bottom: 14px">Spectacles à venir</div>
+        <div class="card-title" style="margin-bottom: 14px">Spectacles assignés</div>
         <div v-if="decoratedShows.length > 0" class="row-list">
-          <div v-for="s in decoratedShows" :key="s.id" class="row">
+          <RouterLink
+            v-for="s in decoratedShows"
+            :key="s.id"
+            :to="`/spectacles/${s.id}`"
+            class="row row--clickable"
+          >
             <span class="row__dot" :style="{ background: s.dot }" />
             <div class="row__body">
-              <RouterLink :to="`/spectacles/${s.id}`" class="row__title">{{ s.title }}</RouterLink>
+              <div class="row__title">{{ s.label }}</div>
               <div class="row__subtitle">{{ s.date }} · {{ s.time }}</div>
             </div>
             <div v-if="s.conflict" class="row__conflict">CONFLIT</div>
-          </div>
+          </RouterLink>
         </div>
-        <div v-else class="row-empty">Aucun spectacle à venir dans ce lieu.</div>
+        <div v-else class="row-empty">Aucun spectacle assigné à ce lieu.</div>
       </div>
     </div>
+
+    <!-- Quitter une fiche en cours d'édition demande d'abord quoi faire
+         (2026-08-05) — voir useLeaveGuard.js. -->
+    <LeaveEditPrompt
+      :visible="leavePrompt"
+      :saving="leaveSaving"
+      :error="leaveError"
+      @stay="stayOnPage"
+      @save="saveAndLeave"
+    />
   </AppShell>
 </template>
 
@@ -491,7 +517,7 @@ const mapSrc = computed(() => {
 .hint {
   padding: 32px 40px;
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .hint--error {
@@ -500,7 +526,7 @@ const mapSrc = computed(() => {
 
 .breadcrumb {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .breadcrumb :deep(a) {
@@ -552,7 +578,7 @@ const mapSrc = computed(() => {
   font: 700 11px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
 }
 
 .info-value {
@@ -578,7 +604,7 @@ const mapSrc = computed(() => {
 
 .code-empty {
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
 }
 
 /* Aperçu de la couleur retenue (2026-08-02, suite) — carré plutôt qu'un
@@ -627,7 +653,7 @@ const mapSrc = computed(() => {
 
 .swatch--auto {
   background: var(--bg-row);
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
   font: 700 12px system-ui;
 }
 
@@ -671,7 +697,6 @@ const mapSrc = computed(() => {
   height: 100%;
   min-height: 180px;
   border-radius: 0 10px 0 10px;
-  filter: grayscale(0.2) invert(0.92) contrast(0.9);
 }
 
 .map--empty {
@@ -679,18 +704,12 @@ const mapSrc = computed(() => {
   align-items: center;
   justify-content: center;
   background: var(--bg-row);
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   font: 500 12.5px system-ui;
   text-align: center;
   padding: 20px;
 }
 
-.card-title {
-  font: 700 12px var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: rgba(var(--fg-rgb), 0.65);
-}
 
 .card-text {
   font: 400 13.5px/1.6 system-ui;
@@ -711,6 +730,18 @@ const mapSrc = computed(() => {
   padding: 10px 12px;
   border-radius: var(--radius-notch-sm);
   background: var(--bg-row);
+}
+
+/* Ligne entière cliquable (2026-08-05, demande de Samuel) : le titre seul
+   était un point de clic étroit, alors que toute la ligne mène au même
+   endroit. Même geste que les chronologies des fiches spectacle/matériel. */
+.row--clickable {
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.row--clickable:hover {
+  background: rgba(var(--fg-rgb), 0.09);
 }
 
 .row__dot {
@@ -734,7 +765,7 @@ const mapSrc = computed(() => {
 
 .row__subtitle {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .row__conflict {
@@ -747,7 +778,7 @@ const mapSrc = computed(() => {
 
 .row-empty {
   font: 500 12.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   padding: 10px 12px;
 }
 </style>

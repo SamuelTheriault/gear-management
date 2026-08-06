@@ -5,6 +5,10 @@ django-cors-headers==4.9.0
 PyMySQL==1.2.0
 gunicorn==26.0.0
 whitenoise==6.12.0
+# Assainissement du HTML des notes (2026-08-05) — successeur de bleach,
+# recommandé par ce dernier depuis son abandon. Voir inventory/rich_text.py :
+# le nettoyage se fait à l'écriture, pas à l'affichage.
+nh3==0.3.6
 django-allauth==65.18.0
 dj-rest-auth==7.2.0
 # Dépendances runtime du provider Google de django-allauth — non déclarées par

@@ -107,7 +107,7 @@ watch(
 
 .brand__tagline {
   font: 400 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
   text-align: center;
 }
 
@@ -125,7 +125,7 @@ watch(
 
 .panel__prompt {
   font: 600 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
   text-align: center;
 }
 
@@ -145,7 +145,7 @@ watch(
 
 .panel__footer {
   font: 400 11px system-ui;
-  color: rgba(var(--fg-rgb), 0.3);
+  color: rgba(var(--fg-rgb), 0.38);
   text-align: center;
 }
 </style>

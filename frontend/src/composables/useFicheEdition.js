@@ -1,5 +1,6 @@
 import { ref, computed } from 'vue'
 import { api } from '../api/client'
+import { useLeaveGuard } from './useLeaveGuard'
 
 /**
  * Mode lecture/édition partagé par les fiches de détail (lieu, matériel,
@@ -54,6 +55,9 @@ export function useFicheEdition({
 }) {
   const editing = ref(false)
   const draft = ref(null)
+  // Brouillon tel qu'il était à l'entrée en édition — sert à savoir si
+  // quelque chose a VRAIMENT changé avant d'interrompre une navigation.
+  const draftInitial = ref(null)
   const saving = ref(false)
   const saveError = ref(null)
   const fieldErrors = ref({})
@@ -72,6 +76,7 @@ export function useFicheEdition({
   function startEdit() {
     if (!entity.value) return
     draft.value = toDraft(entity.value)
+    draftInitial.value = JSON.stringify(draft.value)
     resetErrors()
     editing.value = true
   }
@@ -79,7 +84,21 @@ export function useFicheEdition({
   function cancelEdit() {
     editing.value = false
     draft.value = null
+    draftInitial.value = null
     resetErrors()
+  }
+
+  /**
+   * Y a-t-il des changements non enregistrés ?
+   *
+   * Comparaison du brouillon SÉRIALISÉ à son état d'origine : les champs sont
+   * des valeurs simples (chaînes, nombres, booléens), l'ordre des clés est
+   * fixé par `toDraft`. Entrer en édition puis ressortir sans rien toucher ne
+   * doit rien demander.
+   */
+  function isDirty() {
+    if (!editing.value || !draft.value) return false
+    return JSON.stringify(draft.value) !== draftInitial.value
   }
 
   const canSave = computed(
@@ -139,9 +158,22 @@ export function useFicheEdition({
     }
   }
 
+  // Quitter la fiche en cours d'édition demande d'abord quoi faire
+  // (2026-08-05, demande de Samuel) — voir useLeaveGuard.js.
+  const { leavePrompt, leaveSaving, leaveError, stayOnPage, saveAndLeave } = useLeaveGuard({
+    isDirty,
+    save: () => save(),
+  })
+
   return {
     editing,
     draft,
+    isDirty,
+    leavePrompt,
+    leaveSaving,
+    leaveError,
+    stayOnPage,
+    saveAndLeave,
     saving,
     saveError,
     fieldErrors,

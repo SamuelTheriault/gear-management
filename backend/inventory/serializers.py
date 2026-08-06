@@ -40,6 +40,7 @@ from .conflicts import (
     validate_transport_window,
 )
 from .maps import estimate_travel_minutes
+from .rich_text import clean_notes
 from .models import (
     Material,
     MaterialCategory,
@@ -181,7 +182,7 @@ class VenueSerializer(serializers.ModelSerializer):
         model = Venue
         fields = [
             'id', 'project', 'project_name', 'name', 'code', 'address', 'contact_name', 'contact_info', 'notes',
-            'is_storage', 'latitude', 'longitude', 'color',
+            'is_storage', 'latitude', 'longitude', 'color', 'display_order',
         ]
 
     def validate_code(self, value):
@@ -465,6 +466,12 @@ class ShowSerializer(serializers.ModelSerializer):
     # en avoir, la liste s'arrête donc à un niveau.
     phases = serializers.SerializerMethodField()
     parent_show_title = serializers.CharField(source='parent_show.title', read_only=True, default=None)
+    # Noms des techniciens assignés, à plat (2026-08-05) — pour l'info-bulle
+    # du Tableau de bord, qui les affichait déjà pour un déplacement mais pas
+    # pour un événement. Sur un bloc qui HÉRITE (montage/démontage), ce sont
+    # ceux de l'événement : il n'a pas d'assignation propre, mais c'est bien
+    # cette équipe qui y travaille (voir `Show.inherits_resources`).
+    technician_names = serializers.SerializerMethodField()
 
     class Meta:
         model = Show
@@ -474,8 +481,13 @@ class ShowSerializer(serializers.ModelSerializer):
             'buffer_before_minutes', 'buffer_after_minutes',
             'notes', 'effective_start', 'effective_end',
             'engagement_start', 'engagement_end', 'deletion_impact',
-            'parent_show', 'parent_show_title', 'phases', 'force',
+            'parent_show', 'parent_show_title', 'phases', 'technician_names', 'force',
         ]
+
+    def get_technician_names(self, obj):
+        """Noms des techniciens qui travaillent sur cet événement."""
+        source = obj.parent_show if obj.inherits_resources else obj
+        return [st.technician.name for st in source.show_technicians.select_related('technician')]
 
     def get_phases(self, obj):
         """Blocs rattachés à cet événement, dans l'ordre chronologique.
@@ -502,6 +514,10 @@ class ShowSerializer(serializers.ModelSerializer):
                 # n'a donc rien à décompter. Un bloc de répétition est autonome
                 # (2026-07-31) : le frontend affiche ses propres décomptes.
                 'inherits_resources': phase.inherits_resources,
+                # Ce que coûterait le retrait de ce bloc — la confirmation du
+                # ✕ de la chronologie l'annonce (2026-08-05), comme celle de
+                # l'entête le fait pour la fiche affichée.
+                'deletion_impact': self.get_deletion_impact(phase),
                 'material_count': (
                     None if phase.inherits_resources else phase.show_materials.count()
                 ),
@@ -512,12 +528,33 @@ class ShowSerializer(serializers.ModelSerializer):
             for phase in obj.phases.select_related('venue').order_by('start_datetime')
         ]
 
+    def validate_notes(self, value):
+        """Assainit le HTML des notes — voir `rich_text.clean_notes`.
+
+        À l'ÉCRITURE plutôt qu'à l'affichage : ce qui est en base est donc
+        déjà propre, et un client qui passerait outre l'éditeur (PATCH direct)
+        ne peut pas y déposer de script.
+        """
+        return clean_notes(value)
+
     def get_deletion_impact(self, obj):
-        """Ce qui serait supprimé en cascade avec ce spectacle."""
+        """Ce qui arriverait vraiment si ce spectacle était supprimé.
+
+        `transports` ne compte que les déplacements qui DISPARAÎTRAIENT ;
+        `transports_shortened` ceux qui survivraient, amputés de l'arrêt de ce
+        lieu et du matériel qui y est manipulé (2026-08-05, voir
+        `transport_detach.py`). Avant cette distinction, la confirmation
+        annonçait la suppression de tournées qui, en réalité, desservent aussi
+        d'autres salles.
+        """
+        from .transport_detach import plan_show_deletion
+
+        supprimes, raccourcis = plan_show_deletion(obj)
         return {
             'materials': obj.show_materials.count(),
             'technicians': obj.show_technicians.count(),
-            'transports': obj.transports.count(),
+            'transports': len(supprimes),
+            'transports_shortened': len(raccourcis),
         }
 
     def validate(self, attrs):
@@ -1004,6 +1041,19 @@ class TransportSerializer(serializers.ModelSerializer):
     # `departure_show.effective_end` comme heure de déplacement suggérée.
     departure_show = serializers.SerializerMethodField()
     arrival_show = serializers.SerializerMethodField()
+    # Spectacles des lieux DESSERVIS par la tournée (2026-08-05, demande de
+    # Samuel : « l'info Spectacle, on affiche tous les spectacles que le
+    # transport touche »). `show` seul ne suffisait plus depuis les tournées
+    # multi-arrêts : un déplacement peut passer par trois salles alors qu'il
+    # n'a qu'un spectacle explicitement rattaché.
+    #
+    # Portée choisie avec Samuel : TOUS les spectacles qui se tiennent dans
+    # les lieux visités, sur la fenêtre du projet — pas seulement ceux que le
+    # transport dessert au sens strict (cette notion-là n'existe pas dans le
+    # modèle pour un arrêt intermédiaire). C'est donc une liste de contexte,
+    # volontairement large : à ne pas confondre avec `departure_show`/
+    # `arrival_show`, qui bornent l'horaire et restent, eux, déduits.
+    touched_shows = serializers.SerializerMethodField()
 
     class Meta:
         model = Transport
@@ -1013,8 +1063,13 @@ class TransportSerializer(serializers.ModelSerializer):
             'destination_venue', 'destination_venue_name', 'destination_venue_code',
             'scheduled_datetime', 'estimated_duration_minutes', 'effective_end',
             'technicians', 'technician_names', 'has_technician_conflict',
-            'materials', 'is_empty', 'departure_show', 'arrival_show', 'notes', 'force',
+            'materials', 'is_empty', 'departure_show', 'arrival_show',
+            'touched_shows', 'notes', 'force',
         ]
+
+    def validate_notes(self, value):
+        """Assainit le HTML des notes — même règle que `ShowSerializer`."""
+        return clean_notes(value)
 
     def get_technician_names(self, obj):
         """Noms des techniciens affectés, dans l'ordre de la table de liaison."""
@@ -1024,6 +1079,57 @@ class TransportSerializer(serializers.ModelSerializer):
         """True si le déplacement ne transporte aucun matériel (aucune ligne
         `TransportMaterial`). Utilise le cache de prefetch quand disponible."""
         return len(obj.transport_materials.all()) == 0
+
+    def get_touched_shows(self, obj):
+        """Spectacles des lieux visités, groupés par lieu dans l'ordre des arrêts.
+
+        Retourne `[{venue_id, venue_name, shows: [{id, title, start, end,
+        event_type}]}]`. Un lieu qui revient à plusieurs arrêts (tournée
+        aller-retour) n'apparaît qu'une fois.
+
+        Ne remonte que les événements de premier niveau : un montage ou un
+        démontage rattaché appartient déjà à l'événement listé, et les faire
+        figurer tripleraient la liste sans rien apprendre. Les blocs restent
+        consultables depuis la fiche du spectacle.
+
+        Bornée à `get_project_window` — la même fenêtre que les Parcours, le
+        Tableau de bord et les chronologies de fiche.
+        """
+        from .transport_coherence import get_project_window
+
+        arrets = list(obj.stops.select_related('venue').order_by('order'))
+        if not arrets:
+            return []
+        window_start, window_end = get_project_window(obj.show.project)
+
+        groupes = []
+        deja_vus = set()
+        for arret in arrets:
+            if arret.venue_id in deja_vus:
+                continue
+            deja_vus.add(arret.venue_id)
+            spectacles = Show.objects.filter(
+                venue_id=arret.venue_id, parent_show__isnull=True,
+            ).order_by('start_datetime')
+            if window_start is not None:
+                spectacles = spectacles.filter(
+                    end_datetime__gte=window_start, start_datetime__lte=window_end,
+                )
+            groupes.append({
+                'venue_id': arret.venue_id,
+                'venue_name': arret.venue.name,
+                'shows': [
+                    {
+                        'id': show.id,
+                        'title': show.display_title,
+                        'event_type': show.event_type,
+                        'start': show.start_datetime,
+                        'end': show.end_datetime,
+                    }
+                    for show in spectacles
+                ],
+            })
+        return groupes
 
     def get_departure_show(self, obj):
         departure_show, _arrival_show = get_transport_reference_shows(

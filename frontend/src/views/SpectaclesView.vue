@@ -201,13 +201,40 @@ const eventTypeOptions = [
   { value: 'storage', label: 'Entreposage' },
 ]
 
-const form = ref({
-  title: '',
-  venue: '',
-  event_type: 'performance',
-  start: '',
-  end: '',
-})
+function toLocalInput(date) {
+  // `datetime-local` attend l'heure LOCALE : `toISOString()` renverrait UTC
+  // et décalerait la proposition de plusieurs heures.
+  const decale = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+  return decale.toISOString().slice(0, 16)
+}
+
+/**
+ * Formulaire vierge — avec un horaire déjà proposé (2026-08-05, demande de
+ * Samuel : « forcer les minutes à 00 dès le début de la création »).
+ *
+ * Un `datetime-local` vide fait démarrer le sélecteur natif sur l'heure
+ * COURANTE, minutes comprises (14 h 37…) : choisir ensuite une autre heure
+ * gardait ces minutes, et la fin calculée les reprenait. En proposant
+ * d'emblée la prochaine heure ronde, le champ démarre à `:00` et y reste tant
+ * qu'on ne touche qu'à la date ou à l'heure.
+ *
+ * Ce n'est qu'une proposition : le pas de 5 minutes du champ (`step="300"`)
+ * reste disponible pour saisir 20 h 30 si besoin.
+ */
+function formVierge() {
+  const debut = new Date()
+  debut.setMinutes(0, 0, 0)
+  debut.setHours(debut.getHours() + 1)
+  return {
+    title: '',
+    venue: '',
+    event_type: 'performance',
+    start: toLocalInput(debut),
+    end: toLocalInput(new Date(debut.getTime() + 60 * 60000)),
+  }
+}
+
+const form = ref(formVierge())
 const formError = ref(null)
 // venue/start_datetime/end_datetime sont obligatoires côté modèle (Show,
 // models.py) — pas nullables. Le prototype laissait ces champs libres ; on
@@ -251,7 +278,7 @@ async function submitShow(force = false) {
       end_datetime: new Date(form.value.end).toISOString(),
       force,
     })
-    form.value = { title: '', venue: '', event_type: 'performance', start: '', end: '' }
+    form.value = formVierge()
     fieldErrors.value = { title: false, venue: false, start: false, end: false }
     await loadShows()
   } catch (e) {
@@ -264,6 +291,27 @@ async function submitShow(force = false) {
     submitting.value = false
   }
 }
+
+/**
+ * Fin proposée automatiquement à la saisie du début (2026-08-05, demande de
+ * Samuel) : même date, une heure plus tard.
+ *
+ * Ne remplace PAS une fin déjà saisie et cohérente — si l'utilisateur a
+ * choisi 20h → 23h puis décale le début à 21h, sa fin reste. On ne réécrit
+ * que quand le champ est vide ou que la fin ne suit plus le début : dans ce
+ * dernier cas il faudrait de toute façon la corriger à la main.
+ */
+function onStartChange() {
+  fieldErrors.value.start = false
+  if (!form.value.start) return
+  const debut = new Date(form.value.start)
+  if (Number.isNaN(debut.getTime())) return
+  const fin = form.value.end ? new Date(form.value.end) : null
+  if (fin && !Number.isNaN(fin.getTime()) && fin > debut) return
+  form.value.end = toLocalInput(new Date(debut.getTime() + 60 * 60000))
+  fieldErrors.value.end = false
+}
+
 </script>
 
 <template>
@@ -391,7 +439,7 @@ async function submitShow(force = false) {
               step="300"
               class="add-form__input"
               :class="{ 'add-form__input--error': fieldErrors.start }"
-              @input="fieldErrors.start = false"
+              @input="onStartChange"
             />
           </label>
           <label class="add-form__field add-form__field--date">
@@ -447,7 +495,7 @@ async function submitShow(force = false) {
 
 .page-count {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .filters {
@@ -470,7 +518,7 @@ async function submitShow(force = false) {
 
 .hint {
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .hint--error {
@@ -555,7 +603,7 @@ async function submitShow(force = false) {
 
 .show-row__meta {
   font: 400 12.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
   margin-top: 4px;
 }
 
@@ -588,12 +636,12 @@ async function submitShow(force = false) {
 
 .empty__title {
   font: 600 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
 }
 
 .empty__subtitle {
   font: 400 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   text-align: center;
   max-width: 280px;
 }

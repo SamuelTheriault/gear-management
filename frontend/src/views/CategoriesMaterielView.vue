@@ -354,12 +354,12 @@ async function confirmDelete() {
 
 .page-count {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .hint {
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .hint--error {
@@ -401,7 +401,7 @@ async function confirmDelete() {
 
 .row__meta {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   margin-top: 2px;
 }
 
@@ -452,7 +452,7 @@ async function confirmDelete() {
 
 .empty__title {
   font: 600 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
 }
 
 .modal {
@@ -481,7 +481,7 @@ async function confirmDelete() {
 .modal__text {
   margin: 0;
   font: 400 13px/1.5 system-ui;
-  color: rgba(var(--fg-rgb), 0.65);
+  color: rgba(var(--fg-rgb), 0.72);
 }
 
 .modal__actions {
