@@ -37,6 +37,7 @@ from .csv_export import (
     CsvImportError,
     parse_csv_rows,
 )
+from .rich_text import clean_notes
 from .models import Material, MaterialCategory, Show, Technician, TransportStop, Venue
 
 MODE_APPEND = 'append'
@@ -136,7 +137,7 @@ def import_materials_csv(project, text, mode):
                 ownership_status=ownership,
                 is_active=_yes_no(row.get('Actif') or 'Oui'),
                 quantity=quantity,
-                notes=row.get('Notes', ''),
+                notes=clean_notes(row.get('Notes', '')),
             )
             created_count += 1
 
@@ -210,7 +211,7 @@ def import_venues_csv(project, text, mode):
                 address=row.get('Adresse', ''),
                 contact_name=row.get('Contact', ''),
                 contact_info=row.get('Coordonnées contact', ''),
-                notes=row.get('Notes', ''),
+                notes=clean_notes(row.get('Notes', '')),
                 is_storage=_yes_no(row.get('Entrepôt')),
                 latitude=_parse_decimal(row.get('Latitude'), f"{name} — Latitude"),
                 longitude=_parse_decimal(row.get('Longitude'), f"{name} — Longitude"),
@@ -246,7 +247,7 @@ def import_technicians_csv(project, text, mode):
                 name=name,
                 contact_info=row.get('Coordonnées', ''),
                 specialty=row.get('Spécialité', ''),
-                notes=row.get('Notes', ''),
+                notes=clean_notes(row.get('Notes', '')),
             )
             created_count += 1
 
@@ -333,7 +334,7 @@ def import_shows_csv(project, text, mode):
                 event_type=event_type,
                 start_datetime=start,
                 end_datetime=end,
-                notes=row.get('Notes', ''),
+                notes=clean_notes(row.get('Notes', '')),
             )
             created_count += 1
 

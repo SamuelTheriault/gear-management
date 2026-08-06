@@ -108,7 +108,7 @@ function hexColor(c) {
 
 .swatch--reset {
   background: var(--bg-row);
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
   font: 700 12px system-ui;
 }
 

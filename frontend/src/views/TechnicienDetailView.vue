@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
+import LeaveEditPrompt from '../components/LeaveEditPrompt.vue'
 import { api } from '../api/client'
 import { useFicheEdition } from '../composables/useFicheEdition'
 import { useSuppressionFiche } from '../composables/useSuppressionFiche'
@@ -100,6 +101,7 @@ watch(() => route.params.id, loadTechnician, { immediate: true })
 const {
   editing, draft, saving, saveError, fieldErrors, canSave,
   startEdit, cancelEdit, save: saveTechnician,
+  leavePrompt, leaveSaving, leaveError, stayOnPage, saveAndLeave,
 } = useFicheEdition({
   entity: technician,
   endpoint: '/technicians',
@@ -131,7 +133,9 @@ watch(() => route.params.id, cancelEdit)
 // liaison en CASCADE).
 const {
   confirming, deleting, deleteError, askDelete, cancelDelete, confirmDelete,
-} = useSuppressionFiche({ endpoint: '/technicians', redirectTo: '/techniciens' })
+} = useSuppressionFiche({ endpoint: '/technicians', redirectTo: '/techniciens',
+  beforeRedirect: () => cancelEdit(),
+})
 
 const deletionImpact = computed(() => technician.value?.deletion_impact ?? null)
 const hasCascade = computed(
@@ -301,14 +305,19 @@ const decoratedTransports = computed(() =>
       <div class="card">
         <div class="card-title" style="margin-bottom: 12px">Spectacles assignés</div>
         <div v-if="decoratedShows.length > 0" class="row-list">
-          <div v-for="s in decoratedShows" :key="s.id" class="row">
+          <RouterLink
+            v-for="s in decoratedShows"
+            :key="s.id"
+            :to="`/spectacles/${s.show}`"
+            class="row row--clickable"
+          >
             <span class="row__dot" :style="{ background: s.conflict ? 'oklch(0.7 0.16 35)' : 'oklch(0.72 0.13 165)' }" />
             <div class="row__body">
-              <RouterLink :to="`/spectacles/${s.show}`" class="row__title">{{ s.title }}</RouterLink>
+              <div class="row__title">{{ s.title }}</div>
               <div class="row__subtitle">{{ s.venue }} · {{ s.date }} {{ s.time }}</div>
             </div>
             <div v-if="s.conflict" class="row__conflict">CONFLIT</div>
-          </div>
+          </RouterLink>
         </div>
         <div v-else class="row-empty">Aucun spectacle assigné.</div>
       </div>
@@ -316,15 +325,29 @@ const decoratedTransports = computed(() =>
       <div class="card">
         <div class="card-title" style="margin-bottom: 12px">Transports assignés</div>
         <div v-if="decoratedTransports.length > 0" class="row-list">
-          <div v-for="tr in decoratedTransports" :key="tr.id" class="row">
-            <div class="row__badge">Tournée</div>
+          <RouterLink
+            v-for="tr in decoratedTransports"
+            :key="tr.id"
+            :to="`/transports/${tr.id}`"
+            class="row row--clickable"
+          >
             <div class="row__body row__body--flex">{{ tr.routeLabel }}</div>
             <div class="row__time">{{ tr.time }}</div>
-          </div>
+          </RouterLink>
         </div>
         <div v-else class="row-empty">Aucun transport assigné.</div>
       </div>
     </div>
+
+    <!-- Quitter une fiche en cours d'édition demande d'abord quoi faire
+         (2026-08-05) — voir useLeaveGuard.js. -->
+    <LeaveEditPrompt
+      :visible="leavePrompt"
+      :saving="leaveSaving"
+      :error="leaveError"
+      @stay="stayOnPage"
+      @save="saveAndLeave"
+    />
   </AppShell>
 </template>
 
@@ -339,7 +362,7 @@ const decoratedTransports = computed(() =>
 .hint {
   padding: 32px 40px;
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .hint--error {
@@ -348,7 +371,7 @@ const decoratedTransports = computed(() =>
 
 .breadcrumb {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .breadcrumb :deep(a) {
@@ -394,7 +417,7 @@ const decoratedTransports = computed(() =>
 
 .header__role {
   font: 400 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .contact-card {
@@ -407,12 +430,6 @@ const decoratedTransports = computed(() =>
   color: var(--link);
 }
 
-.card-title {
-  font: 700 12px var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: rgba(var(--fg-rgb), 0.65);
-}
 
 .card-text {
   font: 400 13.5px/1.6 system-ui;
@@ -434,6 +451,17 @@ const decoratedTransports = computed(() =>
   border-radius: 0 10px 0 10px;
   background: var(--bg-row);
   min-height: 44px;
+}
+
+/* Ligne entière cliquable (2026-08-05) — voir la même règle sur la fiche
+   lieu. */
+.row--clickable {
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.row--clickable:hover {
+  background: rgba(var(--fg-rgb), 0.09);
 }
 
 .row__dot {
@@ -462,7 +490,7 @@ const decoratedTransports = computed(() =>
 
 .row__subtitle {
   font: 400 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .row__conflict {
@@ -473,23 +501,14 @@ const decoratedTransports = computed(() =>
   border-radius: 0 10px 0 10px;
 }
 
-.row__badge {
-  font: 700 10px system-ui;
-  text-transform: uppercase;
-  color: rgba(var(--fg-rgb), 0.55);
-  background: rgba(var(--fg-rgb), 0.08);
-  padding: 3px 8px;
-  border-radius: 0 6px 0 6px;
-}
-
 .row__time {
   font: 600 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .row-empty {
   font: 500 12.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   padding: 10px 12px;
 }
 </style>

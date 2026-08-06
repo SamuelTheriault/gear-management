@@ -243,7 +243,7 @@ async function addUser() {
 
 .count {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .banner {
@@ -252,14 +252,14 @@ async function addUser() {
   border-radius: 0 10px 0 10px;
   padding: 12px 16px;
   font: 400 12.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
   line-height: 1.5;
 }
 
 .hint {
   padding: 32px 40px;
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .hint--error {
@@ -314,7 +314,7 @@ async function addUser() {
 
 .email {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -322,7 +322,7 @@ async function addUser() {
 
 .since {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
   white-space: nowrap;
   flex: none;
 }
@@ -348,7 +348,7 @@ async function addUser() {
   padding: 7px 12px;
   font: 600 11.5px system-ui;
   cursor: pointer;
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
   background: transparent;
 }
 
@@ -384,12 +384,12 @@ async function addUser() {
 
 .empty-title {
   font: 600 14px system-ui;
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
 }
 
 .empty-subtitle {
   font: 400 12.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   max-width: 340px;
 }
 
@@ -407,7 +407,7 @@ async function addUser() {
   font: 700 10.5px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .create-row {
@@ -451,7 +451,7 @@ async function addUser() {
 }
 
 .btn--disabled {
-  color: rgba(var(--fg-rgb), 0.3);
+  color: rgba(var(--fg-rgb), 0.38);
   background: rgba(var(--fg-rgb), 0.06);
   cursor: default;
 }
@@ -480,7 +480,7 @@ async function addUser() {
 
 .modal__body {
   font: 400 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.55);
+  color: rgba(var(--fg-rgb), 0.63);
   line-height: 1.5;
 }
 
@@ -492,7 +492,7 @@ async function addUser() {
 
 .modal__cancel {
   font: 600 12.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
   padding: 10px 16px;
   border-radius: var(--radius-notch-sm);
   cursor: pointer;

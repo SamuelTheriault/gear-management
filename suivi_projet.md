@@ -4,17 +4,29 @@ Tableau de bord manuel. À mettre à jour à chaque étape franchie ou décision
 prise. Complète `recapitulatif_projet.md` (contenu fonctionnel) sans le
 dupliquer — ce fichier ne suit que **l'avancement**, pas le scope.
 
-Dernière mise à jour : 2026-08-05 (soir, vérification automatique) —
-**étape 20 mergée (PR #25) et déployée** (commit `18f45a8`, déploiement
-Railway SUCCESS à 17 h 47). Aucun chantier en cours, arbre de travail
-propre.
+Dernière mise à jour : 2026-08-06 (matin, vérification automatique) —
+**gros chantier du 2026-08-05 soir NON COMMITTÉ** dans l'arbre de travail
+(~2 900 lignes sur 39 fichiers + 8 nouveaux), sur la branche
+`docs/suivi-etape20-2026-08-05`. Le commit de suivi de l'étape 20
+(`3311b20`) est poussé sur cette branche mais pas encore mergé dans `main`.
 
 ## Statut global
 
 Backend et frontend sont en ligne sur le même service Railway (Dockerfile,
-WhiteNoise sert le build Vue — étape 13), à jour avec `main`, migrations
-`0001`→`0026` appliquées. OAuth Google testé en vrai navigateur et
-fonctionnel (étape 7).
+WhiteNoise sert le build Vue — étape 13), à jour avec `main` (`18f45a8`,
+PR #25), migrations `0001`→`0026` appliquées. OAuth Google testé en vrai
+navigateur et fonctionnel (étape 7).
+
+**Chantier non commité (étape 21, 2026-08-05 soir)** — vérifié contre le
+code, correspond aux notes CLAUDE.md du même soir : passe de corrections
+d'affichage (menu, contraste, `touched_shows`, info-bulles Dashboard),
+`transport_detach.py` (supprimer un spectacle n'emporte plus la tournée),
+`Venue.display_order` réordonnable (migration `0027`, **non appliquée en
+prod**), Parcours Technicien complet (montages/démontages + clic), pincer
+pour zoomer (`useZoomGestures.js`), notes en texte riche (`rich_text.py` +
+`nh3` backend, TipTap frontend), garde-fou de sortie d'édition
+(`useLeaveGuard.js`/`LeaveEditPrompt.vue`). 434 tests comptés dans les
+fichiers (cohérent avec CLAUDE.md), suite non relancée ici.
 
 **⚠️ Incident opérationnel du 2026-08-04, résolu sans perte de données :**
 deux sessions Cowork ont travaillé sur le même dossier `gear-management` en
@@ -73,18 +85,32 @@ modèle backend) : voir « Points de vigilance ».
 | 18 | Info-bulle flottante Dashboard/Parcours (`FloatingTooltip.vue`, remplace l'ancienne info-bulle CSS-only piégée par le clipping du défilement zoomé) + rattrapage de `schema.md`/`architecture.md`/`recapitulatif_projet.md` sur les étapes 14-17 | ✅ Mergée dans `main` (PR #18) et déployée. Extrait à la main de `wip/checkpoint-2026-08-04` (périmé — prédate les tournées, aurait régressé Transport/Dashboard si appliqué tel quel). Revue `code-reviewer` : code propre (aucune régression du checkpoint périmé), 1 oubli corrigé (doc rattrapée pas committée avec le code au premier passage). Frontend + doc seulement, aucun changement backend | 2026-08-05 |
 | 19 | Interface Import/Export (étape 17 côté frontend) : section « Import / Export » sur Réglages — export JSON/XML complet d'un projet, export CSV par section (matériel/lieux/techniciens/spectacles), import JSON (nouveau projet), import CSV par section (append/remplace, confirmé par modale) | ✅ Mergée dans `main` (PR #22) et déployée. Brouillon retrouvé déjà présent, non committé, dans l'arbre de travail — complété par le seul chaînon manquant (`api.downloadUrl()` dans `client.js`) plutôt que réécrit, après vérification champ par champ contre l'API réelle. Inclut au passage le rattrapage `CLAUDE.md` de l'étape 18 (tooltip), resté non committé lui aussi. Revue `code-reviewer` : rien à corriger, 3 suggestions mineures non bloquantes. Frontend + doc seulement, aucun changement backend | 2026-08-05 |
 | 20 | Correctif de renvoi `schema.md`/`architecture.md` (section 12 → 9 pour `transport_materials`) + tests des filtres `?show`/`?material`/`?technician` (`ShowMaterialViewSet`/`ShowTechnicianViewSet`/`TransportViewSet`) et `?project=` (`TransportViewSet`), jusqu'ici sans couverture | ✅ Mergée dans `main` (PR #25) et déployée. 8 tests ajoutés (`QueryParamFilterAPITests`), suite à 401 tests, flake8 propre, aucune migration | 2026-08-05 |
+| 21 | Lot du 2026-08-05 soir : corrections d'affichage + `touched_shows`, détachement de tournée à la suppression d'un spectacle (`transport_detach.py`), ordre des lieux réordonnable (migration `0027`), Parcours Technicien complet, pincer pour zoomer + ⌘0, notes en texte riche (nh3/TipTap), garde-fou « quitter en cours d'édition » | 🔶 **Codé mais non commité** — 434 tests dans les fichiers, migration `0027` non appliquée en prod, nouvelles dépendances `nh3` (pip) et TipTap (npm) à installer | 2026-08-05 |
 
 ## Prochaine action concrète
 
-Rien de bloquant — toutes les étapes planifiées sont mergées et déployées,
-`main` local réaligné, branches déjà mergées nettoyées sur GitHub (dont
-`chore/schema-xref-filter-tests-2026-08-05`, PR #25, à supprimer aussi
-maintenant qu'elle est mergée). Reste en approche ouverte (backlog, non
-prioritaire pour l'instant — voir section Backlog) : listes de matériel par
-technicien, budget de location, géocodage d'adresse.
+**Committer et ouvrir la PR du lot 21** (2026-08-05 soir, ~2 900 lignes non
+commitées) : relancer la suite complète (434 tests attendus) + flake8,
+retirer `backend/inventory/test_diag_tmp.py` (fichier de diagnostic vide,
+résidu), passer `code-reviewer`, puis merger. Au déploiement : `pip install
+-r requirements.txt` (nh3), `npm install` (TipTap), `python manage.py
+migrate` (0027). Merger aussi le commit de suivi `3311b20` (étape 20),
+toujours en attente sur `docs/suivi-etape20-2026-08-05`.
 
 ## Points de vigilance
 
+- **~2 900 lignes non commitées dans l'arbre de travail** (lot 21, vérifié
+  le 2026-08-06) — le plus gros en-cours non versionné du projet à ce jour.
+  À committer en priorité pour ne pas risquer une perte (voir l'incident des
+  deux sessions du 2026-08-04).
+- **`test_diag_tmp.py`** : fichier de diagnostic vide, non suivi par git —
+  à ne pas committer avec le lot 21, à supprimer.
+- **🟡 Doc de référence en retard sur le lot 21** : `transport_detach`
+  (comportement de suppression), notes riches (`clean_notes`/nh3),
+  `touched_shows` et `Venue.display_order` (ce dernier est déjà dans le
+  `schema.md` non commité) sont absents d'`architecture.md`/
+  `recapitulatif_projet.md` — à rattraper dans une session interactive,
+  comme pour les étapes 14-17.
 - **`main` local réaligné sur GitHub** (vérifié le 2026-08-05 soir) : un
   `git fetch` a exceptionnellement réussi (habituellement « Host key
   verification failed » depuis ce bac à sable), confirmant que `origin/main`
@@ -133,9 +159,10 @@ technicien, budget de location, géocodage d'adresse.
   ainsi que les checkpoints périmés (`wip/checkpoint-2026-07-31`,
   `wip/checkpoint-2026-08-04`) et `chore/agents-ci-review-workflow` (la
   toute première PR du projet, #1, contenu déjà entièrement dans `main`).
-  Reste à supprimer : `chore/schema-xref-filter-tests-2026-08-05` (PR #25,
-  mergée depuis) — c'est la branche courante du dossier local, la
-  supprimer demanderait d'abord de checkout `main`.
+  `chore/schema-xref-filter-tests-2026-08-05` (PR #25) n'apparaît plus dans
+  les refs distantes locales — supprimée. La branche courante du dossier est
+  maintenant `docs/suivi-etape20-2026-08-05` (commit de suivi `3311b20`
+  poussé, PR à merger), et elle porte aussi tout le lot 21 non commité.
 
 ## Backlog
 

@@ -510,9 +510,11 @@ async function confirmCsvImport(mode) {
              remplace, confirmé via une modale). -->
         <section class="section">
           <div class="section-title">Import / Export</div>
+
+          <div class="io-card__label">Exporter</div>
           <div class="card">
             <div class="field">
-              <label class="label">Projet</label>
+              <label class="label">Projet à exporter</label>
               <select v-model.number="ioProjectId" class="input" @focus="ensureIoProjectSelected">
                 <option v-if="!ioProjects.length" :value="null" disabled>Aucun projet</option>
                 <option v-for="p in ioProjects" :key="p.id" :value="p.id">
@@ -576,6 +578,15 @@ async function confirmCsvImport(mode) {
               <div class="hint-text">Une section à la fois, pour un passage vers un tableur.</div>
             </div>
 
+          </div>
+
+          <!-- Import et export dans deux boîtes distinctes (2026-08-05,
+               demande de Samuel) : la seule carte d'origine mettait sur le
+               même plan une action qui SORT des données et une qui en
+               ÉCRIT — avec un sélecteur de projet en tête qui, lui, ne
+               concernait que l'export. -->
+          <div class="io-card__label">Importer</div>
+          <div class="card">
             <div class="io-group">
               <div class="io-group__title">Importer un projet</div>
               <div class="create-row">
@@ -799,7 +810,7 @@ async function confirmCsvImport(mode) {
 .hint {
   padding: 32px 40px;
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .hint--error {
@@ -816,7 +827,7 @@ async function confirmCsvImport(mode) {
   font: 700 12px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
 }
 
 .card {
@@ -886,12 +897,12 @@ async function confirmCsvImport(mode) {
 
 .project-date {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
 }
 
 .row-empty {
   font: 500 12.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   padding: 10px;
 }
 
@@ -907,7 +918,7 @@ async function confirmCsvImport(mode) {
   font: 700 10.5px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   padding: 6px 10px 8px;
 }
 
@@ -947,7 +958,7 @@ async function confirmCsvImport(mode) {
   font: 700 10.5px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .create-row {
@@ -959,8 +970,20 @@ async function confirmCsvImport(mode) {
 
 .create-hint {
   font: 400 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   line-height: 1.5;
+}
+
+/* Étiquette de boîte (2026-08-05) : sépare visuellement Exporter et
+   Importer, qui partageaient une seule carte. Plus discrète qu'un
+   `.section-title` — c'est un sous-niveau de la section « Import / Export »,
+   pas une section de plus. */
+.io-card__label {
+  font: 700 11px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgba(var(--fg-rgb), 0.58);
+  margin: 4px 0 -2px;
 }
 
 /* Import / Export (2026-08-04/05) : chaque sous-groupe (export complet, CSV,
@@ -982,7 +1005,7 @@ async function confirmCsvImport(mode) {
   font: 700 10.5px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .io-actions {
@@ -1016,7 +1039,7 @@ async function confirmCsvImport(mode) {
 
 .label {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .input {
@@ -1036,7 +1059,7 @@ async function confirmCsvImport(mode) {
 
 .hint-text {
   font: 400 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   line-height: 1.5;
 }
 
@@ -1083,32 +1106,10 @@ async function confirmCsvImport(mode) {
   box-shadow: inset 0 2px 0 0 var(--accent);
 }
 
-/* Poignée à 4 points en carré (demande de Samuel) : une grille 2×2, pas une
-   image ni un caractère — ça suit la couleur du texte et reste net à
-   n'importe quelle densité d'écran. */
-.drag-handle {
+/* La poignée elle-même est globale (`style.css`) — seule sa place dans la
+   grille de la ligne est locale. */
+.color-field .drag-handle {
   grid-area: handle;
-  display: grid;
-  grid-template-columns: repeat(2, 4px);
-  gap: 3px;
-  padding: 6px;
-  border-radius: 4px;
-  cursor: grab;
-}
-
-.drag-handle:hover {
-  background: rgba(var(--fg-rgb), 0.06);
-}
-
-.drag-handle__dot {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: rgba(var(--fg-rgb), 0.35);
-}
-
-.color-field:hover .drag-handle__dot {
-  background: rgba(var(--fg-rgb), 0.55);
 }
 
 .save-row {
@@ -1134,7 +1135,7 @@ async function confirmCsvImport(mode) {
 }
 
 .btn--disabled {
-  color: rgba(var(--fg-rgb), 0.3);
+  color: rgba(var(--fg-rgb), 0.38);
   background: rgba(var(--fg-rgb), 0.06);
   cursor: default;
 }

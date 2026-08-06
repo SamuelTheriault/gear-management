@@ -59,6 +59,7 @@ from .csv_import import (
     import_venues_csv,
 )
 from .duplication import duplicate_project
+from .transport_detach import detach_show_from_transports, plan_show_deletion
 from .permissions import (
     HasProjectAccess,
     IsStaffGlobal,
@@ -586,6 +587,14 @@ class ProjectViewSet(viewsets.ModelViewSet):
         chronologique — c'est précisément le croisement que fait déjà la
         détection de conflit (voir `_technician_commitments`).
 
+        S'y ajoutent depuis le 2026-08-05 les **montages et démontages** de
+        chaque spectacle assigné (`inherited: True`) : ces blocs n'ont pas
+        d'assignation propre, mais c'est bien l'équipe de l'événement qui y
+        travaille. Les faire figurer évite un trou dans le parcours là où le
+        technicien est en réalité sur le plateau. Une répétition rattachée,
+        elle, porte SES assignations : elle apparaît normalement, sans
+        traitement particulier — d'où l'absence de doublon.
+
         Filtre optionnel `?technicians=1,2,3`, même logique que le parcours
         matériel.
         """
@@ -618,16 +627,40 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 ShowTechnician.objects
                 .filter(technician=technician, show__project=project)
                 .select_related('show', 'show__venue')
+                .prefetch_related('show__phases__venue')
             ):
                 engagements.append({
                     'kind': 'show',
                     'id': st.show_id,
                     'label': st.show.display_title,
+                    'event_type': st.show.event_type,
                     'venue_name': st.show.venue.name,
                     'start': st.show.effective_start,
                     'end': st.show.effective_end,
+                    'inherited': False,
                     'conflict': ('show', st.id) in en_conflit,
                 })
+                # Montages et démontages (2026-08-05, demande de Samuel : « on
+                # va tout afficher ») : ces blocs n'ont AUCUNE assignation
+                # propre — c'est l'équipe de l'événement qui y travaille (voir
+                # `Show.inherits_resources`). Sans ces entrées dérivées, le
+                # parcours d'un technicien montrait un trou là où il est en
+                # réalité sur le plateau. Même règle que la chronologie de la
+                # fiche matériel (`get_material_schedule`).
+                for phase in st.show.phases.all():
+                    if not phase.inherits_resources:
+                        continue
+                    engagements.append({
+                        'kind': 'show',
+                        'id': phase.id,
+                        'label': phase.display_title,
+                        'event_type': phase.event_type,
+                        'venue_name': phase.venue.name,
+                        'start': phase.effective_start,
+                        'end': phase.effective_end,
+                        'inherited': True,
+                        'conflict': False,
+                    })
             for tt in (
                 TransportTechnician.objects
                 .filter(technician=technician, transport__show__project=project,
@@ -644,9 +677,11 @@ class ProjectViewSet(viewsets.ModelViewSet):
                     'kind': 'transport',
                     'id': transport.id,
                     'label': ' → '.join(stop.venue.name for stop in stops),
+                    'event_type': 'transport',
                     'venue_name': stops[-1].venue.name if stops else '',
                     'start': transport.scheduled_datetime,
                     'end': transport.effective_end,
+                    'inherited': False,
                     'conflict': ('transport', transport.id, technician.id) in en_conflit,
                 })
             engagements.sort(key=lambda e: e['start'])
@@ -745,6 +780,60 @@ class VenueViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewset
 
     queryset = Venue.objects.select_related('project').all()
     serializer_class = VenueSerializer
+
+    @action(detail=False, methods=['post'])
+    def reorder(self, request):
+        """Fixe l'ordre d'affichage des lieux d'un projet.
+
+        Corps : `{"project": <id>, "order": [<id de lieu>, ...]}`. Chaque lieu
+        listé reçoit son rang (`display_order`), dans l'ordre fourni ; les
+        lieux du projet absents de la liste passent derrière, à leur place
+        alphabétique habituelle.
+
+        Un seul appel plutôt qu'un PATCH par carte (2026-08-05, demande de
+        Samuel : réordonner les lieux depuis la page Lieux) — un
+        réordonnancement est un geste unique, il ne doit pas pouvoir
+        s'appliquer à moitié.
+
+        Comme les actions CSV, celle-ci ne passe pas par `get_object()` :
+        l'accès au projet est donc vérifié explicitement (rôle editor).
+        """
+        project = _resolve_csv_project(request, request.data.get('project'), required_edit=True)
+        if project is None:
+            return Response(
+                {'project': "Le projet est requis."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        ordre = request.data.get('order')
+        if not isinstance(ordre, list):
+            return Response(
+                {'order': "Une liste d'identifiants de lieux est attendue."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        connus = set(
+            Venue.objects.filter(project=project, id__in=ordre).values_list('id', flat=True)
+        )
+        inconnus = [venue_id for venue_id in ordre if venue_id not in connus]
+        if inconnus:
+            # Refuser plutôt qu'ignorer : un id étranger au projet signale un
+            # appel erroné, l'appliquer à moitié laisserait un ordre faux.
+            return Response(
+                {'order': f"Lieux inconnus dans ce projet : {inconnus}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            for rang, venue_id in enumerate(ordre, start=1):
+                Venue.objects.filter(id=venue_id).update(display_order=rang)
+            # Les lieux non listés (créés entre-temps, par exemple) repassent
+            # derrière, où le tri par nom reprend la main.
+            Venue.objects.filter(project=project).exclude(id__in=ordre).update(
+                display_order=len(ordre) + 1,
+            )
+
+        lieux = Venue.objects.filter(project=project)
+        return Response(VenueSerializer(lieux, many=True).data)
     permission_classes = [HasProjectAccess]
 
     def destroy(self, request, *args, **kwargs):
@@ -997,6 +1086,20 @@ class ShowViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewsets
     serializer_class = ShowSerializer
     permission_classes = [HasProjectAccess]
 
+    def perform_destroy(self, instance):
+        """Supprime le spectacle — en préservant les tournées qui desservent
+        aussi d'autres lieux.
+
+        `Transport.show` est en CASCADE : sans ce détachement, supprimer un
+        spectacle emporterait la tournée entière, arrêts d'autres salles
+        compris (demande de Samuel du 2026-08-05, voir `transport_detach.py`).
+        Volontairement ici et pas dans un signal `pre_delete` : sur une
+        suppression de projet, réancrer une tournée sur un spectacle
+        lui-même en cours de suppression n'aurait aucun sens.
+        """
+        detach_show_from_transports(instance)
+        instance.delete()
+
     @action(detail=True, methods=['get'])
     def conflicts(self, request, pk=None):
         """Liste les chevauchements actuellement en place pour ce spectacle
@@ -1031,7 +1134,14 @@ class ShowViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewsets
             for tt in transport.transport_technicians.all():
                 for conflict in get_transport_conflicts(
                     transport.scheduled_datetime,
-                    transport.estimated_duration_minutes,
+                    # `estimated_duration_minutes` n'existe plus sur le modèle
+                    # depuis les tournées multi-arrêts (2026-08-04) : la durée
+                    # est la somme des segments. Le nom survit côté API
+                    # (alias de lecture sur `TransportSerializer`), d'où
+                    # l'oubli ici — corrigé le 2026-08-05, il faisait planter
+                    # `GET /shows/{id}/conflicts/` en 500 dès qu'un spectacle
+                    # avait un déplacement horodaté avec un technicien.
+                    transport.total_duration_minutes,
                     tt.technician,
                     exclude_id=transport.id,
                 ):

@@ -24,8 +24,14 @@ import { useEscapeKey } from './useEscapeKey'
  * @param {object} options
  * @param {string} options.endpoint   Préfixe DRF, ex. `/venues`.
  * @param {string} options.redirectTo Route de liste où revenir après succès.
+ * @param {() => void} [options.beforeRedirect]  Appelé après la suppression
+ *   réussie, juste avant la redirection — sert à sortir du mode édition pour
+ *   que le garde-fou de navigation (`useLeaveGuard`) ne bloque pas la sortie.
+ * @param {() => void} [options.beforeRedirect]  Appelé juste après la
+ *   suppression réussie, avant la redirection — sert à sortir du mode
+ *   édition pour que le garde-fou de navigation ne bloque pas la sortie.
  */
-export function useSuppressionFiche({ endpoint, redirectTo }) {
+export function useSuppressionFiche({ endpoint, redirectTo, beforeRedirect = () => {} }) {
   const router = useRouter()
 
   const confirming = ref(false)
@@ -54,6 +60,13 @@ export function useSuppressionFiche({ endpoint, redirectTo }) {
     deleteError.value = null
     try {
       await api.delete(`${endpoint}/${id}/`)
+      // Sortir du mode édition AVANT de rediriger (2026-08-05, relecture) :
+      // le bouton Supprimer vit dans le formulaire d'édition, donc la fiche
+      // est souvent « modifiée » au moment de la suppression. Sans ça, le
+      // garde-fou de navigation (`useLeaveGuard`) refuse la redirection et
+      // propose d'enregistrer — un PATCH sur une ressource qui n'existe
+      // plus. Seul un rechargement de page sortait de ce cul-de-sac.
+      beforeRedirect()
       router.push(redirectTo)
     } catch (e) {
       // Le refus du backend (lieu encore utilisé) porte son propre message,

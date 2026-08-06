@@ -255,7 +255,7 @@ async function handleLogout() {
 
 .brand__tagline {
   font: 400 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .panel {
@@ -273,7 +273,7 @@ async function handleLogout() {
 .panel__intro {
   margin: 0;
   font: 400 13px/1.6 system-ui;
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
 }
 
 .panel__link {
@@ -292,13 +292,13 @@ async function handleLogout() {
 
 .submit-btn--disabled {
   background: rgba(var(--fg-rgb), 0.08);
-  color: rgba(var(--fg-rgb), 0.3);
+  color: rgba(var(--fg-rgb), 0.38);
   cursor: not-allowed;
 }
 
 .account {
   font: 500 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   display: flex;
   align-items: center;
   gap: 6px;

@@ -5,7 +5,9 @@ import ParcoursDayPicker from '../components/ParcoursDayPicker.vue'
 import ZoomControls from '../components/ZoomControls.vue'
 import FloatingTooltip from '../components/FloatingTooltip.vue'
 import { useParcours } from '../composables/useParcours'
+import { EVENT_TYPE_META } from '../constants/eventTypeMeta'
 import { useZoomScroll } from '../composables/useZoomScroll'
+import { useZoomGestures } from '../composables/useZoomGestures'
 import { useFloatingTooltip } from '../composables/useFloatingTooltip'
 
 /**
@@ -69,17 +71,44 @@ const {
 
 const scrollRef = ref(null)
 useZoomScroll(scrollRef, zoomLevel, scrollFraction)
+// Pincer le trackpad pour zoomer, ⌘0 pour revenir à l'origine (2026-08-05) —
+// raccourcis, les boutons +/- restent le chemin visible.
+useZoomGestures(scrollRef, { zoomIn, zoomOut, reset: resetZoom })
 
 // Info-bulle flottante (2026-08-03) — voir la note de tête.
 const { tooltip, show: showTooltip, hide: hideTooltip } = useFloatingTooltip()
 
-const KIND_COLORS = {
-  show: 'oklch(0.55 0.13 290)',
-  transport: 'oklch(0.5 0.1 250)',
+// Couleur par TYPE d'engagement (2026-08-05) : jusqu'ici, tout spectacle
+// était de la même teinte. Depuis que les montages et démontages figurent au
+// parcours, distinguer répétition/représentation/montage/démontage évite de
+// lire une journée comme un seul bloc indistinct. Mêmes couleurs que partout
+// ailleurs — celles des Réglages, via `EVENT_TYPE_META`.
+function couleurDe(engagement) {
+  if (engagement.kind === 'transport') return 'var(--transport)'
+  return EVENT_TYPE_META[engagement.event_type]?.color ?? 'oklch(0.55 0.13 290)'
 }
 
 const dateFmt = new Intl.DateTimeFormat('fr-CA', {
   day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false,
+})
+
+// Légende : seulement les types RÉELLEMENT présents dans ce qui est affiché
+// — même règle que les puces de catégorie du Parcours Matériel, une entrée
+// de légende qui ne correspond à rien à l'écran n'aide personne.
+const legend = computed(() => {
+  const vus = new Map()
+  rows.value.forEach((row) => {
+    row.engagements.forEach((e) => {
+      if (!overlapsDay(e.start, e.end)) return
+      const cle = e.kind === 'transport' ? 'transport' : e.event_type
+      if (vus.has(cle)) return
+      vus.set(cle, {
+        label: cle === 'transport' ? 'Déplacement' : (EVENT_TYPE_META[cle]?.label ?? 'Spectacle'),
+        color: couleurDe(e),
+      })
+    })
+  })
+  return [...vus.values()]
 })
 
 const decorated = computed(() =>
@@ -92,13 +121,20 @@ const decorated = computed(() =>
         style: {
           ...segmentStyle(e.start, e.end),
           // Le conflit prime sur le type : c'est l'information à repérer.
-          background: e.conflict ? 'oklch(0.5 0.16 25)' : KIND_COLORS[e.kind],
+          background: e.conflict ? 'oklch(0.5 0.16 25)' : couleurDe(e),
           border: e.conflict ? '1px solid oklch(0.7 0.16 25)' : 'none',
         },
+        route: e.kind === 'transport' ? `/transports/${e.id}` : `/spectacles/${e.id}`,
         tooltipTitle: e.label,
         tooltipTime: `${dateFmt.format(new Date(e.start))} – ${dateFmt.format(new Date(e.end))}`,
         tooltipLines: [
-          e.kind === 'show' ? 'Spectacle' : 'Déplacement',
+          e.kind === 'transport'
+            ? 'Déplacement'
+            : (EVENT_TYPE_META[e.event_type]?.label ?? 'Spectacle'),
+          e.venue_name,
+          // Un montage/démontage n'a pas d'assignation propre : le technicien
+          // y est parce qu'il est sur l'événement (voir `inherits_resources`).
+          ...(e.inherited ? ["Via l'assignation à l'événement"] : []),
           ...(e.conflict ? ['⚠ En conflit'] : []),
         ],
       })),
@@ -192,16 +228,20 @@ const decorated = computed(() =>
                       class="parcours-gridline"
                       :style="{ left: mark.left }"
                     />
-                    <div
+                    <!-- Cliquable (2026-08-05, demande de Samuel) : un bloc
+                         mène à la fiche de son spectacle ou de son
+                         déplacement, comme les chronologies des fiches. -->
+                    <RouterLink
                       v-for="(b, i) in row.blocks"
                       :key="i"
-                      class="parcours-seg"
+                      :to="b.route"
+                      class="parcours-seg parcours-seg--clickable"
                       :style="b.style"
                       @mouseenter="showTooltip($event, { title: b.tooltipTitle, time: b.tooltipTime, lines: b.tooltipLines })"
                       @mouseleave="hideTooltip"
                     >
                       <span class="parcours-seg__label">{{ b.label }}</span>
-                    </div>
+                    </RouterLink>
                     <div v-if="row.blocks.length === 0" class="track-empty">Aucun engagement</div>
                   </div>
                 </div>
@@ -209,11 +249,8 @@ const decorated = computed(() =>
             </div>
 
             <div class="legend">
-              <span class="legend__item">
-                <span class="legend__swatch" :style="{ background: KIND_COLORS.show }" />Spectacle
-              </span>
-              <span class="legend__item">
-                <span class="legend__swatch" :style="{ background: KIND_COLORS.transport }" />Déplacement
+              <span v-for="l in legend" :key="l.label" class="legend__item">
+                <span class="legend__swatch" :style="{ background: l.color }" />{{ l.label }}
               </span>
               <span class="legend__item">
                 <span class="legend__swatch" style="background: oklch(0.5 0.16 25)" />En conflit
@@ -244,12 +281,12 @@ const decorated = computed(() =>
 
 .page-count {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .hint {
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .hint--error {
@@ -279,7 +316,7 @@ const decorated = computed(() =>
   align-items: center;
   gap: 6px;
   font: 400 11px system-ui;
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
 }
 
 .legend__swatch {

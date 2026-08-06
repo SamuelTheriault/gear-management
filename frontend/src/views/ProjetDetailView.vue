@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
+import LeaveEditPrompt from '../components/LeaveEditPrompt.vue'
 import { api } from '../api/client'
 import { useFicheEdition } from '../composables/useFicheEdition'
 import { useSuppressionFiche } from '../composables/useSuppressionFiche'
@@ -92,6 +93,7 @@ const statusLabel = computed(() => (project.value?.status === 'archived' ? 'Arch
 const {
   editing, draft, saving, saveError, fieldErrors, canSave,
   startEdit, cancelEdit, save: saveProject,
+  leavePrompt, leaveSaving, leaveError, stayOnPage, saveAndLeave,
 } = useFicheEdition({
   entity: project,
   endpoint: '/projects',
@@ -138,7 +140,11 @@ watch(() => route.params.id, cancelEdit)
 // n'y a jamais rien à « ne pas casser », donc pas de `hasCascade` à calculer.
 const {
   confirming, deleting, deleteError, askDelete: askDeleteProject, cancelDelete: cancelDeleteProject, confirmDelete,
-} = useSuppressionFiche({ endpoint: '/projects', redirectTo: '/reglages' })
+} = useSuppressionFiche({
+  endpoint: '/projects',
+  redirectTo: '/reglages',
+  beforeRedirect: () => cancelEdit(),
+})
 
 const deleteConfirmText = ref('')
 
@@ -516,6 +522,14 @@ async function invite() {
         </div>
       </div>
     </div>
+
+    <LeaveEditPrompt
+      :visible="leavePrompt"
+      :saving="leaveSaving"
+      :error="leaveError"
+      @stay="stayOnPage"
+      @save="saveAndLeave"
+    />
   </AppShell>
 </template>
 
@@ -530,7 +544,7 @@ async function invite() {
 .hint {
   padding: 32px 40px;
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .hint--error {
@@ -539,7 +553,7 @@ async function invite() {
 
 .breadcrumb {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .breadcrumb :deep(a) {
@@ -585,7 +599,7 @@ async function invite() {
   font: 700 11px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
 }
 
 .info-value {
@@ -594,12 +608,6 @@ async function invite() {
   margin-top: 4px;
 }
 
-.card-title {
-  font: 700 12px var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: rgba(var(--fg-rgb), 0.65);
-}
 
 .card-text {
   font: 400 13.5px/1.6 system-ui;
@@ -635,12 +643,12 @@ async function invite() {
 
 .row__subtitle {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .row-empty {
   font: 500 12.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   padding: 10px 12px;
 }
 
@@ -666,7 +674,7 @@ async function invite() {
   letter-spacing: 0.05em;
   padding: 4px 9px;
   border-radius: 0 6px 0 6px;
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
   background: rgba(var(--fg-rgb), 0.08);
   flex: none;
 }
@@ -684,7 +692,7 @@ async function invite() {
   font: 700 10.5px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .invite-row {

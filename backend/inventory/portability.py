@@ -40,6 +40,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
+from .rich_text import clean_notes
 from .models import (
     Material,
     MaterialCategory,
@@ -337,7 +338,7 @@ def import_project_data(data, name=None, client_name=None):
                 status=project_data.get('status') or Project.STATUS_ACTIVE,
                 start_date=_parse_date(project_data.get('start_date')),
                 end_date=_parse_date(project_data.get('end_date')),
-                notes=project_data.get('notes') or '',
+                notes=clean_notes(project_data.get('notes') or ''),
             )
 
             venue_id_map = {}
@@ -349,7 +350,7 @@ def import_project_data(data, name=None, client_name=None):
                     address=v.get('address') or '',
                     contact_name=v.get('contact_name') or '',
                     contact_info=v.get('contact_info') or '',
-                    notes=v.get('notes') or '',
+                    notes=clean_notes(v.get('notes') or ''),
                     is_storage=bool(v.get('is_storage', False)),
                     latitude=_parse_decimal(v.get('latitude')),
                     longitude=_parse_decimal(v.get('longitude')),
@@ -389,7 +390,7 @@ def import_project_data(data, name=None, client_name=None):
                     ownership_status=m.get('ownership_status') or Material.OWNERSHIP_OWNED,
                     is_active=bool(m.get('is_active', True)),
                     quantity=int(m.get('quantity') or 1),
-                    notes=m.get('notes') or '',
+                    notes=clean_notes(m.get('notes') or ''),
                 )
                 material_id_map[m.get('id')] = new_material
             for m in materials_data:
@@ -412,7 +413,7 @@ def import_project_data(data, name=None, client_name=None):
                     name=t.get('name') or '',
                     contact_info=t.get('contact_info') or '',
                     specialty=t.get('specialty') or '',
-                    notes=t.get('notes') or '',
+                    notes=clean_notes(t.get('notes') or ''),
                 )
                 technician_id_map[t.get('id')] = new_technician
 
@@ -435,7 +436,7 @@ def import_project_data(data, name=None, client_name=None):
                     end_datetime=_parse_datetime(s.get('end_datetime')),
                     buffer_before_minutes=int(s.get('buffer_before_minutes') or 0),
                     buffer_after_minutes=int(s.get('buffer_after_minutes') or 0),
-                    notes=s.get('notes') or '',
+                    notes=clean_notes(s.get('notes') or ''),
                 )
                 show_id_map[s.get('id')] = new_show
             for s in shows_data:
@@ -503,7 +504,7 @@ def import_project_data(data, name=None, client_name=None):
                     show=show_obj,
                     status=tr.get('status') or Transport.STATUS_CONFIRMED,
                     scheduled_datetime=_parse_datetime(tr.get('scheduled_datetime')),
-                    notes=tr.get('notes') or '',
+                    notes=clean_notes(tr.get('notes') or ''),
                 )
                 stop_obj_by_order = {}
                 for position, stop in enumerate(stops_data):

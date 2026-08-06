@@ -468,9 +468,25 @@ class Venue(models.Model):
         ),
     )
 
+    # Ordre d'affichage choisi par l'utilisateur (2026-08-05, demande de
+    # Samuel : réordonner les lieux depuis la page Lieux, ce qui réordonne
+    # aussi les puces de filtre du Tableau de bord — même principe que
+    # `Settings.event_type_order` pour les types).
+    #
+    # Tous les lieux existants restent à 0 : le tri secondaire par nom
+    # reproduit alors exactement l'ordre d'avant, aucune migration de données
+    # n'est nécessaire.
+    display_order = models.PositiveIntegerField(
+        default=0,
+        help_text=(
+            "Rang d'affichage dans le projet (0 = non classé). À égalité, le "
+            "tri se fait par nom — c'est l'ordre par défaut."
+        ),
+    )
+
     class Meta:
         db_table = 'venues'
-        ordering = ['name']
+        ordering = ['display_order', 'name']
 
     def __str__(self):
         return self.name

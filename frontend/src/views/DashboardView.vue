@@ -8,6 +8,7 @@ import { api } from '../api/client'
 import { useActiveProject } from '../composables/useActiveProject'
 import { useChipFilter } from '../composables/useChipFilter'
 import { useZoomScroll } from '../composables/useZoomScroll'
+import { useZoomGestures } from '../composables/useZoomGestures'
 import { useEventDisplay } from '../composables/useEventDisplay'
 import { useFloatingTooltip } from '../composables/useFloatingTooltip'
 
@@ -120,24 +121,31 @@ const report = ref({ venue_conflicts: [], material_conflicts: [], technician_con
 // saisies sur le projet, sinon du premier au dernier événement. Même règle que
 // les écrans Parcours et les chronologies de fiche — pas de réécriture en JS.
 const projectWindow = ref(null)
+const venues = ref([])
 
 async function loadDashboard() {
   if (!activeProjectId.value) return
   loading.value = true
   loadError.value = null
   try {
-    const [showsData, materialsData, reportData, transportsData, windowData] = await Promise.all([
+    const [showsData, materialsData, reportData, transportsData, windowData, venuesData] = await Promise.all([
       api.get('/shows/', { project: activeProjectId.value }),
       api.get('/materials/', { project: activeProjectId.value }),
       api.get(`/projects/${activeProjectId.value}/conflicts/`),
       api.get('/transports/', { project: activeProjectId.value }),
       api.get(`/projects/${activeProjectId.value}/window/`),
+      // Pour l'ORDRE des lieux (2026-08-05) : `Venue.Meta.ordering` suit
+      // `display_order`, réordonnable depuis la page Lieux. Les entrées de la
+      // timeline ne portent qu'un nom de lieu, il faut donc la liste pour
+      // savoir dans quel ordre les présenter.
+      api.get('/venues/', { project: activeProjectId.value }),
     ])
     shows.value = Array.isArray(showsData) ? showsData : (showsData.results ?? [])
     materials.value = Array.isArray(materialsData) ? materialsData : (materialsData.results ?? [])
     report.value = reportData
     transports.value = Array.isArray(transportsData) ? transportsData : (transportsData.results ?? [])
     projectWindow.value = windowData?.start && windowData?.end ? windowData : null
+    venues.value = Array.isArray(venuesData) ? venuesData : (venuesData.results ?? [])
   } catch (e) {
     loadError.value = e
   } finally {
@@ -327,8 +335,7 @@ const projectEntries = computed(() => {
       venueName: show.venue_name,
       eventTypeLabel: typeSuffix[show.event_type] ?? show.event_type,
       typeColor: typeColors[show.event_type] ?? null,
-      // Rattaché à un événement : la puce le rappelle dans l'info-bulle.
-      parentTitle: show.parent_show_title ?? null,
+      technicianName: (show.technician_names ?? []).join(', '),
       route: `/spectacles/${show.id}`,
     })
   }
@@ -395,6 +402,15 @@ const dayChips = computed(() => [
 // Un transport touche deux lieux (origine + destination) : il compte pour
 // les deux ici, même s'il n'apparaîtra en double dans la timeline que si les
 // deux passent le filtre (voir `pushTo` dans `venueRows`).
+// Rang d'un lieu par NOM — les entrées de la timeline n'en portent que le
+// nom. Un lieu absent de la liste (supprimé entre deux chargements) passe
+// derrière plutôt que devant.
+const venueRank = computed(() => {
+  const rangs = new Map()
+  venues.value.forEach((v, i) => rangs.set(v.name, i))
+  return (name) => (rangs.has(name) ? rangs.get(name) : Number.MAX_SAFE_INTEGER)
+})
+
 const availableVenues = computed(() => {
   const set = new Set()
   for (const entry of projectEntries.value) {
@@ -404,7 +420,9 @@ const availableVenues = computed(() => {
       ;(entry.stopVenueNames ?? []).forEach((name) => set.add(name))
     }
   }
-  return [...set].sort((a, b) => a.localeCompare(b, 'fr'))
+  // Ordre choisi sur la page Lieux (2026-08-05), pas alphabétique — même
+  // principe que l'ordre des types réglé depuis les Réglages.
+  return [...set].sort((a, b) => venueRank.value(a) - venueRank.value(b) || a.localeCompare(b, 'fr'))
 })
 
 const venueChips = computed(() => [
@@ -432,16 +450,21 @@ const LANE_HEIGHT = 34
 
 // Empile les entrées qui se chevauchent en « voies » (lane 0, 1, 2…) et
 // renvoie la hauteur de piste correspondante — appliqué PAR LIEU.
+// Empile sur `startMin`/`endMin` (minutes depuis le début de la fenêtre) et
+// NON sur `start`/`end`, qui restent les Date d'origine : les écraser avec
+// des nombres cassait l'affichage de l'heure dans l'info-bulle (les deux
+// bouts retombaient sur « 1 janv. 00:00 »), bug signalé par Samuel le
+// 2026-08-05.
 function packLanes(items) {
-  const sorted = [...items].sort((a, b) => a.start - b.start)
+  const sorted = [...items].sort((a, b) => a.startMin - b.startMin)
   const laneEnds = []
   sorted.forEach((it) => {
-    let lane = laneEnds.findIndex((end) => end <= it.start)
+    let lane = laneEnds.findIndex((end) => end <= it.startMin)
     if (lane === -1) {
       lane = laneEnds.length
-      laneEnds.push(it.end)
+      laneEnds.push(it.endMin)
     } else {
-      laneEnds[lane] = it.end
+      laneEnds[lane] = it.endMin
     }
     it.lane = lane
   })
@@ -480,12 +503,13 @@ const venueRows = computed(() => {
   }
   return [...byVenue.entries()]
     .map(([venueName, items]) => {
-      // `packLanes` trie sur `start`/`end` : on lui donne les minutes.
-      const pour = items.map((it) => ({ ...it, start: it.startMin, end: it.endMin }))
-      const { items: sorted, rowHeight } = packLanes(pour)
+      const { items: sorted, rowHeight } = packLanes(items)
       return { venueName, items: sorted, rowHeight }
     })
-    .sort((a, b) => a.venueName.localeCompare(b.venueName, 'fr'))
+    .sort((a, b) => (
+      venueRank.value(a.venueName) - venueRank.value(b.venueName)
+      || a.venueName.localeCompare(b.venueName, 'fr')
+    ))
 })
 
 // Fenêtre AUTOMATIQUE : du premier au dernier événement VISIBLE, avec une
@@ -578,6 +602,9 @@ const scrollFraction = computed(() => {
 
 const scrollRef = ref(null)
 useZoomScroll(scrollRef, zoomLevel, scrollFraction)
+// Pincer le trackpad pour zoomer, ⌘0 pour revenir à l'origine (2026-08-05) —
+// raccourcis, les boutons +/- restent le chemin visible.
+useZoomGestures(scrollRef, { zoomIn, zoomOut, reset: resetZoom })
 
 // Info-bulle flottante (2026-08-03) — voir `useFloatingTooltip.js` : remplace
 // l'ancienne info-bulle CSS-only, piégée par le clipping de
@@ -655,7 +682,7 @@ const timeline = computed(() => {
         : [
             it.venueName,
             it.eventTypeLabel,
-            ...(it.parentTitle ? [`Rattaché à « ${it.parentTitle} »`] : []),
+            it.technicianName ? `Technicien : ${it.technicianName}` : 'Aucun technicien assigné',
           ]
       if (it.conflict) details.push(it.kind === 'transport' ? 'Conflit technicien' : "Conflit d'horaire")
 
@@ -1113,7 +1140,7 @@ const upcoming = computed(() => {
 .hint {
   padding: 32px 40px;
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .hint--error {
@@ -1122,7 +1149,7 @@ const upcoming = computed(() => {
 
 .row-empty {
   font: 500 12.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   padding: 10px 0;
 }
 
@@ -1160,13 +1187,13 @@ const upcoming = computed(() => {
   font: 700 10px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
   min-width: 34px;
 }
 
 .dash-date {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   text-transform: capitalize;
 }
 
@@ -1225,7 +1252,7 @@ const upcoming = computed(() => {
   font: 700 12px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: rgba(var(--fg-rgb), 0.65);
+  color: rgba(var(--fg-rgb), 0.72);
   margin-bottom: 16px;
 }
 
@@ -1245,7 +1272,7 @@ const upcoming = computed(() => {
 .dash-card__window {
   flex: 1;
   font: 600 11px var(--font-mono);
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .dash-card__head .dash-card__title {
@@ -1276,7 +1303,7 @@ const upcoming = computed(() => {
   font: 700 10px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
 }
 
 .dash-drag-error {
@@ -1329,7 +1356,7 @@ const upcoming = computed(() => {
   display: flex;
   align-items: center;
   font: 600 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
 }
 
 .dash-timeline__scroll {
@@ -1369,7 +1396,7 @@ const upcoming = computed(() => {
   position: absolute;
   transform: translateX(-50%);
   font: 600 9.5px var(--font-mono);
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
   white-space: nowrap;
 }
 
@@ -1395,7 +1422,7 @@ const upcoming = computed(() => {
 }
 
 .dash-timeline__axis-mark--day {
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
 }
 
 .dash-timeline__block {
@@ -1462,7 +1489,7 @@ const upcoming = computed(() => {
   gap: 16px;
   margin-top: 16px;
   font: 500 11px system-ui;
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
 }
 
 .dash-legend__item {
@@ -1473,7 +1500,7 @@ const upcoming = computed(() => {
 
 .dash-legend__item--hint {
   margin-left: auto;
-  color: rgba(var(--fg-rgb), 0.3);
+  color: rgba(var(--fg-rgb), 0.38);
   font-style: italic;
 }
 
@@ -1524,7 +1551,7 @@ const upcoming = computed(() => {
 
 .dash-stat__label {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .dash-upcoming {
@@ -1561,7 +1588,7 @@ const upcoming = computed(() => {
 
 .dash-upcoming__subtitle {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .dash-upcoming__badge {

@@ -402,3 +402,71 @@ class CsvExportPermissionTests(TestCase):
         self.client.force_authenticate(user=django_user)
         response = self.client.get('/api/materials/export-csv/', {'project': self.project.id})
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class ImportSanitizationTests(TestCase):
+    """Les notes importées passent aussi par `clean_notes` (2026-08-05).
+
+    Trouvé en relecture : l'assainissement n'était branché que sur les
+    serializers, alors que `portability.import_project_data` et
+    `csv_import` créent les objets par `Model.objects.create()` (pour ne pas
+    déclencher la validation de conflits) — ils écrivaient donc des notes
+    brutes, ensuite rendues par `v-html` sur les fiches.
+
+    Un fichier d'export ou un CSV échangé entre utilisateurs est exactement
+    le vecteur que `rich_text.py` dit vouloir couvrir : ces deux chemins
+    doivent nettoyer comme le fait l'API ordinaire.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+
+    def test_project_import_sanitizes_show_and_transport_notes(self):
+        project, _refs = _build_full_project()
+        exported = json.loads(self.client.get(f'/api/projects/{project.id}/export/').content)
+
+        piege = '<p>ok</p><img src=x onerror="alert(1)"><script>alert(2)</script>'
+        for show in exported['shows']:
+            show['notes'] = piege
+        for transport in exported['transports']:
+            transport['notes'] = piege
+        exported['project']['notes'] = piege
+
+        response = self.client.post('/api/projects/import/', exported, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        importe = Project.objects.get(id=response.data['project']['id'])
+        self.assertNotIn('script', importe.notes)
+        self.assertNotIn('onerror', importe.notes)
+        for show in importe.shows.all():
+            self.assertNotIn('script', show.notes)
+            self.assertNotIn('onerror', show.notes)
+            # La mise en forme légitime, elle, survit.
+            self.assertIn('<p>ok</p>', show.notes)
+        for transport in Transport.objects.filter(show__project=importe):
+            self.assertNotIn('script', transport.notes)
+            self.assertNotIn('onerror', transport.notes)
+
+    def test_csv_import_sanitizes_notes(self):
+        # Le superutilisateur Django court-circuite le contrôle d'accès par
+        # projet (voir permissions.py) — pas de membership à créer ici.
+        project = Project.objects.create(name="Cible CSV")
+
+        contenu = (
+            'Nom;Code;Adresse;Contact;Coordonnées contact;'
+            'Entrepôt;Latitude;Longitude;Notes\n'
+            'Chapelle;CHAP;12 rue X;Alex;;Non;;;'
+            '<p>Accès</p><img src=x onerror=alert(1)>\n'
+        )
+        response = self.client.post(
+            '/api/venues/import-csv/',
+            {'project': project.id, 'mode': 'append', 'csv': contenu},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+        lieu = Venue.objects.get(project=project, name='Chapelle')
+        self.assertNotIn('onerror', lieu.notes)
+        self.assertIn('<p>Accès</p>', lieu.notes)

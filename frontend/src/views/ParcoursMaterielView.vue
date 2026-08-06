@@ -8,6 +8,7 @@ import { api } from '../api/client'
 import { useActiveProject } from '../composables/useActiveProject'
 import { useParcours } from '../composables/useParcours'
 import { useZoomScroll } from '../composables/useZoomScroll'
+import { useZoomGestures } from '../composables/useZoomGestures'
 import { useFloatingTooltip } from '../composables/useFloatingTooltip'
 import { VENUE_PALETTE } from '../constants/venuePalette'
 
@@ -170,6 +171,9 @@ const {
 // navigateur gérer seul le défilement manuel.
 const scrollRef = ref(null)
 useZoomScroll(scrollRef, zoomLevel, scrollFraction)
+// Pincer le trackpad pour zoomer, ⌘0 pour revenir à l'origine (2026-08-05) —
+// raccourcis, les boutons +/- restent le chemin visible.
+useZoomGestures(scrollRef, { zoomIn, zoomOut, reset: resetZoom })
 
 // Info-bulle flottante (2026-08-03) — voir la note de tête et
 // `useFloatingTooltip.js`.
@@ -750,12 +754,12 @@ const decorated = computed(() =>
 
 .page-count {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .hint {
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .hint--error {
@@ -777,7 +781,7 @@ const decorated = computed(() =>
   padding: 4px 8px;
   border-radius: 0 6px 0 6px;
   background: rgba(var(--fg-rgb), 0.06);
-  color: rgba(var(--fg-rgb), 0.55);
+  color: rgba(var(--fg-rgb), 0.63);
   font: 500 10.5px system-ui;
   cursor: pointer;
   white-space: nowrap;
@@ -823,7 +827,7 @@ const decorated = computed(() =>
   padding: 1px 5px;
   border-radius: 0 5px 0 5px;
   background: rgba(var(--fg-rgb), 0.08);
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   font: 600 9.5px var(--font-mono);
   text-align: center;
 }
@@ -837,7 +841,7 @@ const decorated = computed(() =>
 .picker-empty {
   padding: 10px 4px;
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.3);
+  color: rgba(var(--fg-rgb), 0.38);
 }
 
 .legend {
@@ -853,7 +857,7 @@ const decorated = computed(() =>
   align-items: center;
   gap: 6px;
   font: 400 11px system-ui;
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
 }
 
 .legend__swatch {

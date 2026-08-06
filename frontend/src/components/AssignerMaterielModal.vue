@@ -557,14 +557,14 @@ async function forcePendingConflicts() {
 
 .modal__close {
   font: 400 20px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
   cursor: pointer;
   line-height: 1;
 }
 
 .modal__context {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
   margin-top: -8px;
 }
 
@@ -587,7 +587,7 @@ async function forcePendingConflicts() {
 
 .hint {
   font: 500 12.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
   padding: 8px 0;
 }
 
@@ -637,16 +637,16 @@ async function forcePendingConflicts() {
 }
 
 .catalog-row__kit {
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .catalog-row__child {
-  color: rgba(var(--fg-rgb), 0.3);
+  color: rgba(var(--fg-rgb), 0.38);
 }
 
 .modal__hint {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
   padding: 0 20px 4px;
 }
 
@@ -694,7 +694,7 @@ async function forcePendingConflicts() {
 
 .catalog-row__stock {
   font: 400 11px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .catalog-row__rental {
@@ -710,7 +710,7 @@ async function forcePendingConflicts() {
   align-items: center;
   gap: 6px;
   font: 600 11px system-ui;
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
   cursor: pointer;
 }
 
@@ -789,7 +789,7 @@ async function forcePendingConflicts() {
 
 .modal__count {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   margin-right: auto;
 }
 
@@ -802,7 +802,7 @@ async function forcePendingConflicts() {
 }
 
 .btn--ghost {
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
   background: rgba(var(--fg-rgb), 0.06);
 }
 

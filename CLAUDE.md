@@ -2791,3 +2791,400 @@ backend). Vérifié en sandbox : build Vite propre + parcours Playwright
   arrêt sans action. C'est la vue chauffeur : dérivée des portions
   (`load/unload_stop_order`), rien de stocké en plus. Le mode ÉDITION garde
   la liste unique à sélecteurs (l'outil d'édition, pas la feuille de route).
+
+## Mise à jour (2026-08-05) — Passe de corrections d'affichage
+
+Six retouches demandées ensemble par Samuel. Deux ont un fond, pas seulement
+une forme.
+
+- **Menu** : Transports remonte en 2e position, juste après le Tableau de
+  bord (`navItems`, `AppShell.vue`).
+- **Contraste du texte gris** : +0.08 d'opacité sur les 219 déclarations
+  `color: rgba(var(--fg-rgb), X)` de la plage 0.30-0.65, dans `style.css` et
+  les vues. Transformation limitée aux déclarations `color:` — en dessous de
+  0.30 ce sont des bordures et des fonds, qu'il ne faut pas toucher (une
+  bordure remontée à 0.38 se verrait comme un trait plein). Au-dessus de 0.65
+  le texte était déjà lisible. La hiérarchie relative est conservée puisque
+  le décalage est uniforme.
+- **`.card-title` globalisée** (`style.css`) : les six fiches de détail en
+  portaient chacune une copie identique en `scoped`. Agrandie et éclaircie au
+  passage (12 → 13.5px, opacité 0.65 → 0.85), à la demande de Samuel. Elle
+  reste en majuscules espacées, ce qui la distingue de `.header__title`.
+- **Fiche transport, `touched_shows`** : le champ « Spectacle » n'affichait
+  que `Transport.show`, insuffisant depuis les tournées multi-arrêts. Il
+  liste maintenant, PAR LIEU visité et dans l'ordre des arrêts, tous les
+  spectacles qui s'y tiennent sur la fenêtre du projet. **Portée choisie avec
+  Samuel** (`AskUserQuestion`) : liste de CONTEXTE volontairement large, pas
+  « les spectacles que le transport dessert » — cette notion n'existe pas
+  dans le modèle pour un arrêt intermédiaire. Ne pas confondre avec
+  `departure_show`/`arrival_show`, qui bornent l'horaire et restent déduits.
+  Les blocs rattachés sont exclus (ils appartiennent à l'événement déjà
+  listé) ; le spectacle explicitement rattaché est mis en évidence dans la
+  liste.
+- **Info-bulles du Tableau de bord** — dont un **vrai bug** introduit par la
+  refonte du 2026-08-02 : `venueRows` passait à `packLanes` des copies dont
+  `start`/`end` étaient réécrits en MINUTES, écrasant les `Date` d'origine.
+  L'info-bulle formatait donc deux nombres minuscules comme des timestamps et
+  affichait « 1 janv. 00:00 » aux deux bouts — ce que Samuel a vu comme un
+  doublon de l'heure de début. `packLanes` empile désormais sur
+  `startMin`/`endMin` et ne touche plus aux Dates. Ajouté au passage : les
+  techniciens sur les événements (nouveau `technician_names` sur
+  `ShowSerializer` — sur un bloc qui hérite, ce sont ceux de l'événement) ; et
+  la ligne « Rattaché à » retirée.
+- **Réglages** : Import et Export dans deux cartes distinctes, chacune sous
+  son étiquette (`.io-card__label`). Le sélecteur de projet reste dans la
+  carte Export, qu'il est seul à concerner — l'import de projet en crée
+  toujours un nouveau.
+
+Suite de tests : 410 (9 ajoutés — `TransportTouchedShowsAPITests`,
+`ShowTechnicianNamesAPITests`), flake8 propre, aucune migration.
+
+## Mise à jour (2026-08-05, suite) — Retouches fiches lieu / technicien / transport
+
+- **Fiche lieu** : « Spectacles à venir » devient « Spectacles assignés » — la
+  liste n'a jamais filtré sur l'avenir, le titre annonçait autre chose que ce
+  qu'elle montrait.
+- **Carte Google** : le `filter: grayscale(.2) invert(.92) contrast(.9)` posé
+  sur l'`<iframe>` pour la faire passer en sombre inversait aussi les teintes
+  de Maps (eau, routes, parcs) — retiré, la carte s'affiche dans ses couleurs
+  normales. C'était un filtre CSS, pas un mode sombre de Google.
+- **Lignes de spectacle cliquables en entier** (fiches lieu, technicien et
+  transport) : seul le titre l'était, un point de clic étroit alors que toute
+  la ligne mène au même endroit. `.row--clickable` (local à chaque fiche, comme
+  le reste de `.row`), et les déplacements assignés de la fiche technicien y
+  passent aussi. Sur la fiche transport, les spectacles de référence
+  (départ/arrivée) deviennent des liens **en mode lecture seulement** — en
+  édition, le même bloc (`.reference-times`) reste du texte, un lien y ferait
+  quitter un formulaire en cours.
+- **Fiche transport, fusion** : la carte « Spectacles aux lieux desservis »
+  disparaît, ses spectacles rejoignent l'arrêt qui les concerne dans la
+  séquence (`decoratedStops` croise `touched_shows` par `venue_id`). Un lieu
+  visité deux fois (tournée aller-retour) affiche la même liste aux deux
+  passages — c'est correct, ce sont bien les mêmes spectacles.
+- **Renommage** : « Séquence de la tournée » → « Séquence du transport ».
+
+Frontend seulement, aucun changement backend, aucune migration. Les 30 SFC
+compilent ; croisement arrêts × spectacles vérifié en Node sur un
+aller-retour.
+
+## Mise à jour (2026-08-05, suite) — Deux régressions corrigées
+
+- **`GET /shows/{id}/conflicts/` plantait en 500** dès qu'un spectacle avait
+  un déplacement horodaté AVEC un technicien : `views.py` lisait encore
+  `transport.estimated_duration_minutes`, retiré du modèle au passage aux
+  tournées multi-arrêts (2026-08-04). Remplacé par `total_duration_minutes`.
+  Le nom survit côté API comme **alias de lecture** sur
+  `TransportSerializer` — c'est ce qui l'a rendu invisible à la relecture, et
+  ce qui le rendra invisible la prochaine fois : attention à cet écart entre
+  le contrat API et le modèle.
+  - Symptôme côté Samuel : « en cliquant sur l'événement depuis la fiche
+    transport, erreur — mais par le menu Spectacle ça fonctionne ». Ce
+    n'était pas un problème de navigation : la fiche spectacle appelle cet
+    endpoint à son chargement, et seuls les spectacles ayant un tel
+    déplacement étaient touchés. Le lien depuis la fiche transport mène
+    précisément à ceux-là.
+  - 2 tests (`ShowConflictsWithTransportRegressionTests`) : l'endpoint
+    répond 200, et un vrai conflit technicien remonte toujours — « ne plante
+    plus » ne suffisait pas comme garantie.
+- **Fiche lieu, spectacles absents** : la carte filtrait sur `fin >=
+  maintenant`, reste de l'époque « Spectacles à venir ». Renommer la carte en
+  « Spectacles assignés » (même jour) n'avait pas retiré ce filtre — la note
+  précédente affirmait à tort qu'il n'existait pas. Retiré : tous les
+  spectacles du lieu, passés compris.
+
+Suite de tests : 412, flake8 propre, aucune migration.
+
+## Mise à jour (2026-08-05, suite) — Transports hérités, liens, confirmation
+
+- **Les transports d'un événement se répercutent sur ses blocs hérités** :
+  `SpectacleDetailView` charge `/transports/?show=` avec `resourceId` (le
+  parent pour un montage/démontage) au lieu de l'id courant — même règle
+  d'héritage que le matériel et l'équipe. Un montage n'a pas de déplacement
+  propre, il travaille sur ceux de l'événement. Un bloc de **répétition**
+  reste autonome et garde les siens, cohérent avec le reste de son régime.
+  Le titre de la carte le rappelle (« — de l'événement ») comme les deux
+  autres listes.
+- **Transports liés cliquables** : les lignes deviennent des `RouterLink`
+  vers `/transports/{id}`. `.row--clickable` gagne `text-decoration: none` /
+  `color: inherit` — la classe servait jusqu'ici sur des `<div>`.
+- **Confirmation avant de retirer un bloc** : le ✕ de la chronologie
+  supprimait un `Show` complet — avec ses déplacements et, pour une
+  répétition rattachée, ses assignations — sans rien demander, alors que la
+  même suppression depuis l'entête passe par une confirmation. Un geste
+  destructeur ne doit pas dépendre de l'endroit d'où on le déclenche. Modale
+  locale (`phaseToDelete`), même gabarit `.fiche-confirm` et fermeture à
+  Échap (`useEscapeKey`) que les autres.
+
+Frontend seulement, aucun changement backend, aucune migration. Les 30 SFC
+compilent.
+
+## Mise à jour (2026-08-05, suite) — Supprimer un spectacle n'emporte plus la tournée
+
+Demande de Samuel : « si on efface un événement qui fait partie d'une séquence
+de plusieurs autres arrêts, on retire l'arrêt et le matériel associé mais on
+n'efface pas le transport ».
+
+`Transport.show` est en **CASCADE** : supprimer un spectacle effaçait la
+tournée ENTIÈRE, y compris les arrêts qui desservaient d'autres salles.
+Anodin sur un aller simple A → B, destructeur sur une tournée à trois arrêts.
+
+Nouveau module **`transport_detach.py`**, appelé depuis
+`ShowViewSet.perform_destroy` :
+
+1. Les arrêts **au lieu du spectacle supprimé** partent, avec les lignes de
+   matériel qui les référencent (`TransportMaterial.load_stop`/`unload_stop`
+   en CASCADE — c'est le « matériel associé »). Un aller-retour perd ses DEUX
+   passages à ce lieu.
+2. Les arrêts restants sont renumérotés, et la durée du premier remise à 0 —
+   c'est un départ, pas un trajet.
+3. `Transport.show` est **réancré** sur un spectacle d'un arrêt restant, le
+   plus proche dans le temps de l'heure de départ.
+4. La tournée n'est supprimée que dans deux cas : moins de deux arrêts
+   restants, ou aucun spectacle à réancrer.
+
+**Décisions prises par défaut** (le sélecteur de question a planté, à revoir
+avec Samuel si l'usage le contredit) : réancrage automatique et silencieux,
+plutôt que rendre `Transport.show` nullable (migration + tout le code qui
+suppose un spectacle) ou demander le nouveau rattachement dans la
+confirmation (une suppression deviendrait un formulaire).
+
+**Volontairement dans `perform_destroy`, pas dans un signal `pre_delete`** :
+sur une suppression de projet, réancrer une tournée sur un spectacle
+lui-même en cours de suppression n'aurait aucun sens.
+
+`ShowSerializer.deletion_impact` distingue maintenant `transports` (vraiment
+supprimés) de `transports_shortened` (conservés, amputés d'un arrêt) — la
+confirmation annonçait jusqu'ici la perte de tournées qui, en réalité,
+survivent. Les phases exposent leur propre `deletion_impact`, pour que la
+confirmation du ✕ de la chronologie parle DU BLOC visé et non de la fiche
+affichée.
+
+Suite de tests : 418 (6 ajoutés, `ShowDeletionDetachesTransportsTests` —
+tournée à 3 arrêts conservée, à 2 supprimée, sans spectacle à réancrer
+supprimée, aller-retour, projection du décompte sans effet de bord, tournée
+d'un autre spectacle intacte), flake8 propre, aucune migration.
+
+## Mise à jour (2026-08-05, suite) — Ordre des lieux réordonnable
+
+Demande de Samuel : réordonner les lieux depuis la page Lieux, et que cet
+ordre se reflète sur les filtres du Tableau de bord — « comme les
+événements ».
+
+- **`Venue.display_order`** (migration `0027`, additive) +
+  `Meta.ordering = ['display_order', 'name']`. Tous les lieux existants
+  restent à 0 : le tri secondaire par nom reproduit exactement l'ordre
+  d'avant, **aucune migration de données nécessaire**.
+- Comme `Meta.ordering` porte sur le modèle, TOUTE liste de lieux servie par
+  l'API suit cet ordre (sélecteurs de formulaire, Parcours, etc.) — pas
+  seulement la page Lieux.
+- **`POST /api/venues/reorder/`** (`{project, order: [ids]}`) : un seul appel
+  plutôt qu'un PATCH par carte — un réordonnancement est un geste unique, il
+  ne doit pas pouvoir s'appliquer à moitié (`transaction.atomic`). Un id
+  étranger au projet est **refusé en bloc** plutôt qu'ignoré. Les lieux du
+  projet absents de la liste passent derrière, où le tri par nom reprend la
+  main. Comme les actions CSV, celle-ci ne passe pas par `get_object()` :
+  l'accès est vérifié via `_resolve_csv_project(required_edit=True)`.
+- **`LieuxView.vue`** : glisser-déposer HTML5 natif sur les cartes,
+  enregistrement IMMÉDIAT (pas de brouillon comme dans les Réglages — il n'y
+  a pas de bouton Enregistrer sur cet écran, laisser des cartes réordonnées
+  non persistées serait trompeur). Réordonnancement optimiste, avec
+  rechargement si l'appel échoue.
+- **`.drag-handle` promue en classe globale** (`style.css`) : deux écrans
+  l'utilisent maintenant. Seule sa position dans la grille de la ligne reste
+  locale aux Réglages.
+- **`DashboardView.vue`** charge `/venues/?project=` pour connaître l'ordre :
+  ses entrées de timeline ne portent qu'un NOM de lieu. `venueRank` sert à la
+  fois aux puces de filtre et aux lignes de la timeline ; un lieu absent de
+  la liste passe derrière plutôt que devant.
+
+Suite de tests : 424 (6 ajoutés, `VenueReorderAPITests`), flake8 propre,
+migration `0027` **à appliquer** (`python manage.py migrate`).
+
+## Mise à jour (2026-08-05, suite) — Parcours Technicien : tout afficher, blocs cliquables
+
+Demande de Samuel : « on a juste les transports et spectacles, on va changer
+pour tout afficher et activer l'option de clic pour ouvrir l'événement ».
+
+- **Montages et démontages ajoutés** (`technician_journey`, `inherited: true`)
+  : ces blocs n'ont AUCUNE assignation propre — c'est l'équipe de l'événement
+  qui y travaille (`Show.inherits_resources`). Le parcours montrait donc un
+  trou là où le technicien est en réalité sur le plateau. Même règle dérivée
+  que la chronologie de la fiche matériel (`get_material_schedule`) : à
+  calculer côté backend, c'est une règle métier.
+  - **Pas de doublon pour une répétition rattachée** : elle porte ses propres
+    assignations et remonte donc par la voie normale. Seuls les blocs qui
+    HÉRITENT produisent une entrée dérivée.
+- **Couleur par type** : les engagements portent maintenant `event_type`, et
+  la vue les colore via `EVENT_TYPE_META` — donc avec les couleurs réglées
+  depuis les Réglages, comme partout ailleurs. Avant, tout spectacle avait la
+  même teinte ; avec les blocs en plus, une journée se lisait comme un seul
+  bloc indistinct. La légende ne liste que les types réellement présents dans
+  la journée affichée, même règle que les puces du Parcours Matériel.
+- **Segments cliquables** : chaque bloc devient un `RouterLink` vers
+  `/spectacles/{id}` ou `/transports/{id}` — `id` portait déjà l'identifiant
+  de la cible, aucun changement de contrat n'était nécessaire.
+
+Suite de tests : 427 (3 ajoutés, `TechnicianJourneyPhasesTests`), flake8
+propre, aucune migration.
+
+## Mise à jour (2026-08-05, suite) — Pincer pour zoomer, ⌘0 pour revenir
+
+Demande de Samuel, sur les trois écrans à axe horaire (Tableau de bord,
+Parcours Matériel, Parcours Technicien). Nouveau composable
+**`useZoomGestures.js`**, branché sur le même `scrollRef` que
+`useZoomScroll` ; les boutons +/- restent le chemin visible, ces gestes sont
+des raccourcis.
+
+- **Il n'existe pas d'événement « pinch » sur desktop.** Les navigateurs
+  traduisent le pincement du trackpad en `wheel` avec `ctrlKey: true` — c'est
+  la convention, et le seul signal disponible. Conséquence assumée :
+  Ctrl + molette d'une vraie souris zoome aussi.
+- `preventDefault()` est indispensable (sinon le navigateur zoome TOUTE la
+  page par-dessus), d'où `{ passive: false }` — sans lui Chrome ignore
+  l'appel.
+- **Seuil de cumul plutôt qu'un pas par événement** : un pincement produit 10
+  à 30 `wheel` de quelques unités chacun ; zoomer à chaque événement
+  traverserait toute la plage en un geste. Le delta est cumulé et ne
+  déclenche un pas qu'au-delà de 40 — vérifié en Node, une rafale typique
+  donne 2 pas, pas 12. Un changement de sens en cours de geste remet le cumul
+  à zéro pour répondre tout de suite.
+- **⌘0** (ou Ctrl+0) appelle `resetZoom`, avec `preventDefault` — c'est aussi
+  le raccourci de remise à zéro du zoom du navigateur. Ignoré pendant la
+  saisie dans un champ.
+- Le `wheel` SANS `ctrlKey` n'est pas touché : le défilement horizontal natif
+  de la colonne des pistes continue de fonctionner tel quel.
+- Les raccourcis sont annoncés dans les `title` des boutons de
+  `ZoomControls.vue` — un geste que rien n'indique n'existe pas pour qui ne
+  l'essaie jamais.
+
+Frontend seulement, aucun changement backend, aucune migration. Les 30 SFC
+compilent ; rythme du cumul simulé en Node (écartement, pincement, inversion
+en cours de geste, molette sans Ctrl).
+
+## Mise à jour (2026-08-05, suite) — Notes en texte riche
+
+Demande de Samuel : « une zone de texte avec la possibilité de mettre du
+texte riche comme inclure des liens », sur les fiches spectacle/répétition et
+transport. Décidé avec lui (`AskUserQuestion`) : **les Notes existantes
+deviennent riches** (pas de second champ) et **éditeur avec barre d'outils**
+(pas de Markdown).
+
+- **`inventory/rich_text.py`** (`clean_notes`, dépendance `nh3` — successeur
+  de bleach) assainit à l'**écriture**, dans `validate_notes` de
+  `ShowSerializer`/`TransportSerializer`. Pas à l'affichage : ce qui est en
+  base est donc propre, et un futur consommateur qui oublierait de nettoyer
+  ne peut pas réintroduire la faille. Le contenu revient par l'API — rien
+  n'oblige un client à passer par l'éditeur, un `PATCH` direct suffirait à
+  stocker `<script>`, rendu ensuite chez tous ceux qui consultent la fiche
+  (l'app est multi-tenant depuis le 2026-08-02).
+- **La barre d'outils est calée sur la liste blanche** : `horizontalRule` et
+  `codeBlock` sont désactivés dans TipTap, les titres limités à h3/h4, et les
+  protocoles de lien sont la même liste des deux côtés (`http`, `https`,
+  `mailto`, `tel`). Sinon l'éditeur produirait du contenu que
+  l'enregistrement retirerait en silence — l'utilisateur croirait avoir perdu
+  son travail. **Étendre l'un sans l'autre est le piège à éviter ici.**
+- **TipTap plutôt qu'un `contenteditable` maison** : `document.execCommand`
+  tient en 100 lignes mais dégrade sur le collage depuis Word, l'annulation,
+  les listes imbriquées et la position du curseur — et il est déprécié sans
+  remplacement.
+- **Chargement à la demande** (`defineAsyncComponent`) : TipTap pèse 373 ko,
+  soit plus que tout le reste de l'app. En import statique, le paquet
+  principal passait de 364 à 733 ko pour tout le monde ; il est maintenant
+  dans un morceau séparé, téléchargé seulement à l'entrée en mode édition
+  d'une fiche.
+- `.rich-text` (global, `style.css`) sert au rendu DANS l'éditeur ET en mode
+  lecture — ce qu'on écrit ressemble à ce qu'on lira.
+- Aucune migration : `notes` était déjà un `TextField`. Le texte brut déjà
+  saisi traverse `clean_notes` sans dommage (aucune balise à retirer).
+
+Suite de tests : 434 (7 ajoutés, `RichTextNotesSanitizationTests` — mise en
+forme conservée, lien durci par `noopener`, script/`onclick`/`javascript:`
+retirés, texte brut intact, notes de transport couvertes aussi), flake8
+propre. **`pip install -r requirements.txt` à relancer** (nouvelle dépendance
+`nh3`), et `npm install` côté frontend.
+
+## Mise à jour (2026-08-05, suite) — Quitter une fiche en cours d'édition
+
+Signalé par Samuel : cliquer un lien du menu pendant l'édition d'une fiche
+fermait la page et perdait les modifications. Nouveau garde-fou
+**`useLeaveGuard.js`** + **`LeaveEditPrompt.vue`**, branchés sur les cinq
+fiches.
+
+- **Deux issues seulement, comme demandé** : « Rester sur la page » ou
+  « Enregistrer et continuer ». Pas de « quitter sans enregistrer » — l'oubli
+  d'un enregistrement est justement ce qu'on cherche à éviter, et abandonner
+  volontairement reste possible par le bouton Annuler, qui est un geste
+  explicite. Échap et le clic sur le fond équivalent à « rester ».
+- **Ne se déclenche que si le brouillon a RÉELLEMENT changé** : `isDirty()`
+  compare le brouillon sérialisé à son état à l'entrée en édition
+  (`draftInitial`). Entrer en édition puis repartir sans rien toucher ne
+  demande rien — sinon la modale deviendrait un réflexe qu'on clique sans
+  lire.
+- **Si l'enregistrement est refusé** (conflit, champ invalide), on reste sur
+  la fiche avec le message : poursuivre perdrait les changements, ce que la
+  demande exclut. D'où `save()` qui doit renvoyer un booléen — c'était déjà le
+  cas de `useFicheEdition.save`, ajouté à `TransportDetailView.save`.
+- **`TransportDetailView` branche le garde-fou à la main** : cette fiche
+  n'utilise pas `useFicheEdition` (voir la note du 2026-08-02, son `save()` a
+  sa propre logique de payload imbriqué). Les quatre autres l'obtiennent par
+  le composable, qui expose `leavePrompt`/`leaveSaving`/`leaveError`/
+  `stayOnPage`/`saveAndLeave`.
+- **Limite connue** : fermer l'onglet ou recharger passe par `beforeunload`,
+  que le navigateur limite à son message générique — impossible d'y proposer
+  « enregistrer ». Ce cas n'est pas couvert.
+
+Frontend seulement, aucun changement backend, aucune migration. Les 32 SFC
+compilent, `vite build` propre.
+
+**Piège d'environnement rencontré** : `npm install` a laissé le binaire natif
+du bundler (`@rolldown/binding-*`) de la mauvaise plateforme dans
+`node_modules` — bug npm connu sur les dépendances optionnelles. Le
+`package-lock.json` liste bien les 14 plateformes, donc le build Docker n'est
+pas affecté ; si `npm run build` échoue localement avec « Cannot find native
+binding », supprimer `node_modules` et `package-lock.json` puis relancer
+`npm install`.
+
+## Mise à jour (2026-08-05, suite) — Correctifs issus de la relecture
+
+Relecture de la PR de la session : quatre bloquants, tous corrigés ici.
+
+- **L'assainissement des notes était contournable.** `clean_notes` n'était
+  branché que sur les serializers, alors que `portability.py` (import de
+  projet JSON) et `csv_import.py` créent les objets par
+  `Model.objects.create()` pour ne pas déclencher la validation de conflits —
+  ils écrivaient donc du HTML brut, ensuite rendu par `v-html`. Un fichier
+  d'export ou un CSV échangé entre utilisateurs suffisait. **La note de module
+  de `rich_text.py` liste maintenant les trois chemins d'écriture** : en
+  ajouter un sans appeler `clean_notes` rouvre la faille.
+- **`_reancrage` pouvait choisir un bloc du spectacle supprimé.** Un montage
+  est au même lieu que son parent (contrainte du serializer) et démarre juste
+  avant — donc souvent « le plus proche de l'heure de départ ». Retenu comme
+  ancre, il partait ensuite en cascade avec son parent et la tournée mourait
+  quand même, alors que `deletion_impact` l'avait comptée comme conservée.
+  Corrigé par `.exclude(id__in=show.family_ids)`.
+- **`_reancrage` cherchait parmi les lieux de TOUS les arrêts**, retirés
+  compris, contredisant sa propre docstring : la tournée pouvait s'ancrer sur
+  un lieu qu'elle ne visite plus, ce qui fausse les bornes d'horaire
+  (`validate_transport_window`). Les arrêts restants sont maintenant passés
+  en paramètre.
+- **Cul-de-sac après suppression.** Le bouton Supprimer vit DANS le
+  formulaire d'édition : modifier un champ puis supprimer laissait
+  `useLeaveGuard` refuser la redirection et proposer « Enregistrer », c'est-
+  à-dire un PATCH sur une ressource effacée. `useSuppressionFiche` accepte
+  désormais un `beforeRedirect`, auquel chaque fiche passe son `cancelEdit`.
+- **Trouvé au passage** : `ProjetDetailView` utilise `useFicheEdition` mais
+  n'avait pas reçu la fenêtre — le garde-fou y bloquait donc la navigation
+  sans aucun moyen d'en sortir. Les six fiches qui utilisent le composable
+  rendent maintenant `LeaveEditPrompt`. **À retenir : ajouter le garde-fou
+  dans `useFicheEdition` l'active partout, y compris là où l'UI manque.**
+
+5 tests ajoutés (`ImportSanitizationTests`, `ShowDeletionReanchoringTests`),
+dont un qui vérifie que la confirmation annonce bien ce qui se passe. Suite :
+439, flake8 propre, `vite build` propre.
+
+**Reste à traiter, non bloquant** (voir la relecture) : `perform_destroy` non
+transactionnel ; N+1 sur `GET /transports/` et `GET /shows/` (245 et 481
+requêtes — `touched_shows` et `deletion_impact` calculés pour chaque ligne de
+liste alors qu'ils ne servent qu'en fiche) ; `reorder` en 500 sur un id non
+numérique ; un lieu créé après un réordonnancement passe en tête ; durées de
+segment périmées après retrait d'un arrêt.

@@ -1,10 +1,16 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, defineAsyncComponent } from 'vue'
 import { useRoute } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
 import { api } from '../api/client'
 import { useSuppressionFiche } from '../composables/useSuppressionFiche'
 import { useEscapeKey } from '../composables/useEscapeKey'
+import { useLeaveGuard } from '../composables/useLeaveGuard'
+import LeaveEditPrompt from '../components/LeaveEditPrompt.vue'
+// Chargé à la demande : TipTap pèse l'essentiel du paquet, et l'éditeur ne
+// sert qu'en mode ÉDITION de cette fiche. En import statique, tout visiteur
+// du Tableau de bord le téléchargerait sans jamais s'en servir.
+const RichTextEditor = defineAsyncComponent(() => import('../components/RichTextEditor.vue'))
 import { useChipFilter } from '../composables/useChipFilter'
 import { normalizeText } from '../utils/text'
 
@@ -169,6 +175,31 @@ function fmtTime(iso) {
   return timeFmt.format(new Date(iso))
 }
 
+// Jour court pour la liste des spectacles aux lieux desservis — l'heure
+// exacte n'y apporte rien, on cherche « lesquels et quand, en gros ».
+function fmtShortDay(iso) {
+  return dateFmt.format(new Date(iso))
+}
+
+// Spectacles des lieux de la tournée (2026-08-05, `touched_shows` côté API) :
+// tous ceux qui se tiennent dans les lieux visités, sur la fenêtre du projet.
+// Liste de CONTEXTE, volontairement large — à ne pas confondre avec les
+// spectacles de référence (départ/arrivée) affichés plus bas, qui bornent
+// l'horaire du déplacement.
+const touchedShows = computed(() => transport.value?.touched_shows ?? [])
+
+// Chaque arrêt reçoit les spectacles de SON lieu (2026-08-05) : `touched_shows`
+// est groupé par lieu, la séquence par arrêt — un lieu visité deux fois dans
+// une tournée aller-retour affiche donc la même liste aux deux passages, ce
+// qui est correct (ce sont bien les mêmes spectacles).
+const decoratedStops = computed(() => {
+  const parLieu = new Map(touchedShows.value.map((g) => [g.venue_id, g.shows]))
+  return (transport.value?.stops ?? []).map((s) => ({
+    ...s,
+    shows: parLieu.get(s.venue) ?? [],
+  }))
+})
+
 // Initiales pour l'avatar d'un technicien en mode lecture (2026-08-02,
 // suite) — même helper que SpectacleDetailView.vue, dupliqué ici faute de
 // composant partagé.
@@ -197,8 +228,13 @@ const conflictDetail = ref(null)
 // pas de raison de le forcer dans ce moule pour un seul écran.
 const editing = ref(false)
 
+// Brouillon tel qu'il était à l'entrée en édition — sert à savoir si quelque
+// chose a vraiment changé avant d'interrompre une navigation (2026-08-05).
+const formInitial = ref(null)
+
 function startEdit() {
   form.value = buildForm(transport.value)
+  formInitial.value = JSON.stringify(form.value)
   saveError.value = null
   conflictDetail.value = null
   editing.value = true
@@ -206,10 +242,24 @@ function startEdit() {
 
 function cancelEdit() {
   form.value = buildForm(transport.value)
+  formInitial.value = null
   saveError.value = null
   conflictDetail.value = null
   editing.value = false
 }
+
+function isDirty() {
+  if (!editing.value || !form.value) return false
+  return JSON.stringify(form.value) !== formInitial.value
+}
+
+// Quitter la fiche en cours d'édition demande d'abord quoi faire — même
+// garde-fou que les quatre autres fiches, branché à la main ici puisque cet
+// écran n'utilise pas `useFicheEdition` (voir la note de tête).
+const { leavePrompt, leaveSaving, leaveError, stayOnPage, saveAndLeave } = useLeaveGuard({
+  isDirty,
+  save: () => save(),
+})
 
 const showAddModal = ref(false)
 const catalogQty = ref({})
@@ -828,6 +878,9 @@ async function save({ confirm = false, force = false } = {}) {
     // d'erreur (catch ci-dessous), on reste en édition pour laisser voir le
     // message ou le bandeau « Forcer ».
     editing.value = false
+    // Renvoyé pour le garde-fou de navigation (2026-08-05) : il n'enchaîne
+    // vers la page demandée que si l'enregistrement a vraiment abouti.
+    return true
   } catch (e) {
     // `conflicts` (technicien) et `departure_show`/`arrival_show` (fenêtre
     // départ/arrivée, 2026-07-30) partagent le même bandeau « Forcer » — les
@@ -842,6 +895,7 @@ async function save({ confirm = false, force = false } = {}) {
         e.data?.materials?.[0] ??
         "Impossible d'enregistrer les changements."
     }
+    return false
   } finally {
     saving.value = false
   }
@@ -857,7 +911,9 @@ const canConfirm = computed(() => isToApprove.value && !!form.value?.scheduled_d
 // techniciens (tables de liaison en CASCADE) ; rien d'autre n'en dépend.
 const {
   confirming, deleting, deleteError, askDelete, cancelDelete, confirmDelete,
-} = useSuppressionFiche({ endpoint: '/transports', redirectTo: '/transports' })
+} = useSuppressionFiche({ endpoint: '/transports', redirectTo: '/transports',
+  beforeRedirect: () => cancelEdit(),
+})
 </script>
 
 <template>
@@ -931,19 +987,19 @@ const {
             <div class="summary-label">Durée totale</div>
             <div class="summary-value">{{ transport.estimated_duration_minutes }} min</div>
           </div>
-          <div>
-            <div class="summary-label">Spectacle</div>
-            <div class="summary-value">{{ transport.show_title }}</div>
-          </div>
         </div>
 
         <!-- Séquence d'arrêts (tournées 2026-08-04) : une ligne par arrêt,
              avec l'heure d'arrivée dérivée (fournie par l'API,
-             `stops[].arrival_datetime`) et la durée du segment qui y mène. -->
+             `stops[].arrival_datetime`) et la durée du segment qui y mène.
+             Depuis le 2026-08-05, chaque arrêt porte aussi les spectacles de
+             son lieu (`touched_shows`) — Samuel les voulait ici plutôt que
+             dans une carte séparée : c'est la même information, mais rattachée
+             à l'arrêt qui la concerne. -->
         <div class="card">
-          <div class="card-title" style="margin-bottom: 14px">Séquence de la tournée</div>
+          <div class="card-title" style="margin-bottom: 14px">Séquence du transport</div>
           <div class="stop-list">
-            <div v-for="(s, i) in transport.stops" :key="s.id" class="stop-row">
+            <div v-for="(s, i) in decoratedStops" :key="s.id" class="stop-row">
               <div class="stop-row__num">{{ i + 1 }}</div>
               <div class="stop-row__body">
                 <div class="stop-row__name">{{ s.venue_name }}</div>
@@ -954,6 +1010,16 @@ const {
                     <template v-if="s.arrival_datetime"> · arrivée {{ fmtTime(s.arrival_datetime) }}</template>
                   </template>
                 </div>
+                <div v-if="s.shows.length" class="touched-venue__shows">
+                  <RouterLink
+                    v-for="sh in s.shows"
+                    :key="sh.id"
+                    :to="`/spectacles/${sh.id}`"
+                    class="touched-show"
+                    :class="{ 'touched-show--linked': sh.id === transport.show }"
+                  >{{ sh.title }} · {{ fmtShortDay(sh.start) }}</RouterLink>
+                </div>
+                <div v-else class="touched-venue__empty">Aucun spectacle à ce lieu</div>
               </div>
             </div>
           </div>
@@ -962,23 +1028,31 @@ const {
         <div v-if="transport.departure_show || transport.arrival_show" class="card summary-grid">
           <div v-if="transport.departure_show">
             <div class="summary-label">Fin de l'événement au départ</div>
-            <div class="summary-value summary-value--lines">
+            <RouterLink
+              :to="`/spectacles/${transport.departure_show.id}`"
+              class="summary-value summary-value--lines summary-value--link"
+            >
               <div>{{ transport.departure_show.title }} ·</div>
               <div class="summary-value__sub">{{ fmtReference(transport.departure_show.effective_end) }}</div>
-            </div>
+            </RouterLink>
           </div>
           <div v-if="transport.arrival_show">
             <div class="summary-label">Début de l'événement à l'arrivée</div>
-            <div class="summary-value summary-value--lines">
+            <RouterLink
+              :to="`/spectacles/${transport.arrival_show.id}`"
+              class="summary-value summary-value--lines summary-value--link"
+            >
               <div>{{ transport.arrival_show.title }} ·</div>
               <div class="summary-value__sub">{{ fmtReference(transport.arrival_show.engagement_start) }}</div>
-            </div>
+            </RouterLink>
           </div>
         </div>
 
         <div v-if="transport.notes" class="card">
           <div class="card-title">Notes</div>
-          <div class="card-text">{{ transport.notes }}</div>
+          <!-- eslint-disable-next-line vue/no-v-html -- assaini à l'écriture
+               par `inventory/rich_text.py` (liste blanche de balises). -->
+          <div class="rich-text" v-html="transport.notes" />
         </div>
 
         <div class="card">
@@ -1229,11 +1303,9 @@ const {
 
         <div class="field">
           <div class="field__label">Notes</div>
-          <textarea
+          <RichTextEditor
             v-model="form.notes"
-            class="field__input field__textarea"
-            placeholder="Consignes particulières, accès, code de porte…"
-            rows="3"
+            placeholder="Consignes particulières, accès, code de porte — gras, listes et liens acceptés."
           />
         </div>
 
@@ -1398,6 +1470,14 @@ const {
         </div>
       </div>
     </div>
+
+    <LeaveEditPrompt
+      :visible="leavePrompt"
+      :saving="leaveSaving"
+      :error="leaveError"
+      @stay="stayOnPage"
+      @save="saveAndLeave"
+    />
   </AppShell>
 </template>
 
@@ -1412,7 +1492,7 @@ const {
 .hint {
   padding: 32px 40px;
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .hint--error {
@@ -1421,7 +1501,7 @@ const {
 
 .breadcrumb {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .breadcrumb :deep(a) {
@@ -1490,7 +1570,7 @@ const {
   font: 700 11px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
 }
 
 .summary-value {
@@ -1515,7 +1595,7 @@ const {
 
 .summary-value__sub {
   font: 400 12.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.55);
+  color: rgba(var(--fg-rgb), 0.63);
 }
 
 .summary-value--accent {
@@ -1533,15 +1613,53 @@ const {
 }
 
 .route-arrow {
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
   font-size: 15px;
 }
 
-.card-title {
-  font: 700 12px var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: rgba(var(--fg-rgb), 0.65);
+
+
+
+/* Spectacle de référence cliquable (2026-08-05) — mode lecture seulement :
+   en édition, le même bloc (`.reference-times`) reste du texte, un lien y
+   ferait quitter un formulaire en cours. */
+.summary-value--link {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+}
+
+.summary-value--link:hover {
+  color: var(--link);
+}
+
+.touched-venue__shows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.touched-show {
+  font: 500 12px system-ui;
+  color: rgba(var(--fg-rgb), 0.78);
+  background: var(--bg-row);
+  padding: 3px 9px;
+  border-radius: 0 6px 0 6px;
+  text-decoration: none;
+}
+
+/* Le spectacle explicitement rattaché au déplacement (`Transport.show`) reste
+   distingué des autres : c'est lui qui sert d'ancrage aux règles d'horaire. */
+.touched-show--linked {
+  background: rgba(var(--accent-rgb), 0.18);
+  color: var(--accent);
+}
+
+.touched-venue__empty {
+  font: 400 12px system-ui;
+  color: rgba(var(--fg-rgb), 0.43);
+  margin-top: 4px;
 }
 
 .card-text {
@@ -1598,25 +1716,25 @@ const {
 
 .row__subtitle {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .row__cat {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .row__qty {
   flex: none;
   font: 600 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
 }
 
 .field__label {
   font: 700 11px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
   margin-bottom: 8px;
 }
 
@@ -1665,7 +1783,7 @@ const {
   border-radius: var(--radius-notch-sm);
   background: var(--bg-row);
   border: 1px solid rgba(var(--fg-rgb), 0.1);
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
   font: 500 12.5px system-ui;
   cursor: pointer;
 }
@@ -1688,13 +1806,13 @@ const {
 
 .tech-chip__role {
   font: 400 11px system-ui;
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
 }
 
 .tech-empty,
 .tech-hint {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
   margin-top: 6px;
 }
 
@@ -1751,7 +1869,7 @@ const {
 
 .stop-row__meta {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 /* Manifeste par arrêt (2026-08-04) — la vue chauffeur du mode lecture. */
@@ -1775,7 +1893,7 @@ const {
 
 .manifest__time {
   font: 600 11.5px var(--font-mono);
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
   margin-left: auto;
   white-space: nowrap;
 }
@@ -1811,7 +1929,7 @@ const {
 
 .manifest__none {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
   padding: 4px 2px;
 }
 
@@ -1846,7 +1964,7 @@ const {
   font: 700 10px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   /* Même encombrement que « + [input] min » pour garder les colonnes
      alignées entre la ligne de départ et les segments. */
   width: 96px;
@@ -1855,7 +1973,7 @@ const {
 
 .stop-editor__travel-label {
   font: 500 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .stop-editor__travel-input {
@@ -1866,7 +1984,7 @@ const {
 
 .stop-editor__arrival {
   font: 600 11.5px var(--font-mono);
-  color: rgba(var(--fg-rgb), 0.55);
+  color: rgba(var(--fg-rgb), 0.63);
   width: 62px;
   text-align: right;
   flex: none;
@@ -1923,7 +2041,7 @@ const {
   font: 700 10px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .reference-times__value {
@@ -1973,13 +2091,13 @@ const {
 
 .material-row__stock {
   font: 400 11px system-ui;
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
   white-space: nowrap;
 }
 
 .material-row__remove {
   font: 700 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.35);
+  color: rgba(var(--fg-rgb), 0.43);
   cursor: pointer;
   padding: 2px 6px;
 }
@@ -2014,7 +2132,7 @@ const {
   font: 700 10.5px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
   flex: none;
 }
 
@@ -2030,14 +2148,14 @@ const {
   border-radius: var(--radius-notch-sm);
   border: 1px dashed rgba(var(--fg-rgb), 0.18);
   font: 600 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
   cursor: pointer;
   text-align: center;
 }
 
 .row-empty {
   font: 500 12.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   padding: 10px 12px;
 }
 
@@ -2105,7 +2223,7 @@ const {
 
 .modal__close {
   font: 400 18px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   cursor: pointer;
 }
 
@@ -2165,7 +2283,7 @@ const {
 }
 
 .catalog-row--disabled .catalog-row__name {
-  color: rgba(var(--fg-rgb), 0.45);
+  color: rgba(var(--fg-rgb), 0.53);
 }
 
 .catalog-row--disabled .catalog-row__check,
@@ -2178,7 +2296,7 @@ const {
   padding: 12px 20px;
   border-bottom: 1px solid var(--border-card);
   font: 400 11.5px/1.5 system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .modal__note strong {
@@ -2223,7 +2341,7 @@ const {
 
 .catalog-row__stock {
   font: 400 11px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .catalog-row__qty {
@@ -2269,7 +2387,7 @@ const {
 
 .modal__count {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
   margin-right: auto;
 }
 
@@ -2277,7 +2395,7 @@ const {
   padding: 9px 16px;
   border-radius: var(--radius-notch-sm);
   font: 600 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
   border: 1px solid rgba(var(--fg-rgb), 0.15);
   cursor: pointer;
 }

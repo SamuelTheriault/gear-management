@@ -86,7 +86,7 @@ const emit = defineEmits(['select', 'step'])
   padding: 5px 11px;
   border-radius: 0 6px 0 6px;
   font: 600 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.55);
+  color: rgba(var(--fg-rgb), 0.63);
   background: rgba(var(--fg-rgb), 0.05);
   cursor: pointer;
   white-space: nowrap;

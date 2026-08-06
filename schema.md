@@ -35,6 +35,7 @@ Lieux (salles, théâtres, sites de représentation, entrepôts). Isolés par pr
 | contact_name | VARCHAR | Contact sur place |
 | contact_info | VARCHAR | Téléphone / email du contact |
 | notes | TEXT | Notes générales sur le lieu |
+| display_order | INT (default 0) | Rang d'affichage dans le projet, réordonnable par glisser-déposer depuis la page Lieux (ajouté le 2026-08-05). 0 = non classé ; à égalité le tri se fait par nom, ce qui reproduit l'ordre alphabétique d'avant |
 | is_storage | BOOLEAN (default false) | Lieu d'entreposage (entrepôt) plutôt qu'un vrai lieu de spectacle — voir règle d'exemption dans la section `show_materials` |
 | latitude | DECIMAL(9,6), nullable | Coordonnée GPS (ex. copiée depuis Google Maps) — voir section 10, calcul de trajet |
 | longitude | DECIMAL(9,6), nullable | Coordonnée GPS — voir latitude |

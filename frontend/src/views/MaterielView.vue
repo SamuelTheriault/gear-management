@@ -397,7 +397,7 @@ async function addMaterial() {
 
 .page-count {
   font: 500 12px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .toolbar {
@@ -416,7 +416,7 @@ async function addMaterial() {
 
 .hint {
   font: 500 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .hint--error {
@@ -488,7 +488,7 @@ async function addMaterial() {
 
 .kit-meta {
   font: 400 11.5px system-ui;
-  color: rgba(var(--fg-rgb), 0.5);
+  color: rgba(var(--fg-rgb), 0.58);
 }
 
 .kit-badge {
@@ -580,7 +580,7 @@ async function addMaterial() {
 
 .kit-child-meta {
   font: 400 11px system-ui;
-  color: rgba(var(--fg-rgb), 0.4);
+  color: rgba(var(--fg-rgb), 0.48);
 }
 
 .empty {
@@ -604,7 +604,7 @@ async function addMaterial() {
 
 .empty__title {
   font: 600 13px system-ui;
-  color: rgba(var(--fg-rgb), 0.6);
+  color: rgba(var(--fg-rgb), 0.68);
 }
 
 /* Chaque champ est maintenant un <label> qui porte le dimensionnement flex,
