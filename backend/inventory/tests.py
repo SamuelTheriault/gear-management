@@ -5130,3 +5130,106 @@ class RichTextNotesSanitizationTests(TestCase):
         transport.refresh_from_db()
         self.assertIn('<strong>4321</strong>', transport.notes)
         self.assertNotIn('script', transport.notes)
+
+
+class ShowDeletionReanchoringTests(TestCase):
+    """Réancrage d'une tournée après suppression d'un spectacle (2026-08-05).
+
+    Deux pièges trouvés en relecture, chacun rendait la promesse de
+    `transport_detach.py` fausse dans un cas courant :
+
+    - un bloc de montage/démontage est au MÊME lieu que son parent et démarre
+      juste avant, donc souvent « le plus proche de l'heure de départ » : il
+      était retenu comme nouvelle ancre, puis supprimé en cascade avec son
+      parent — la tournée mourait quand même, alors que la confirmation
+      annonçait qu'elle survivrait ;
+    - les candidats étaient cherchés parmi les lieux de TOUS les arrêts, y
+      compris ceux qu'on venait de retirer : la tournée pouvait être ancrée
+      sur un lieu qu'elle ne visite plus, ce qui fausse les bornes d'horaire
+      (voir `validate_transport_window`).
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.chapelle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.prospero = Venue.objects.create(project=self.project, name="Prospero")
+
+        self.vertiges = Show.objects.create(
+            project=self.project, title="Vertiges", venue=self.chapelle,
+            event_type='performance', start_datetime=_dt(20), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        self.echos = Show.objects.create(
+            project=self.project, title="Échos", venue=self.prospero,
+            event_type='performance', start_datetime=_dt(20, day=3), end_datetime=_dt(22, day=3),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+
+    def _tournee(self, lieux):
+        transport = Transport.objects.create(
+            show=self.vertiges, scheduled_datetime=_dt(10), status='confirmed',
+        )
+        for i, lieu in enumerate(lieux):
+            TransportStop.objects.create(
+                transport=transport, venue=lieu, order=i,
+                travel_minutes_from_previous=0 if i == 0 else 60,
+            )
+        return transport
+
+    def test_an_attached_block_is_never_chosen_as_the_new_anchor(self):
+        # Le montage est à la Chapelle (même lieu que son parent, contrainte
+        # du serializer) et démarre à 16 h, plus près du départ de 10 h que
+        # « Échos » le surlendemain. Sans exclusion de famille, il gagnait.
+        Show.objects.create(
+            project=self.project, title="", venue=self.chapelle,
+            event_type='setup', start_datetime=_dt(16), end_datetime=_dt(19),
+            buffer_before_minutes=0, buffer_after_minutes=0, parent_show=self.vertiges,
+        )
+        transport = self._tournee([self.entrepot, self.chapelle, self.prospero])
+
+        response = self.client.delete(f'/api/shows/{self.vertiges.id}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        # La tournée survit ET s'ancre sur un spectacle qui existe encore.
+        transport.refresh_from_db()
+        self.assertEqual(transport.show_id, self.echos.id)
+
+    def test_the_confirmation_agrees_with_what_happens(self):
+        # Le décompte annonçait « raccourci » alors que la tournée
+        # disparaissait — les deux doivent dire la même chose.
+        Show.objects.create(
+            project=self.project, title="", venue=self.chapelle,
+            event_type='setup', start_datetime=_dt(16), end_datetime=_dt(19),
+            buffer_before_minutes=0, buffer_after_minutes=0, parent_show=self.vertiges,
+        )
+        transport = self._tournee([self.entrepot, self.chapelle, self.prospero])
+        impact = self.client.get(f'/api/shows/{self.vertiges.id}/').data['deletion_impact']
+
+        self.client.delete(f'/api/shows/{self.vertiges.id}/')
+        survit = Transport.objects.filter(id=transport.id).exists()
+        self.assertEqual(impact['transports_shortened'], 1 if survit else 0)
+        self.assertEqual(impact['transports'], 0 if survit else 1)
+        self.assertTrue(survit)
+
+    def test_a_show_at_a_removed_stop_is_not_used_as_anchor(self):
+        # Un second spectacle à la Chapelle : la tournée ne passe plus par ce
+        # lieu après retrait, elle ne doit donc pas s'y ancrer.
+        autre_a_la_chapelle = Show.objects.create(
+            project=self.project, title="Autre à la Chapelle", venue=self.chapelle,
+            event_type='rehearsal', start_datetime=_dt(11), end_datetime=_dt(12),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+        transport = self._tournee([self.entrepot, self.chapelle, self.prospero])
+
+        self.client.delete(f'/api/shows/{self.vertiges.id}/')
+        transport.refresh_from_db()
+        self.assertNotEqual(transport.show_id, autre_a_la_chapelle.id)
+        self.assertEqual(transport.show_id, self.echos.id)
+        # Et le lieu de l'ancre fait bien partie des arrêts restants.
+        self.assertIn(
+            transport.show.venue_id,
+            list(transport.stops.values_list('venue_id', flat=True)),
+        )

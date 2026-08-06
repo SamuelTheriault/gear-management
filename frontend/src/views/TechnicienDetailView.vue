@@ -133,7 +133,9 @@ watch(() => route.params.id, cancelEdit)
 // liaison en CASCADE).
 const {
   confirming, deleting, deleteError, askDelete, cancelDelete, confirmDelete,
-} = useSuppressionFiche({ endpoint: '/technicians', redirectTo: '/techniciens' })
+} = useSuppressionFiche({ endpoint: '/technicians', redirectTo: '/techniciens',
+  beforeRedirect: () => cancelEdit(),
+})
 
 const deletionImpact = computed(() => technician.value?.deletion_impact ?? null)
 const hasCascade = computed(

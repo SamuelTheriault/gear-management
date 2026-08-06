@@ -207,7 +207,9 @@ function onCodeInput(event) {
 // déplacement ou du matériel — voir VenueViewSet.destroy.
 const {
   confirming, deleting, deleteError, askDelete, cancelDelete, confirmDelete,
-} = useSuppressionFiche({ endpoint: '/venues', redirectTo: '/lieux' })
+} = useSuppressionFiche({ endpoint: '/venues', redirectTo: '/lieux',
+  beforeRedirect: () => cancelEdit(),
+})
 
 // Changer de lieu sans quitter la vue ne doit pas conserver un formulaire
 // à moitié rempli sur le lieu précédent.

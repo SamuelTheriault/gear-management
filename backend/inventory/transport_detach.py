@@ -19,9 +19,11 @@ Règle appliquée par `detach_show_from_transports()` :
 2. Les arrêts restants sont renumérotés, et la durée du segment du premier
    arrêt remise à 0 (c'est un départ, pas un trajet).
 3. Le rattachement `Transport.show` est **réancré** sur un spectacle d'un
-   arrêt restant — le plus proche dans le temps de l'heure de départ. Ce
-   champ borne les horaires du déplacement (voir `validate_transport_window`)
-   et n'est pas nullable : sans candidat, la tournée n'a plus de raison d'être.
+   arrêt ENCORE DESSERVI, hors de la famille du spectacle supprimé — le plus
+   proche dans le temps de l'heure de départ (voir `_reancrage`, qui explique
+   pourquoi ces deux exclusions comptent). Ce champ borne les horaires du
+   déplacement (voir `validate_transport_window`) et n'est pas nullable :
+   sans candidat, la tournée n'a plus de raison d'être.
 4. La tournée est supprimée dans deux cas seulement : moins de deux arrêts
    restants (un trajet a besoin d'un départ et d'une arrivée), ou aucun
    spectacle à réancrer.
@@ -41,22 +43,35 @@ sens.
 from .models import Transport, TransportStop
 
 
-def _reancrage(transport, exclude_show_id):
+def _reancrage(transport, show, arrets_restants):
     """Spectacle sur lequel réancrer cette tournée, ou `None`.
 
-    Cherché parmi les spectacles des lieux encore desservis, en excluant le
-    spectacle supprimé. Le plus proche de l'heure de départ l'emporte : c'est
-    celui que la tournée sert le plus vraisemblablement.
+    Cherché parmi les spectacles des lieux ENCORE DESSERVIS — d'où
+    `arrets_restants` en paramètre plutôt qu'une relecture de
+    `transport.stops` : au moment de l'appel, les arrêts à retirer sont
+    toujours en base, et les inclure réancrerait la tournée sur un lieu
+    qu'elle ne visite plus. `Transport.show` borne les horaires du
+    déplacement (voir `validate_transport_window`), une ancre au mauvais
+    endroit fausse cette validation.
+
+    Toute la FAMILLE du spectacle supprimé est écartée (`Show.family_ids`),
+    pas seulement lui : ses blocs de montage/démontage sont au même lieu et
+    démarrent juste avant, donc souvent « les plus proches » — les choisir
+    comme ancre ferait mourir la tournée avec eux, en cascade, alors qu'on
+    vient justement de la sauver.
+
+    Le plus proche de l'heure de départ l'emporte : c'est celui que la
+    tournée sert le plus vraisemblablement.
     """
     from .models import Show
 
-    lieux = list(transport.stops.values_list('venue_id', flat=True))
+    lieux = {arret.venue_id for arret in arrets_restants}
     if not lieux:
         return None
     candidats = list(
         Show.objects
         .filter(venue_id__in=lieux, project_id=transport.show.project_id)
-        .exclude(id=exclude_show_id)
+        .exclude(id__in=show.family_ids)
     )
     if not candidats:
         return None
@@ -76,7 +91,7 @@ def plan_show_deletion(show):
     supprimes, raccourcis = [], []
     for transport in show.transports.prefetch_related('stops').all():
         restants = [stop for stop in transport.stops.all() if stop.venue_id != show.venue_id]
-        if len(restants) < 2 or _reancrage(transport, show.id) is None:
+        if len(restants) < 2 or _reancrage(transport, show, restants) is None:
             supprimes.append(transport.id)
         else:
             raccourcis.append(transport.id)
@@ -96,7 +111,7 @@ def detach_show_from_transports(show):
         a_retirer = [stop for stop in transport.stops.all() if stop.venue_id == show.venue_id]
         restants = [stop for stop in transport.stops.all() if stop.venue_id != show.venue_id]
 
-        nouvelle_ancre = _reancrage(transport, show.id) if len(restants) >= 2 else None
+        nouvelle_ancre = _reancrage(transport, show, restants) if len(restants) >= 2 else None
         if nouvelle_ancre is None:
             # Laissé à la cascade : la tournée n'a plus ni séquence valable ni
             # spectacle à desservir.

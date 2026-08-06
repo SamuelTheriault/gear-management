@@ -427,7 +427,9 @@ async function saveMaterial() {
 // disparaître).
 const {
   confirming, deleting, deleteError, askDelete, cancelDelete, confirmDelete,
-} = useSuppressionFiche({ endpoint: '/materials', redirectTo: '/materiel' })
+} = useSuppressionFiche({ endpoint: '/materials', redirectTo: '/materiel',
+  beforeRedirect: () => cancelEdit(),
+})
 
 const deletionImpact = computed(() => material.value?.deletion_impact ?? null)
 const hasCascade = computed(

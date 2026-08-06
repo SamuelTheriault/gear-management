@@ -911,7 +911,9 @@ const canConfirm = computed(() => isToApprove.value && !!form.value?.scheduled_d
 // techniciens (tables de liaison en CASCADE) ; rien d'autre n'en dépend.
 const {
   confirming, deleting, deleteError, askDelete, cancelDelete, confirmDelete,
-} = useSuppressionFiche({ endpoint: '/transports', redirectTo: '/transports' })
+} = useSuppressionFiche({ endpoint: '/transports', redirectTo: '/transports',
+  beforeRedirect: () => cancelEdit(),
+})
 </script>
 
 <template>

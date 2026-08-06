@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
+import LeaveEditPrompt from '../components/LeaveEditPrompt.vue'
 import { api } from '../api/client'
 import { useFicheEdition } from '../composables/useFicheEdition'
 import { useSuppressionFiche } from '../composables/useSuppressionFiche'
@@ -92,6 +93,7 @@ const statusLabel = computed(() => (project.value?.status === 'archived' ? 'Arch
 const {
   editing, draft, saving, saveError, fieldErrors, canSave,
   startEdit, cancelEdit, save: saveProject,
+  leavePrompt, leaveSaving, leaveError, stayOnPage, saveAndLeave,
 } = useFicheEdition({
   entity: project,
   endpoint: '/projects',
@@ -138,7 +140,11 @@ watch(() => route.params.id, cancelEdit)
 // n'y a jamais rien à « ne pas casser », donc pas de `hasCascade` à calculer.
 const {
   confirming, deleting, deleteError, askDelete: askDeleteProject, cancelDelete: cancelDeleteProject, confirmDelete,
-} = useSuppressionFiche({ endpoint: '/projects', redirectTo: '/reglages' })
+} = useSuppressionFiche({
+  endpoint: '/projects',
+  redirectTo: '/reglages',
+  beforeRedirect: () => cancelEdit(),
+})
 
 const deleteConfirmText = ref('')
 
@@ -516,6 +522,14 @@ async function invite() {
         </div>
       </div>
     </div>
+
+    <LeaveEditPrompt
+      :visible="leavePrompt"
+      :saving="leaveSaving"
+      :error="leaveError"
+      @stay="stayOnPage"
+      @save="saveAndLeave"
+    />
   </AppShell>
 </template>
 

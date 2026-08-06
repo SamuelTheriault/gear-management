@@ -12,11 +12,25 @@ quel par `v-html` chez tous ceux qui consultent la fiche. Depuis que l'app
 est multi-tenant (voir `ProjectMembership`), ce n'est plus seulement le
 contenu de Samuel qui s'affiche dans le navigateur de Samuel.
 
-L'assainissement se fait à l'ÉCRITURE (voir `ShowSerializer`/
-`TransportSerializer`) : ce qui est en base est donc déjà propre, et un
-futur consommateur qui oublierait de nettoyer à l'affichage ne peut pas
-réintroduire la faille. La bibliothèque est `nh3` (successeur de bleach,
-recommandé par ce dernier depuis son abandon).
+L'assainissement se fait à l'ÉCRITURE : ce qui est en base est donc déjà
+propre, et un futur consommateur qui oublierait de nettoyer à l'affichage ne
+peut pas réintroduire la faille. La bibliothèque est `nh3` (successeur de
+bleach, recommandé par ce dernier depuis son abandon).
+
+**« À l'écriture » veut dire TOUS les chemins d'écriture**, pas seulement les
+serializers. Trois existent aujourd'hui, et les deux derniers avaient été
+oubliés à l'ajout de ce module (relecture du 2026-08-05) :
+
+- `ShowSerializer.validate_notes`/`TransportSerializer.validate_notes` — la
+  fiche et l'API ordinaire ;
+- `portability.py` (import de projet JSON) — crée les objets par
+  `Model.objects.create()` pour ne pas déclencher la validation de conflits,
+  donc ne passe par aucun serializer ;
+- `csv_import.py` (import CSV par section) — même raison.
+
+Un fichier d'export ou un CSV échangé entre utilisateurs est exactement le
+vecteur que ce module doit couvrir : ajouter un chemin d'écriture sans
+appeler `clean_notes` rouvre la faille.
 
 Liste blanche volontairement courte : ce que produit la barre d'outils de
 `RichTextEditor.vue`, rien de plus. Pas d'images ni de tableaux — si le

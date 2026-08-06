@@ -3143,3 +3143,48 @@ du bundler (`@rolldown/binding-*`) de la mauvaise plateforme dans
 pas affecté ; si `npm run build` échoue localement avec « Cannot find native
 binding », supprimer `node_modules` et `package-lock.json` puis relancer
 `npm install`.
+
+## Mise à jour (2026-08-05, suite) — Correctifs issus de la relecture
+
+Relecture de la PR de la session : quatre bloquants, tous corrigés ici.
+
+- **L'assainissement des notes était contournable.** `clean_notes` n'était
+  branché que sur les serializers, alors que `portability.py` (import de
+  projet JSON) et `csv_import.py` créent les objets par
+  `Model.objects.create()` pour ne pas déclencher la validation de conflits —
+  ils écrivaient donc du HTML brut, ensuite rendu par `v-html`. Un fichier
+  d'export ou un CSV échangé entre utilisateurs suffisait. **La note de module
+  de `rich_text.py` liste maintenant les trois chemins d'écriture** : en
+  ajouter un sans appeler `clean_notes` rouvre la faille.
+- **`_reancrage` pouvait choisir un bloc du spectacle supprimé.** Un montage
+  est au même lieu que son parent (contrainte du serializer) et démarre juste
+  avant — donc souvent « le plus proche de l'heure de départ ». Retenu comme
+  ancre, il partait ensuite en cascade avec son parent et la tournée mourait
+  quand même, alors que `deletion_impact` l'avait comptée comme conservée.
+  Corrigé par `.exclude(id__in=show.family_ids)`.
+- **`_reancrage` cherchait parmi les lieux de TOUS les arrêts**, retirés
+  compris, contredisant sa propre docstring : la tournée pouvait s'ancrer sur
+  un lieu qu'elle ne visite plus, ce qui fausse les bornes d'horaire
+  (`validate_transport_window`). Les arrêts restants sont maintenant passés
+  en paramètre.
+- **Cul-de-sac après suppression.** Le bouton Supprimer vit DANS le
+  formulaire d'édition : modifier un champ puis supprimer laissait
+  `useLeaveGuard` refuser la redirection et proposer « Enregistrer », c'est-
+  à-dire un PATCH sur une ressource effacée. `useSuppressionFiche` accepte
+  désormais un `beforeRedirect`, auquel chaque fiche passe son `cancelEdit`.
+- **Trouvé au passage** : `ProjetDetailView` utilise `useFicheEdition` mais
+  n'avait pas reçu la fenêtre — le garde-fou y bloquait donc la navigation
+  sans aucun moyen d'en sortir. Les six fiches qui utilisent le composable
+  rendent maintenant `LeaveEditPrompt`. **À retenir : ajouter le garde-fou
+  dans `useFicheEdition` l'active partout, y compris là où l'UI manque.**
+
+5 tests ajoutés (`ImportSanitizationTests`, `ShowDeletionReanchoringTests`),
+dont un qui vérifie que la confirmation annonce bien ce qui se passe. Suite :
+439, flake8 propre, `vite build` propre.
+
+**Reste à traiter, non bloquant** (voir la relecture) : `perform_destroy` non
+transactionnel ; N+1 sur `GET /transports/` et `GET /shows/` (245 et 481
+requêtes — `touched_shows` et `deletion_impact` calculés pour chaque ligne de
+liste alors qu'ils ne servent qu'en fiche) ; `reorder` en 500 sur un id non
+numérique ; un lieu créé après un réordonnancement passe en tête ; durées de
+segment périmées après retrait d'un arrêt.

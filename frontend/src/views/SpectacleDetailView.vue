@@ -363,7 +363,9 @@ async function saveEdit(force = false) {
 // par `ShowSerializer.deletion_impact`.
 const {
   confirming, deleting, deleteError, askDelete, cancelDelete, confirmDelete,
-} = useSuppressionFiche({ endpoint: '/shows', redirectTo: '/spectacles' })
+} = useSuppressionFiche({ endpoint: '/shows', redirectTo: '/spectacles',
+  beforeRedirect: () => cancelEdit(),
+})
 
 const deletionImpact = computed(() => show.value?.deletion_impact ?? null)
 const hasCascade = computed(
