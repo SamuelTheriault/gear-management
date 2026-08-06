@@ -4,10 +4,10 @@ Tableau de bord manuel. À mettre à jour à chaque étape franchie ou décision
 prise. Complète `recapitulatif_projet.md` (contenu fonctionnel) sans le
 dupliquer — ce fichier ne suit que **l'avancement**, pas le scope.
 
-Dernière mise à jour : 2026-08-05 (suite) — **étape 20 prête** (tests des
-filtres `?show`/`?material`/`?technician` + correctif de renvoi
-`schema.md`/`architecture.md`) sur `chore/schema-xref-filter-tests-2026-08-05`,
-en attente de push/PR/merge par Samuel.
+Dernière mise à jour : 2026-08-05 (soir, vérification automatique) —
+**étape 20 mergée (PR #25) et déployée** (commit `18f45a8`, déploiement
+Railway SUCCESS à 17 h 47). Aucun chantier en cours, arbre de travail
+propre.
 
 ## Statut global
 
@@ -72,36 +72,28 @@ modèle backend) : voir « Points de vigilance ».
 | 17 | Export/import CSV par section (matériel/lieux/techniciens/spectacles) + export/import JSON complet du projet (réimportable) et XML (lecture seule) | ✅ Mergée dans `main` (PR #17) et déployée. `portability.py` réparé pour `TransportStop` (remappage des arrêts par position, pas par id). Revue `code-reviewer` : 1 bug corrigé (import replace des lieux ne bloquait pas sur le matériel qui en fait son origine, contrairement à `VenueViewSet.destroy`) + 2 suggestions de tests ajoutées (permissions `export-csv`, tournée à 3 arrêts). Suite à 393 tests, flake8 propre, aucune migration | 2026-08-05 |
 | 18 | Info-bulle flottante Dashboard/Parcours (`FloatingTooltip.vue`, remplace l'ancienne info-bulle CSS-only piégée par le clipping du défilement zoomé) + rattrapage de `schema.md`/`architecture.md`/`recapitulatif_projet.md` sur les étapes 14-17 | ✅ Mergée dans `main` (PR #18) et déployée. Extrait à la main de `wip/checkpoint-2026-08-04` (périmé — prédate les tournées, aurait régressé Transport/Dashboard si appliqué tel quel). Revue `code-reviewer` : code propre (aucune régression du checkpoint périmé), 1 oubli corrigé (doc rattrapée pas committée avec le code au premier passage). Frontend + doc seulement, aucun changement backend | 2026-08-05 |
 | 19 | Interface Import/Export (étape 17 côté frontend) : section « Import / Export » sur Réglages — export JSON/XML complet d'un projet, export CSV par section (matériel/lieux/techniciens/spectacles), import JSON (nouveau projet), import CSV par section (append/remplace, confirmé par modale) | ✅ Mergée dans `main` (PR #22) et déployée. Brouillon retrouvé déjà présent, non committé, dans l'arbre de travail — complété par le seul chaînon manquant (`api.downloadUrl()` dans `client.js`) plutôt que réécrit, après vérification champ par champ contre l'API réelle. Inclut au passage le rattrapage `CLAUDE.md` de l'étape 18 (tooltip), resté non committé lui aussi. Revue `code-reviewer` : rien à corriger, 3 suggestions mineures non bloquantes. Frontend + doc seulement, aucun changement backend | 2026-08-05 |
-| 20 | Correctif de renvoi `schema.md`/`architecture.md` (section 12 → 9 pour `transport_materials`) + tests des filtres `?show`/`?material`/`?technician` (`ShowMaterialViewSet`/`ShowTechnicianViewSet`/`TransportViewSet`) et `?project=` (`TransportViewSet`), jusqu'ici sans couverture | 🟡 Prête sur `chore/schema-xref-filter-tests-2026-08-05`, en attente de push/PR/merge. 8 tests ajoutés (`QueryParamFilterAPITests`), suite à 401 tests, flake8 propre, aucune migration | 2026-08-05 |
+| 20 | Correctif de renvoi `schema.md`/`architecture.md` (section 12 → 9 pour `transport_materials`) + tests des filtres `?show`/`?material`/`?technician` (`ShowMaterialViewSet`/`ShowTechnicianViewSet`/`TransportViewSet`) et `?project=` (`TransportViewSet`), jusqu'ici sans couverture | ✅ Mergée dans `main` (PR #25) et déployée. 8 tests ajoutés (`QueryParamFilterAPITests`), suite à 401 tests, flake8 propre, aucune migration | 2026-08-05 |
 
 ## Prochaine action concrète
 
-**Étape 20 à pousser/merger.** Reste en approche ouverte (backlog, non
+Rien de bloquant — toutes les étapes planifiées sont mergées et déployées,
+`main` local réaligné, branches déjà mergées nettoyées sur GitHub (dont
+`chore/schema-xref-filter-tests-2026-08-05`, PR #25, à supprimer aussi
+maintenant qu'elle est mergée). Reste en approche ouverte (backlog, non
 prioritaire pour l'instant — voir section Backlog) : listes de matériel par
 technicien, budget de location, géocodage d'adresse.
 
 ## Points de vigilance
 
-- **🔴 `manage.py test` casse actuellement dans l'arbre de travail** :
-  `test_csv_import.py` (untracked) importe `csv_export.py` qui n'est pas
-  dans l'arbre (seulement sur `wip/checkpoint-2026-08-04`) — le découvreur
-  de tests Django échoue en ImportError. Se résout en assemblant
-  `feature/import-export` (ou en déplaçant temporairement les deux fichiers
-  untracked hors du package).
-- **🟡 `main` local a divergé de GitHub** : les étapes 15-16 ont été mergées
-  localement (merges directs) PUIS via les PR #15/#16 sur GitHub (commits de
-  merge différents, `9cd1d42` en tête là-bas) ; les étapes 17 et 18 ont
-  ensuite été mergées directement sur GitHub sans passer par un merge local
-  équivalent — le `main` local du bac à sable est donc encore plus en
-  retard sur `origin/main` (contenu identique jusqu'à `9cd1d42`, divergent
-  ensuite). Chaque nouvelle branche de travail continue de partir du dernier
-  état connu localement (pas de `main` fraîchement fetché) — sans incident
-  jusqu'ici (le contenu reste identique, seuls les SHA de merge diffèrent),
-  mais à garder en tête. Au prochain accès réseau : `git fetch` puis
-  réaligner le `main` local sur `origin/main` plutôt que de pousser
-  par-dessus. (Le `git fetch` est impossible depuis le bac à sable Claude —
-  confirmé à nouveau le 2026-08-05 : « Host key verification failed » ; le
-  statut de déploiement est vérifié via l'API Railway, pas via git.)
+- **`main` local réaligné sur GitHub** (vérifié le 2026-08-05 soir) : un
+  `git fetch` a exceptionnellement réussi (habituellement « Host key
+  verification failed » depuis ce bac à sable), confirmant que `origin/main`
+  pointe bien sur `18f45a8` (le merge de la PR #25, déploiement Railway
+  SUCCESS 17 h 47) — le `main` local a été réaligné par fast-forward sur
+  cette base. L'ancienne divergence de SHA de merge (étapes 15-16) est
+  résolue. Si le réseau redevient indisponible dans une session future,
+  revérifier avant de partir d'un `main` local qui pourrait être à nouveau
+  périmé plutôt que de le supposer à jour.
 - **Un seul chantier de code à la fois dans ce dossier** — voir l'incident
   du 2026-08-04 en « Statut global ». Deux sessions Cowork simultanées sur
   le même dossier peuvent se marcher dessus (branche qui change seule,
@@ -130,22 +122,20 @@ technicien, budget de location, géocodage d'adresse.
   restent dans le `CMD` du Dockerfile.
 - Ne pas confondre `inventory.User` (modèle applicatif) et le superutilisateur
   Django (`django.contrib.auth`).
-- Protection de branche `main` activée sur GitHub (confirmé le 2026-08-03) —
-  PR obligatoire + 2 status checks, y compris pour un changement
-  documentation seule.
-- ~~Protection de branche `main` non activée sur GitHub~~ — **résolu**,
-  confirmé activée le 2026-08-03 (push direct sur `main` refusé : « Changes
-  must be made through a pull request », 2 status checks requis). Tout
-  changement, même documentation seule, passe maintenant par une PR.
+- Protection de branche `main` activée sur GitHub (confirmé le 2026-08-03,
+  push direct refusé) — PR obligatoire + 2 status checks, y compris pour un
+  changement documentation seule.
 - L'estimation automatique de trajet (Google Routes API) reste non testable
   en conditions réelles dans le bac à sable Claude (pas de réseau) — se
   dégrade silencieusement sur la valeur par défaut si la clé est absente.
-- Branches déjà mergées, nettoyage optionnel : `feature/department-colors`,
-  `feature/material-quantity`, `feature/production-scoping`,
-  `feature/storage-transports-settings-maps`, `feature/venue-code`,
-  `feature/module-transport`, `feature/venue-conflict`,
-  `feature/transport-tournees`, `feature/project-onboarding`,
-  `wip/checkpoint-2026-07-31`.
+- Nettoyage de branches (2026-08-05, confirmé par Samuel) : toutes les
+  branches `feature/*`/`docs/*` déjà mergées ont été supprimées sur GitHub,
+  ainsi que les checkpoints périmés (`wip/checkpoint-2026-07-31`,
+  `wip/checkpoint-2026-08-04`) et `chore/agents-ci-review-workflow` (la
+  toute première PR du projet, #1, contenu déjà entièrement dans `main`).
+  Reste à supprimer : `chore/schema-xref-filter-tests-2026-08-05` (PR #25,
+  mergée depuis) — c'est la branche courante du dossier local, la
+  supprimer demanderait d'abord de checkout `main`.
 
 ## Backlog
 
