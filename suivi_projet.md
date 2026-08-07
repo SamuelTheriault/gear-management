@@ -82,15 +82,17 @@ modèle backend) : voir « Points de vigilance ».
 | 22 | Points non bloquants de la relecture de l'étape 21 : atomicité, reorder, listes allégées (`dc25a46`) | ✅ Mergée dans `main` (PR #28) et déployée — Railway SUCCESS 2026-08-06 20 h 52 (`a28bc20`) | 2026-08-06 |
 | 23 | Travaux transport, chantier 1 : `Transport.project` direct + spectacle desservi OPTIONNEL (migration `0028`, « — Aucun spectacle — »), formulaire clarifié (« Spectacle desservi (arrivée) », liste filtrée par lieu d'arrivée), `transport_detach` révisé (détachement au lieu de suppression), correctif suppression de projet | 🔶 Prêt sur `feature/transport-show-optionnel` (454 tests + flake8, Playwright OK) — PR à ouvrir/merger, migration `0028` au déploiement | 2026-08-06 |
 | 24 | Travaux transport, chantier 2 : entité **Camion** (table `trucks`, camion par défaut par projet, migration `0029`), tournée assignée à un camion (conflit d'horaire bloquant + force, 4e groupe de l'écran Conflits), période de réservation (avertissement non bloquant), km estimé via distances Google Routes par segment, écrans Camions + fiche | 🔶 Prêt sur la MÊME branche `feature/transport-show-optionnel` (467 tests + flake8, Playwright OK) — une seule PR pour les chantiers 1+2, migrations `0028`+`0029` au déploiement | 2026-08-06 |
+| 25 | Travaux transport, chantier 3 : **suggestion d'ordre optimal des arrêts** (`transport_ordering.py` — énumération exacte, premier arrêt fixe, précédences chargement→déchargement, `POST /transports/order-suggestion/` stateless + bouton « Suggérer un ordre optimal » avec bandeau avant/après et remap des lignes de matériel), bouton « Réestimer les distances » (`POST /transports/{id}/refresh-distances/`, distances seules, durées intactes — comble les tournées pré-`0029`), correctif serializer (durée manuelle sur couple changé → distance quand même estimée) | 🔶 Prêt sur la MÊME branche `feature/transport-show-optionnel` (`ce2cba9`, 483 tests + flake8, Playwright OK) — toujours une seule PR pour les chantiers 1+2+3, migrations `0028`+`0029` au déploiement, AUCUNE migration nouvelle | 2026-08-07 |
 
 ## Prochaine action concrète
 
-**Merger les chantiers transport 1+2** (`feature/transport-show-optionnel`,
-prêt : 467 tests + flake8, migrations `0028`+`0029` au déploiement — une
-seule PR, demande de Samuel), puis enchaîner le **chantier 3 : ordre des
-arrêts optimisé** (premier arrêt fixe, précédences
-chargement<déchargement, matrice Routes — cadré, non commencé). Rattraper
-aussi la doc de référence sur le lot 21 (voir Points de vigilance).
+**Merger les chantiers transport 1+2+3** (`feature/transport-show-optionnel`,
+prêt : 483 tests + flake8, migrations `0028`+`0029` au déploiement — une
+seule PR, demande de Samuel). Côté Samuel aussi : configurer
+`GOOGLE_MAPS_API_KEY` (dans `backend/.env` en local ET vérifier les
+Variables Railway) — sans elle, ni km estimé, ni suggestion d'ordre, ni
+réestimation des distances ne fonctionnent. Rattraper aussi la doc de
+référence sur le lot 21 (voir Points de vigilance).
 
 ## Points de vigilance
 

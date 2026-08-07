@@ -3230,3 +3230,55 @@ retrait d'un arrêt sont laissées à la session transport.
     avec un N+1.
 
 Suite de tests : 447 (8 ajoutés), flake8 propre, aucune migration.
+
+## 2026-08-07 — Chantier 3 : suggestion d'ordre optimal + réestimation des distances
+
+Suite (et fin) des travaux transport cadrés le 2026-08-06 — empilé sur
+`feature/transport-show-optionnel` (`ce2cba9`), toujours UNE seule PR pour
+les chantiers 1+2+3. Aucune migration nouvelle.
+
+- **`transport_ordering.py` (nouveau)** : ordre optimal des arrêts par
+  énumération EXACTE des permutations (tournées réelles ≤ 8 arrêts, 7! au
+  pire — l'optimum est garanti, pas d'heuristique). Premier arrêt FIXE ;
+  précédences du matériel (chargé en X, déchargé en Y → X avant Y) ;
+  candidats à arrêts consécutifs identiques écartés (règle du serializer).
+  Matrice de trajets par couples ORIENTÉS de lieux distincts, mémoïsée ;
+  `OrderingUnavailable` au premier couple inestimable — un optimum sur des
+  données inventées n'aurait aucun sens, on affiche l'erreur plutôt.
+- **`POST /api/transports/order-suggestion/`** : STATELESS — reçoit la
+  séquence en cours d'édition (`project`, `stops` en ids de lieux,
+  `materials` en positions load/unload), ne lit ni n'écrit aucune tournée.
+  Le frontend applique au FORMULAIRE, l'enregistrement normal persiste.
+  Accès en rôle viewer via `_resolve_csv_project` (action `detail=False`,
+  même mécanique que les exports CSV).
+- **`POST /api/transports/{id}/refresh-distances/`** : réestime les
+  DISTANCES segment par segment, durées INTACTES (une durée ajustée à la
+  main — pause dîner, détour — n'est jamais écrasée). Comble les tournées
+  d'avant la migration `0029` (pas de rétro-remplissage) et les trous
+  laissés par les durées manuelles. Retourne `refreshed`/`unavailable` + la
+  fiche sérialisée.
+- **Correctif `_resolve_travel_times`** : durée saisie à la main sur un
+  couple de lieux CHANGÉ laissait la distance à NULL — désormais l'appel
+  Routes remplit la distance SEULE (les minutes de l'utilisateur restent).
+  Conséquence testée : la création avec durée explicite fait maintenant UN
+  appel Routes (deux tests de `test_settings_and_maps.py` mis à jour).
+- **Fiche tournée** : bouton « Suggérer un ordre optimal » (édition, ≥ 3
+  arrêts, grisé si un lieu manque), bandeau avant/après (trajet en toutes
+  lettres, minutes + km), « Appliquer cet ordre » réordonne le formulaire
+  (durées de la matrice de la suggestion) et REMAPPE les lignes de matériel
+  (`order.indexOf`), « Ignorer » referme ; un watcher périme la suggestion
+  dès que la séquence bouge (ses index ne décrivent plus rien). Bouton
+  « Réestimer les distances » en LECTURE, dans l'entête de la carte
+  Séquence ; km par segment affiché dans la séquence quand il est connu.
+- **Vérification visuelle Playwright** sur serveur local seedé avec
+  `estimate_travel` remplacé par une matrice factice (pas de clé Google
+  dans le bac à sable) : lecture avant/après réestimation, suggestion,
+  application, re-suggestion « déjà optimal » — 5 captures propres.
+- Piège sandbox rencontré : le POST Playwright échouait en 403 CSRF avec un
+  simple cookie de session injecté — il faut AUSSI un cookie `csrftoken`
+  (le client API du frontend le renvoie en en-tête `X-CSRFToken`).
+
+Suite de tests : 483 (16 ajoutés, `test_transport_ordering.py`), flake8
+propre, build Vue OK. Reste côté Samuel : configurer `GOOGLE_MAPS_API_KEY`
+(local + Railway) — tout le chantier 3 se dégrade en messages clairs sans
+elle, mais ne fonctionne qu'avec.
