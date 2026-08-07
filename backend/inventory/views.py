@@ -20,6 +20,7 @@ frontend, qui n'a pas d'équivalent par-show unique côté Vue).
 import json
 import unicodedata
 
+from django.conf import settings as django_settings
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import transaction
 from django.http import HttpResponse
@@ -1616,12 +1617,63 @@ class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
             if stop.travel_distance_meters != meters:
                 stop.travel_distance_meters = meters
                 stop.save(update_fields=['travel_distance_meters'])
+        # Diagnostic actionnable (2026-08-07, retour de Samuel : « 0
+        # segment(s) réestimé(s) » sans savoir pourquoi) : on nomme la cause —
+        # clé absente, ou les lieux précis restés sans GPS après la tentative
+        # de géocodage au vol d'`estimate_travel` (donc sans adresse
+        # géocodable non plus). Le frontend compose le message.
+        api_key_missing = not (getattr(django_settings, 'GOOGLE_MAPS_API_KEY', '') or '')
+        venues_without_gps = sorted({
+            s.venue.name for s in stops
+            if s.venue.latitude is None or s.venue.longitude is None
+        })
         serializer = self.get_serializer(transport)
         return Response({
             'transport': serializer.data,
             'refreshed': refreshed,
             'unavailable': unavailable,
+            'api_key_missing': api_key_missing,
+            'venues_without_gps': venues_without_gps,
         })
+
+    @action(detail=False, methods=['post'], url_path='estimate-travel')
+    def estimate_travel_action(self, request):
+        """Estimation d'UN trajet A → B, pour le formulaire de création
+        (2026-08-07, demande de Samuel) : après le choix du spectacle
+        desservi, le frontend cale l'heure de départ pour que le camion
+        arrive juste avant le début de l'événement — il lui faut la durée
+        réelle du trajet AVANT d'enregistrer quoi que ce soit.
+
+        Corps : `{'project': <id>, 'origin_venue': <id>,
+        'destination_venue': <id>}`. Réponse : `{'minutes', 'meters',
+        'estimated'}` — `estimated: false` quand Google Routes n'a pas pu
+        répondre (clé absente, lieux sans GPS ni adresse géocodable) ; les
+        minutes valent alors le défaut des Réglages, pour que le frontend
+        ait toujours une durée à proposer. Rôle viewer suffit (lecture pure,
+        même mécanique d'accès que `order_suggestion`).
+        """
+        project = _resolve_csv_project(request, request.data.get('project'), required_edit=False)
+        if project is None:
+            return Response({'project': "Le projet est requis."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            origin_id = int(request.data.get('origin_venue'))
+            destination_id = int(request.data.get('destination_venue'))
+        except (TypeError, ValueError):
+            return Response(
+                {'detail': "origin_venue et destination_venue (ids) sont requis."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        venues = {v.id: v for v in Venue.objects.filter(project=project, id__in={origin_id, destination_id})}
+        if origin_id not in venues or destination_id not in venues:
+            return Response({'detail': "Lieu introuvable dans ce projet."}, status=status.HTTP_400_BAD_REQUEST)
+        estimation = estimate_travel(venues[origin_id], venues[destination_id])
+        if estimation is None:
+            return Response({
+                'minutes': Settings.load().default_transport_duration_minutes,
+                'meters': None,
+                'estimated': False,
+            })
+        return Response({'minutes': estimation['minutes'], 'meters': estimation['meters'], 'estimated': True})
 
 
 class SettingsView(generics.RetrieveUpdateAPIView):

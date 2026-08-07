@@ -423,3 +423,134 @@ class EventTypeOrderTests(TestCase):
             '/api/settings/', {'event_type_order': ['storage']}, format='json',
         )
         self.assertEqual(Settings.load().transport_color, '#ff0000')
+
+
+class GeocodingTests(TestCase):
+    """Géocodage automatique des adresses (2026-08-07, décision de Samuel) :
+    `maps.geocode_address`, remplissage à l'enregistrement d'une fiche Lieu
+    (`VenueSerializer.validate`), et filet au vol dans `estimate_travel`."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name="Projet géocodage")
+        self.user = DjangoUser.objects.create_superuser('geo', 'geo@test.com', 'testpass123')
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_geocode_returns_none_without_api_key(self):
+        from .maps import geocode_address
+        self.assertIsNone(geocode_address("175 Sainte-Catherine O, Montréal"))
+
+    @override_settings(GOOGLE_MAPS_API_KEY='fake-key')
+    def test_geocode_returns_none_for_empty_address(self):
+        from .maps import geocode_address
+        self.assertIsNone(geocode_address("   "))
+
+    @override_settings(GOOGLE_MAPS_API_KEY='fake-key')
+    @patch('inventory.maps.requests.get')
+    def test_geocode_parses_a_success_response(self, mock_get):
+        from decimal import Decimal
+
+        from .maps import geocode_address
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            'status': 'OK',
+            'results': [{'geometry': {'location': {'lat': 45.5088521, 'lng': -73.5678101}}}],
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_get.return_value = mock_response
+        coords = geocode_address("175 Sainte-Catherine O, Montréal")
+        self.assertEqual(coords['latitude'], Decimal('45.508852'))
+        self.assertEqual(coords['longitude'], Decimal('-73.567810'))
+
+    @override_settings(GOOGLE_MAPS_API_KEY='fake-key')
+    @patch('inventory.maps.requests.get')
+    def test_geocode_returns_none_on_zero_results(self, mock_get):
+        from .maps import geocode_address
+        mock_response = MagicMock()
+        mock_response.json.return_value = {'status': 'ZERO_RESULTS', 'results': []}
+        mock_response.raise_for_status.return_value = None
+        mock_get.return_value = mock_response
+        self.assertIsNone(geocode_address("n'existe pas"))
+
+    @patch('inventory.serializers.geocode_address')
+    def test_creating_a_venue_with_address_geocodes_it(self, mock_geocode):
+        from decimal import Decimal
+        mock_geocode.return_value = {'latitude': Decimal('45.508852'), 'longitude': Decimal('-73.567810')}
+        response = self.client.post('/api/venues/', {
+            'project': self.project.id, 'name': "Place des Arts",
+            'address': "175 Sainte-Catherine O, Montréal",
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data['latitude'], '45.508852')
+        self.assertEqual(response.data['longitude'], '-73.567810')
+        mock_geocode.assert_called_once()
+
+    @patch('inventory.serializers.geocode_address')
+    def test_manual_coordinates_beat_geocoding(self, mock_geocode):
+        response = self.client.post('/api/venues/', {
+            'project': self.project.id, 'name': "Salle",
+            'address': "quelque part", 'latitude': '45.1', 'longitude': '-73.1',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        mock_geocode.assert_not_called()
+
+    @patch('inventory.serializers.geocode_address')
+    def test_unrelated_patch_does_not_re_geocode(self, mock_geocode):
+        from decimal import Decimal
+        venue = Venue.objects.create(
+            project=self.project, name="Salle", address="adresse",
+            latitude=Decimal('45.5'), longitude=Decimal('-73.5'),
+        )
+        response = self.client.patch(f'/api/venues/{venue.id}/', {'notes': "RAS"}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        mock_geocode.assert_not_called()
+
+    @patch('inventory.serializers.geocode_address')
+    def test_changing_the_address_re_geocodes(self, mock_geocode):
+        from decimal import Decimal
+        venue = Venue.objects.create(
+            project=self.project, name="Salle", address="ancienne adresse",
+            latitude=Decimal('45.5'), longitude=Decimal('-73.5'),
+        )
+        mock_geocode.return_value = {'latitude': Decimal('46.813878'), 'longitude': Decimal('-71.207981')}
+        response = self.client.patch(f'/api/venues/{venue.id}/', {
+            'address': "Grand Théâtre de Québec",
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data['latitude'], '46.813878')
+        mock_geocode.assert_called_once()
+
+    @patch('inventory.serializers.geocode_address')
+    def test_geocoding_failure_saves_the_venue_anyway(self, mock_geocode):
+        mock_geocode.return_value = None
+        response = self.client.post('/api/venues/', {
+            'project': self.project.id, 'name': "Salle", 'address': "introuvable",
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertIsNone(response.data['latitude'])
+
+    @override_settings(GOOGLE_MAPS_API_KEY='fake-key')
+    @patch('inventory.maps.geocode_address')
+    @patch('inventory.maps.requests.post')
+    def test_estimate_travel_geocodes_on_the_fly_and_saves(self, mock_post, mock_geocode):
+        """Filet au vol : un lieu d'avant le géocodage auto (adresse mais pas
+        de GPS) est géocodé ET SAUVÉ à la première estimation de trajet."""
+        from decimal import Decimal
+
+        from .maps import estimate_travel
+        origin = Venue.objects.create(
+            project=self.project, name="Entrepôt", address="6345 Boul. Couture",
+        )
+        destination = Venue.objects.create(
+            project=self.project, name="Salle", latitude=Decimal('45.52'), longitude=Decimal('-73.56'),
+        )
+        mock_geocode.return_value = {'latitude': Decimal('45.601000'), 'longitude': Decimal('-73.610000')}
+        mock_response = MagicMock()
+        mock_response.json.return_value = {'routes': [{'duration': '600s', 'distanceMeters': 8000}]}
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        result = estimate_travel(origin, destination)
+        self.assertEqual(result, {'minutes': 10, 'meters': 8000})
+        origin.refresh_from_db()
+        self.assertEqual(origin.latitude, Decimal('45.601000'))

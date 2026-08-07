@@ -99,8 +99,19 @@ const navItems = [
     ],
   },
   // Transports en 2e position (2026-08-05, demande de Samuel) : c'est la
-  // section consultée le plus souvent après le Tableau de bord.
-  { label: 'Transports', to: '/transports' },
+  // section consultée le plus souvent après le Tableau de bord. Camions y
+  // est passé en sous-menu le 2026-08-07 (demande de Samuel) : la flotte
+  // fait partie du monde Transport, pas une section de premier niveau —
+  // d'où l'`activeMatch` qui couvre /camions (hors du chemin /transports).
+  {
+    label: 'Transports',
+    to: '/transports',
+    activeMatch: (p) => p.startsWith('/transports') || p.startsWith('/camions'),
+    children: [
+      { label: 'Tournées', to: '/transports' },
+      { label: 'Camions', to: '/camions' },
+    ],
+  },
   {
     label: 'Matériel',
     to: '/materiel',
@@ -115,9 +126,6 @@ const navItems = [
   { label: 'Spectacles', to: '/spectacles' },
   { label: 'Lieux', to: '/lieux' },
   { label: 'Techniciens', to: '/techniciens' },
-  // Camions (chantier Camion, 2026-08-06) : la flotte du projet, chaque
-  // tournée étant assignée à un camion.
-  { label: 'Camions', to: '/camions' },
 ]
 
 const bottomNavItems = [

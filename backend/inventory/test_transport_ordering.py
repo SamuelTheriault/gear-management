@@ -250,3 +250,96 @@ class RefreshDistancesAPITests(TestCase):
         stops = list(self.transport.stops.order_by('order'))
         self.assertEqual(stops[1].travel_distance_meters, 30000)
         self.assertIsNone(stops[2].travel_distance_meters)
+
+
+class RefreshDistancesDiagnosticTests(TestCase):
+    """Diagnostic actionnable de `refresh-distances` (2026-08-07, retour de
+    Samuel : « 0 segment(s) réestimé(s) » sans indication de cause)."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name="Projet diagnostic")
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+
+        self.a = Venue.objects.create(project=self.project, name="Alpha")
+        self.b = Venue.objects.create(project=self.project, name="Bravo")
+        self.transport = Transport.objects.create(
+            project=self.project,
+            truck=self.project.trucks.order_by('id').first(),
+            scheduled_datetime=_dt(8),
+        )
+        TransportStop.objects.create(transport=self.transport, venue=self.a, order=0)
+        TransportStop.objects.create(
+            transport=self.transport, venue=self.b, order=1, travel_minutes_from_previous=30,
+        )
+
+    @patch('inventory.views.estimate_travel')
+    def test_names_the_venues_without_gps(self, mock_estimate):
+        mock_estimate.return_value = None
+        response = self.client.post(
+            f'/api/transports/{self.transport.id}/refresh-distances/', {}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data['unavailable'], 1)
+        self.assertTrue(response.data['api_key_missing'])  # pas de clé dans le bac à sable
+        self.assertEqual(response.data['venues_without_gps'], ['Alpha', 'Bravo'])
+
+    @patch('inventory.views.estimate_travel')
+    def test_no_gps_complaint_when_venues_have_coordinates(self, mock_estimate):
+        mock_estimate.return_value = {'minutes': 12, 'meters': 4000}
+        Venue.objects.filter(id__in=[self.a.id, self.b.id]).update(latitude=45.5, longitude=-73.5)
+        response = self.client.post(
+            f'/api/transports/{self.transport.id}/refresh-distances/', {}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data['refreshed'], 1)
+        self.assertEqual(response.data['venues_without_gps'], [])
+
+
+class EstimateTravelEndpointTests(TestCase):
+    """`POST /api/transports/estimate-travel/` — durée d'un trajet A → B pour
+    caler l'heure de départ du formulaire de création (2026-08-07)."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name="Projet estimation")
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.a = Venue.objects.create(project=self.project, name="A", is_storage=True)
+        self.b = Venue.objects.create(project=self.project, name="B")
+
+    def _post(self, **overrides):
+        payload = {'project': self.project.id, 'origin_venue': self.a.id, 'destination_venue': self.b.id}
+        payload.update(overrides)
+        return self.client.post('/api/transports/estimate-travel/', payload, format='json')
+
+    @patch('inventory.views.estimate_travel')
+    def test_returns_the_estimation(self, mock_estimate):
+        mock_estimate.return_value = {'minutes': 25, 'meters': 9000}
+        response = self._post()
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data, {'minutes': 25, 'meters': 9000, 'estimated': True})
+
+    @patch('inventory.views.estimate_travel')
+    def test_falls_back_to_settings_default(self, mock_estimate):
+        mock_estimate.return_value = None
+        response = self._post()
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertFalse(response.data['estimated'])
+        self.assertEqual(response.data['minutes'], 60)  # défaut Settings
+        self.assertIsNone(response.data['meters'])
+
+    def test_project_is_required(self):
+        response = self._post(project=None)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_venue_of_another_project_is_refused(self):
+        autre = Project.objects.create(name="Autre")
+        ailleurs = Venue.objects.create(project=autre, name="Ailleurs")
+        response = self._post(destination_venue=ailleurs.id)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_missing_venue_ids_are_refused(self):
+        response = self._post(origin_venue=None)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)

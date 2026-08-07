@@ -3282,3 +3282,54 @@ Suite de tests : 483 (16 ajoutés, `test_transport_ordering.py`), flake8
 propre, build Vue OK. Reste côté Samuel : configurer `GOOGLE_MAPS_API_KEY`
 (local + Railway) — tout le chantier 3 se dégrade en messages clairs sans
 elle, mais ne fonctionne qu'avec.
+
+## 2026-08-07 (suite) — Passe de corrections transport (étape 26)
+
+Retour de Samuel après le merge des chantiers 1+2+3 (PR #29/#30, déployé,
+migrations 0028+0029 appliquées en prod — vérifié dans les logs Railway).
+Trois irritants, sur `fix/corrections-transport-2026-08-07` :
+
+- **« 0 segment(s) réestimé(s) » sans cause** : la clé est configurée sur
+  Railway — le vrai coupable est l'absence de coordonnées GPS sur les lieux
+  (saisie manuelle uniquement, vieux point de backlog). Décision de Samuel :
+  **géocodage automatique** (Google Geocoding, même clé que Routes).
+  - `maps.geocode_address(address)` → lat/lon en `Decimal` quantifiés à
+    6 décimales (la précision exacte des champs), `region=ca` (biais Canada,
+    n'exclut pas l'étranger), échec silencieux.
+  - `VenueSerializer.validate` : géocode à l'enregistrement SI l'utilisateur
+    n'a pas fourni de coordonnées ET (adresse changée OU coordonnées vides) —
+    une saisie manuelle reste prioritaire, une resauvegarde intacte ne
+    consomme rien.
+  - `maps._ensure_coordinates` : filet AU VOL dans `estimate_travel` — un
+    lieu d'avant cette date (adresse sans GPS) est géocodé et SAUVÉ à la
+    première estimation qui en a besoin. Effet de bord d'écriture assumé et
+    documenté : sans lui, il faudrait rouvrir chaque fiche Lieu.
+  - `refresh-distances` retourne maintenant `api_key_missing` +
+    `venues_without_gps` (noms) ; la fiche tournée compose un message
+    actionnable (« Ajoute une adresse à : X, Y »).
+  - ⚠️ Étape manuelle côté Samuel : activer « Geocoding API » sur la clé
+    Google Cloud (même projet, même tier gratuit).
+- **Camions en sous-menu de Transports** (`AppShell.vue`) : le pattern
+  parent/children existait déjà (Tableau de bord, Matériel) — Transports
+  devient parent de Tournées + Camions, `activeMatch` couvre `/camions`.
+- **Formulaire de création piloté par le spectacle desservi**
+  (`TransportsView.vue`) : le filtre existant ne jouait que si on
+  choisissait le lieu d'arrivée AVANT le spectacle — flux inverse du
+  réflexe de Samuel (le spectacle est le premier champ). Désormais :
+  choisir un spectacle sélectionne SON lieu comme arrivée, et l'heure de
+  départ se cale pour ARRIVER JUSTE AVANT le début effectif (montage
+  compris) : `POST /transports/estimate-travel/` (nouvelle action, durée
+  réelle Routes, repli = défaut des Réglages avec `estimated: false`),
+  départ = début effectif − durée, arrondi au 5 min INFÉRIEUR (0-4 min de
+  marge, jamais en moins). Garde-fous : `setAutoSchedule` n'écrase jamais
+  une heure saisie à la main (mais remplace la sienne — changer de
+  spectacle recale), jeton anti-course sur l'estimation asynchrone, et le
+  vieux pré-remplissage « fin de l'événement au départ » passe par le même
+  mécanisme (le calage sur l'arrivée, asynchrone, doit pouvoir le
+  remplacer).
+
+Suite : 500 tests (17 ajoutés — géocodage, diagnostic, endpoint
+estimate-travel), flake8, build Vue, Playwright (sous-menu, formulaire
+prérempli 18 h 30 pour un début effectif 19 h 00 à 30 min de route,
+diagnostic nommant les lieux). Le suivi passe aussi les étapes 23-25 à
+« Mergée et déployée » (promis « au prochain lot » — c'est celui-ci).

@@ -650,7 +650,12 @@ async function refreshDistances() {
     const data = await api.post(`/transports/${transport.value.id}/refresh-distances/`, {})
     transport.value = data.transport
     form.value = buildForm(transport.value)
-    refreshResult.value = { refreshed: data.refreshed, unavailable: data.unavailable }
+    refreshResult.value = {
+      refreshed: data.refreshed,
+      unavailable: data.unavailable,
+      apiKeyMissing: data.api_key_missing,
+      venuesWithoutGps: data.venues_without_gps ?? [],
+    }
   } catch (e) {
     refreshError.value = e.data?.detail ?? 'Impossible de réestimer les distances.'
   } finally {
@@ -1157,9 +1162,25 @@ const {
             </button>
           </div>
           <div v-if="refreshError" class="conflict-note">{{ refreshError }}</div>
+          <!-- Diagnostic actionnable (2026-08-07, retour de Samuel : le
+               message générique ne disait pas QUOI corriger) : la cause
+               précise vient du backend — clé absente, ou la liste des lieux
+               restés sans GPS malgré le géocodage d'adresse au vol. -->
           <div v-else-if="refreshResult" class="fiche-hint">
             {{ refreshResult.refreshed }} segment(s) réestimé(s)<template v-if="refreshResult.unavailable">,
-            {{ refreshResult.unavailable }} sans distance (lieu sans GPS ou clé Google Routes absente)</template>.
+            {{ refreshResult.unavailable }} sans distance</template>.
+            <template v-if="refreshResult.unavailable">
+              <template v-if="refreshResult.apiKeyMissing">
+                La clé Google Routes n'est pas configurée sur ce serveur (GOOGLE_MAPS_API_KEY).
+              </template>
+              <template v-else-if="refreshResult.venuesWithoutGps.length">
+                Ajoute une adresse (ou des coordonnées GPS) à : {{ refreshResult.venuesWithoutGps.join(', ') }} —
+                l'adresse est géocodée automatiquement à l'enregistrement de la fiche Lieu.
+              </template>
+              <template v-else>
+                L'appel Google Routes a échoué — réessaie dans un moment.
+              </template>
+            </template>
           </div>
           <div class="stop-list">
             <div v-for="(s, i) in decoratedStops" :key="s.id" class="stop-row">
