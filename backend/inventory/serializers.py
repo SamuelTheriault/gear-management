@@ -43,7 +43,7 @@ from .conflicts import (
     serialize_venue_conflict,
     validate_transport_window,
 )
-from .maps import estimate_travel
+from .maps import estimate_travel, geocode_address
 from .rich_text import clean_notes
 from .models import (
     Material,
@@ -222,6 +222,37 @@ class VenueSerializer(serializers.ModelSerializer):
                 f'Le code "{value.upper()}" est déjà utilisé par un autre lieu de ce projet.',
             )
         return value
+
+    def validate(self, attrs):
+        """Géocodage automatique de l'adresse (2026-08-07, décision de
+        Samuel) : les coordonnées GPS ne se saisissaient qu'à la main, donc
+        la plupart des lieux n'en avaient pas — et durées, distances/km
+        camion et suggestion d'ordre échouaient tous.
+
+        Règles : on ne géocode que si l'utilisateur n'a PAS fourni de
+        coordonnées dans ce payload (une saisie manuelle reste prioritaire),
+        et seulement quand l'adresse change ou que les coordonnées sont
+        vides — resauver une fiche intacte ne consomme pas d'appel
+        Geocoding. Échec silencieux (clé absente, adresse introuvable) : la
+        fiche s'enregistre sans coordonnées, comme avant ; le filet au vol
+        de `maps._ensure_coordinates` retentera à la première estimation.
+        """
+        coords_given = 'latitude' in attrs or 'longitude' in attrs
+        address = attrs.get('address', getattr(self.instance, 'address', '') if self.instance else '')
+        address_changed = 'address' in attrs and (
+            self.instance is None or attrs['address'] != self.instance.address
+        )
+        has_coords = (
+            self.instance is not None
+            and self.instance.latitude is not None
+            and self.instance.longitude is not None
+        )
+        if not coords_given and address.strip() and (address_changed or not has_coords):
+            geocoded = geocode_address(address)
+            if geocoded is not None:
+                attrs['latitude'] = geocoded['latitude']
+                attrs['longitude'] = geocoded['longitude']
+        return attrs
 
 
 class MaterialCategorySerializer(serializers.ModelSerializer):

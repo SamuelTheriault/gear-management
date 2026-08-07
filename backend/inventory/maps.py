@@ -30,6 +30,7 @@ log d'avertissement) : l'appelant se rabat alors sur
 """
 
 import logging
+from decimal import Decimal
 
 import requests
 from django.conf import settings
@@ -37,7 +38,78 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 ROUTES_API_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
+GEOCODING_API_URL = "https://maps.googleapis.com/maps/api/geocode/json"
 REQUEST_TIMEOUT_SECONDS = 5
+
+
+def geocode_address(address):
+    """Retourne `{'latitude': Decimal, 'longitude': Decimal}` pour une adresse
+    postale via l'API Google Geocoding, ou `None` si le géocodage n'est pas
+    possible (clé absente, adresse vide/introuvable, appel en échec).
+
+    Ajouté le 2026-08-07 (décision de Samuel — passe de corrections) : les
+    coordonnées GPS des lieux se saisissaient uniquement à la main, donc la
+    plupart des lieux n'en avaient pas et TOUT ce qui dépend de la matrice de
+    trajets (durées, distances/km camion, suggestion d'ordre) échouait.
+    Nécessite d'activer « Geocoding API » sur la même clé Google Cloud que
+    Routes (`GOOGLE_MAPS_API_KEY`) — étape manuelle côté Samuel, même tier
+    gratuit. `region=ca` : biais de région Canada (un nom de rue ambigu
+    résout à Montréal plutôt qu'en France), sans exclure les adresses
+    étrangères (tournées hors pays).
+
+    Appelants : `VenueSerializer.save` (géocode à l'enregistrement d'une
+    fiche Lieu) et `_ensure_coordinates` ci-dessous (filet au vol pour les
+    lieux créés avant cette date). Les `Decimal` sont quantifiés à
+    6 décimales — la précision exacte des champs `Venue.latitude/longitude`.
+    """
+    api_key = getattr(settings, 'GOOGLE_MAPS_API_KEY', '') or ''
+    address = (address or '').strip()
+    if not api_key or not address:
+        return None
+    try:
+        response = requests.get(
+            GEOCODING_API_URL,
+            params={'address': address, 'key': api_key, 'region': 'ca'},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except Exception:
+        logger.warning("Échec de l'appel Google Geocoding pour « %s »", address, exc_info=True)
+        return None
+
+    results = data.get('results') or []
+    if data.get('status') != 'OK' or not results:
+        return None
+    location = (results[0].get('geometry') or {}).get('location') or {}
+    lat, lng = location.get('lat'), location.get('lng')
+    if lat is None or lng is None:
+        return None
+    quantum = Decimal('0.000001')
+    return {
+        'latitude': Decimal(str(lat)).quantize(quantum),
+        'longitude': Decimal(str(lng)).quantize(quantum),
+    }
+
+
+def _ensure_coordinates(venue):
+    """Filet de géocodage au vol (2026-08-07) : un lieu sans GPS mais avec
+    une adresse est géocodé et SAUVÉ ici même, au moment où une estimation
+    de trajet en a besoin. C'est volontairement un effet de bord d'écriture
+    dans un module de lecture : les lieux d'avant le géocodage automatique
+    n'ont pas de coordonnées, et sans ce filet il faudrait rouvrir et
+    resauver chaque fiche Lieu pour en profiter — un géocodage réussi est un
+    cache permanent, jamais recalculé. Retourne True si le lieu a des
+    coordonnées utilisables."""
+    if venue.latitude is not None and venue.longitude is not None:
+        return True
+    coords = geocode_address(venue.address)
+    if coords is None:
+        return False
+    venue.latitude = coords['latitude']
+    venue.longitude = coords['longitude']
+    venue.save(update_fields=['latitude', 'longitude'])
+    return True
 
 
 def estimate_travel_minutes(origin_venue, destination_venue):
@@ -59,13 +131,14 @@ def estimate_travel(origin_venue, destination_venue):
 
     `meters` vient de `routes.distanceMeters` (ajouté au FieldMask le
     2026-08-06 — même appel, même coût, une donnée de plus) et alimente
-    `TransportStop.travel_distance_meters` pour le km estimé du camion."""
+    `TransportStop.travel_distance_meters` pour le km estimé du camion.
+
+    Depuis le 2026-08-07, un lieu sans coordonnées mais avec une adresse est
+    géocodé au vol (et sauvé) avant l'estimation — voir `_ensure_coordinates`."""
     api_key = getattr(settings, 'GOOGLE_MAPS_API_KEY', '') or ''
     if not api_key:
         return None
-    if origin_venue.latitude is None or origin_venue.longitude is None:
-        return None
-    if destination_venue.latitude is None or destination_venue.longitude is None:
+    if not _ensure_coordinates(origin_venue) or not _ensure_coordinates(destination_venue):
         return None
 
     payload = {

@@ -255,6 +255,76 @@ watch(selectableShows, (liste) => {
     form.value.show = ''
   }
 })
+
+// --- Le spectacle desservi pilote le formulaire (2026-08-07, demande de
+// Samuel) --- Le filtre par lieu d'arrivée (ci-dessus) ne joue que si on
+// choisit le lieu D'ABORD ; dans le flux inverse — spectacle en premier, le
+// champ est d'ailleurs le premier du formulaire — rien ne suivait. Désormais :
+// choisir un spectacle sélectionne SON lieu comme arrivée, et l'heure de
+// départ se cale pour arriver juste avant le début effectif de l'événement
+// (montage compris), via la durée réelle du trajet demandée au serveur
+// (`POST /transports/estimate-travel/`, repli sur le défaut des Réglages).
+
+watch(() => form.value.show, (showId) => {
+  if (!showId || showId === NO_SHOW) return
+  const show = shows.value.find((s) => s.id === showId)
+  if (show && show.venue) form.value.destination_venue = show.venue
+})
+
+// Dernière heure PRÉ-REMPLIE par nous : on ne remplace jamais une heure que
+// l'utilisateur a saisie ou retouchée lui-même — même règle que le vieux
+// pré-remplissage « fin de l'événement au départ », mais remplaçable quand
+// c'est nous qui l'avions mise (changer de spectacle recale l'heure).
+const lastAutoSchedule = ref(null)
+
+function setAutoSchedule(value) {
+  if (!form.value.scheduled_datetime || form.value.scheduled_datetime === lastAutoSchedule.value) {
+    form.value.scheduled_datetime = value
+    lastAutoSchedule.value = value
+  }
+}
+
+// `isoLike` est l'ISO renvoyé par l'API (heure du serveur) : on n'en garde
+// que la partie « YYYY-MM-DDTHH:mm » (naïve, comme les datetime-local du
+// formulaire), on recule de `minutes`, et on arrondit le départ au 5 min
+// INFÉRIEUR — 0 à 4 minutes de marge en plus, jamais en moins.
+function departureBefore(isoLike, minutes) {
+  const d = new Date(isoLike.slice(0, 16))
+  d.setMinutes(d.getMinutes() - minutes)
+  d.setMinutes(Math.floor(d.getMinutes() / 5) * 5)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+// Jeton anti-course : deux estimations peuvent se croiser (l'utilisateur
+// change d'origine pendant qu'une réponse voyage) — seule la dernière
+// demandée a le droit d'écrire.
+let estimateToken = 0
+
+watch(
+  () => [form.value.show, form.value.origin_venue, form.value.destination_venue],
+  async ([showId, originId, destId]) => {
+    if (!showId || showId === NO_SHOW || !originId || !destId || originId === destId) return
+    const show = shows.value.find((s) => s.id === showId)
+    // On ne cale l'heure sur l'arrivée que si le spectacle est bien au bout
+    // d'arrivée (toujours vrai via le watch ci-dessus, sauf réarrangement
+    // manuel — le vieux pré-remplissage « fin du départ » couvre ce cas).
+    if (!show || show.venue !== destId) return
+    const token = ++estimateToken
+    try {
+      const est = await api.post('/transports/estimate-travel/', {
+        project: activeProjectId.value,
+        origin_venue: originId,
+        destination_venue: destId,
+      })
+      if (token !== estimateToken) return
+      setAutoSchedule(departureBefore(show.effective_start, est.minutes))
+    } catch {
+      // Silencieux : le pré-remplissage est un confort, l'utilisateur peut
+      // toujours saisir l'heure lui-même.
+    }
+  },
+)
 const formError = ref(null)
 const fieldErrors = ref({ show: false, origin_venue: false, destination_venue: false, scheduled_datetime: false })
 const conflictDetail = ref(null)
@@ -331,12 +401,13 @@ const referenceShows = computed(() => {
   }
 })
 
-// Propose l'heure de départ effective comme valeur par défaut — seulement
-// tant que le champ est encore vide (n'écrase jamais une heure déjà saisie
-// à la main), même esprit que TransportDetailView.vue.
+// Propose la fin de l'événement au lieu de DÉPART comme heure par défaut —
+// n'écrase jamais une heure saisie à la main (passe par `setAutoSchedule`
+// depuis le 2026-08-07, pour que le calage sur l'arrivée — asynchrone, il
+// répond après ce watcher — puisse remplacer cette proposition-ci).
 watch(referenceShows, (refs) => {
-  if (!form.value.scheduled_datetime && refs.departureShow) {
-    form.value.scheduled_datetime = refs.departureShow.effective_end.slice(0, 16)
+  if (refs.departureShow) {
+    setAutoSchedule(refs.departureShow.effective_end.slice(0, 16))
   }
 })
 
