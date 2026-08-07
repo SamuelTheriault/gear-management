@@ -18,6 +18,7 @@ frontend, qui n'a pas d'équivalent par-show unique côté Vue).
 """
 
 import json
+import logging
 import unicodedata
 
 from django.conf import settings as django_settings
@@ -177,6 +178,9 @@ class _ProjectXmlRenderer(BaseRenderer):
 
     def render(self, data, accepted_media_type=None, renderer_context=None):
         return data
+
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_csv_project(request, project_id_raw, required_edit):
@@ -1605,10 +1609,26 @@ class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
         """
         transport = self.get_object()
         stops = transport.ordered_stops
+        # Trace par segment (2026-08-07, soir — débogage avec Samuel) : l'état
+        # EXACT que le serveur voit, pour confronter aux fiches affichées.
+        logger.info(
+            "refresh-distances transport #%s : arrêts %s",
+            transport.id,
+            [
+                f"#{s.venue_id} {s.venue.name} (GPS: {'oui' if s.venue.latitude is not None else 'non'}, "
+                f"adresse: {'oui' if s.venue.address.strip() else 'non'})"
+                for s in stops
+            ],
+        )
         refreshed = 0
         unavailable = 0
         for previous, stop in zip(stops, stops[1:]):
             estimation = estimate_travel(previous.venue, stop.venue)
+            logger.info(
+                "refresh-distances transport #%s : segment %s → %s : %s",
+                transport.id, previous.venue.name, stop.venue.name,
+                estimation if estimation else "estimation impossible",
+            )
             meters = estimation['meters'] if estimation else None
             if meters is None:
                 unavailable += 1

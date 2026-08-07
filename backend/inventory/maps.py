@@ -65,6 +65,14 @@ def geocode_address(address):
     api_key = getattr(settings, 'GOOGLE_MAPS_API_KEY', '') or ''
     address = (address or '').strip()
     if not api_key or not address:
+        # Sortie silencieuse d'origine — loggée depuis le 2026-08-07 (soir) :
+        # c'était le SEUL chemin d'échec invisible dans les logs, ce qui a
+        # rendu un incident indiagnosticable à distance (retours répétés de
+        # Samuel « 0 segment réestimé » sans aucune trace serveur).
+        logger.info(
+            "Géocodage non tenté (%s) pour « %s »",
+            "clé absente" if not api_key else "adresse vide", address or '—',
+        )
         return None
     try:
         response = requests.get(
@@ -80,12 +88,20 @@ def geocode_address(address):
 
     results = data.get('results') or []
     if data.get('status') != 'OK' or not results:
+        # `status` est le diagnostic de Google lui-même : REQUEST_DENIED =
+        # Geocoding API pas activée sur la clé (ou clé restreinte à Routes),
+        # ZERO_RESULTS = adresse introuvable, OVER_QUERY_LIMIT = quota.
+        logger.warning(
+            "Géocodage sans résultat pour « %s » : status=%s, error_message=%s",
+            address, data.get('status'), data.get('error_message', ''),
+        )
         return None
     location = (results[0].get('geometry') or {}).get('location') or {}
     lat, lng = location.get('lat'), location.get('lng')
     if lat is None or lng is None:
         return None
     quantum = Decimal('0.000001')
+    logger.info("Géocodage réussi pour « %s »", address)
     return {
         'latitude': Decimal(str(lat)).quantize(quantum),
         'longitude': Decimal(str(lng)).quantize(quantum),
@@ -103,12 +119,17 @@ def _ensure_coordinates(venue):
     coordonnées utilisables."""
     if venue.latitude is not None and venue.longitude is not None:
         return True
+    logger.info(
+        "Lieu #%s « %s » sans GPS (adresse en base : %s) — géocodage au vol",
+        venue.id, venue.name, f"« {venue.address} »" if venue.address.strip() else "AUCUNE",
+    )
     coords = geocode_address(venue.address)
     if coords is None:
         return False
     venue.latitude = coords['latitude']
     venue.longitude = coords['longitude']
     venue.save(update_fields=['latitude', 'longitude'])
+    logger.info("Lieu #%s « %s » : coordonnées géocodées et sauvées", venue.id, venue.name)
     return True
 
 

@@ -44,6 +44,10 @@ from .conflicts import (
     validate_transport_window,
 )
 from .maps import estimate_travel, geocode_address
+
+import logging as _logging
+
+_geo_logger = _logging.getLogger('inventory.serializers.geocodage')
 from .rich_text import clean_notes
 from .models import (
     Material,
@@ -265,7 +269,14 @@ class VenueSerializer(serializers.ModelSerializer):
             and self.instance.latitude is not None
             and self.instance.longitude is not None
         )
-        if not coords_typed and address.strip() and (address_changed or not has_coords):
+        declenche = not coords_typed and bool(address.strip()) and (address_changed or not has_coords)
+        _geo_logger.info(
+            "Fiche Lieu %s : géocodage %s (coords_typed=%s, adresse=%s, address_changed=%s, has_coords=%s)",
+            getattr(self.instance, 'id', 'nouvelle'),
+            "déclenché" if declenche else "non déclenché",
+            coords_typed, "oui" if address.strip() else "non", address_changed, has_coords,
+        )
+        if declenche:
             geocoded = geocode_address(address)
             if geocoded is not None:
                 attrs['latitude'] = geocoded['latitude']
