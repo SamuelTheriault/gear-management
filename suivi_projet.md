@@ -80,16 +80,18 @@ modèle backend) : voir « Points de vigilance ».
 | 20 | Correctif de renvoi `schema.md`/`architecture.md` (section 12 → 9 pour `transport_materials`) + tests des filtres `?show`/`?material`/`?technician` (`ShowMaterialViewSet`/`ShowTechnicianViewSet`/`TransportViewSet`) et `?project=` (`TransportViewSet`), jusqu'ici sans couverture | ✅ Mergée dans `main` (PR #25) et déployée. 8 tests ajoutés (`QueryParamFilterAPITests`), suite à 401 tests, flake8 propre, aucune migration | 2026-08-05 |
 | 21 | Lot du 2026-08-05 soir : corrections d'affichage + `touched_shows`, détachement de tournée à la suppression d'un spectacle (`transport_detach.py`), ordre des lieux réordonnable (migration `0027`), Parcours Technicien complet, pincer pour zoomer + ⌘0, notes en texte riche (nh3/TipTap), garde-fou « quitter en cours d'édition » | ✅ Commitée, mergée dans `main` (PR #27) et déployée le 2026-08-06 — migration `0027` appliquée en prod, `nh3`/TipTap installés au build. Inclut les correctifs de relecture (XSS des imports, réancrage, garde-fou de navigation) | 2026-08-06 |
 | 22 | Points non bloquants de la relecture de l'étape 21 : atomicité, reorder, listes allégées (`dc25a46`) | ✅ Mergée dans `main` (PR #28) et déployée — Railway SUCCESS 2026-08-06 20 h 52 (`a28bc20`) | 2026-08-06 |
+| 23 | Travaux transport, chantier 1 : `Transport.project` direct + spectacle desservi OPTIONNEL (migration `0028`, « — Aucun spectacle — »), formulaire clarifié (« Spectacle desservi (arrivée) », liste filtrée par lieu d'arrivée), `transport_detach` révisé (détachement au lieu de suppression), correctif suppression de projet | 🔶 Prêt sur `feature/transport-show-optionnel` (454 tests + flake8, Playwright OK) — PR à ouvrir/merger, migration `0028` au déploiement | 2026-08-06 |
 
 ## Prochaine action concrète
 
-**Travaux sur le module transport** (décision de Samuel, 2026-08-06 soir) :
-au moins deux volets — suggestion d'ordre optimal des arrêts d'une tournée
-(Google Routes, en respectant chargement avant déchargement) + un second
-volet à cadrer avec Samuel. Partir d'une branche fraîche depuis `main`
-GitHub (`a28bc20`) — faire `git pull` du `main` local d'abord (en retard
-d'un merge). Rattraper aussi la doc de référence sur le lot 21 (voir Points
-de vigilance).
+**Merger le chantier 1 transport** (`feature/transport-show-optionnel`,
+prêt : 454 tests + flake8, migration `0028` à appliquer au déploiement) puis
+enchaîner les chantiers cadrés avec Samuel : **2. entité Camion** (fiche
+réservation/contrat/notes, camion par défaut par projet, tournée assignée
+avec conflit d'horaire, km estimé via distances par segment) et **3. ordre
+des arrêts optimisé** (premier arrêt fixe, précédences
+chargement<déchargement). Rattraper aussi la doc de référence sur le lot 21
+(voir Points de vigilance).
 
 ## Points de vigilance
 
