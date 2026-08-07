@@ -115,6 +115,9 @@ const navItems = [
   { label: 'Spectacles', to: '/spectacles' },
   { label: 'Lieux', to: '/lieux' },
   { label: 'Techniciens', to: '/techniciens' },
+  // Camions (chantier Camion, 2026-08-06) : la flotte du projet, chaque
+  // tournée étant assignée à un camion.
+  { label: 'Camions', to: '/camions' },
 ]
 
 const bottomNavItems = [

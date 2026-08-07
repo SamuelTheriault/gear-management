@@ -41,6 +41,14 @@ import { useChipFilter } from '../composables/useChipFilter'
  * le spectacle desservi est le spectacle d'ARRIVÉE s'il se joue au lieu
  * d'arrivée, de DÉPART s'il se joue au lieu de départ, sinon les deux bouts
  * sont déduits autour de sa fenêtre.
+ *
+ * Formulaire clarifié (2026-08-06, demande de Samuel) : le champ spectacle
+ * s'appelle « Spectacle desservi (arrivée) », la liste est FILTRÉE selon le
+ * lieu d'arrivée choisi (lieu normal → seuls ses spectacles, zéro
+ * incohérence spectacle/lieu ; entrepôt ou rien → tous), et l'option
+ * « — Aucun spectacle — » couvre les retours d'entrepôt et la logistique
+ * (`Transport.show` nullable + FK `project` directe, migration 0028 — le
+ * payload envoie toujours `project`).
  */
 
 const { activeProjectId } = useActiveProject()
@@ -146,7 +154,7 @@ const dayOptions = computed(() => {
     .map(([label]) => label)
 })
 
-const showOptions = computed(() => [...new Set(decorated.value.map((t) => t.show_title))])
+const showOptions = computed(() => [...new Set(decorated.value.map((t) => t.show_title ?? 'Aucun spectacle'))])
 const techOptions = computed(() => {
   // Un déplacement pouvant mobiliser plusieurs personnes, chacune devient une
   // option de filtre à part entière.
@@ -189,7 +197,7 @@ const filtered = computed(() =>
   decorated.value.filter(
     (t) =>
       dayFilter.passes(t.day) &&
-      showFilter.passes(t.show_title) &&
+      showFilter.passes(t.show_title ?? 'Aucun spectacle') &&
       statusFilter.passes(t.status) &&
       techMatches(t),
   ),
@@ -200,7 +208,7 @@ const groups = computed(() => {
   const order = []
   const byKey = {}
   filtered.value.forEach((t) => {
-    const k = t[key]
+    const k = t[key] ?? 'Aucun spectacle'
     if (!byKey[k]) {
       byKey[k] = []
       order.push(k)
@@ -214,11 +222,38 @@ const groups = computed(() => {
 
 const shows = ref([])
 const venues = ref([])
+// Sentinelle du <select> pour « — Aucun spectacle — » ('' reste le
+// placeholder « choisis ») — envoyée comme show: null à l'API.
+const NO_SHOW = 'none'
 const form = ref({
   show: '',
   origin_venue: '',
   destination_venue: '',
   scheduled_datetime: '',
+})
+
+// Spectacles proposés : filtrés selon le lieu d'ARRIVÉE choisi (2026-08-06,
+// demande de Samuel — le spectacle desservi est celui de l'arrivée, un
+// spectacle d'une autre salle serait une incohérence). Un entrepôt à
+// l'arrivée (retour) ou aucun lieu choisi → liste complète.
+const selectableShows = computed(() => {
+  const destId = form.value.destination_venue
+  if (!destId) return shows.value
+  const dest = venues.value.find((v) => v.id === destId)
+  if (!dest || dest.is_storage) return shows.value
+  return shows.value.filter((s) => s.venue === destId)
+})
+
+// Changer le lieu d'arrivée peut invalider le spectacle déjà choisi : on le
+// vide plutôt que d'envoyer une incohérence (l'option « Aucun » survit).
+watch(selectableShows, (liste) => {
+  if (
+    form.value.show &&
+    form.value.show !== NO_SHOW &&
+    !liste.some((s) => s.id === form.value.show)
+  ) {
+    form.value.show = ''
+  }
 })
 const formError = ref(null)
 const fieldErrors = ref({ show: false, origin_venue: false, destination_venue: false, scheduled_datetime: false })
@@ -270,6 +305,8 @@ const referenceShows = computed(() => {
   // Même règle que le backend depuis le retrait de `transport_type`
   // (2026-08-04, voir get_transport_reference_shows) : c'est le LIEU du
   // spectacle desservi qui dit s'il est le bout d'arrivée ou de départ.
+  // « Aucun spectacle » : pas de bornes à déduire (le backend n'en impose
+  // aucune non plus).
   const show = shows.value.find((s) => s.id === form.value.show)
   if (!show) return { departureShow: null, arrivalShow: null }
   if (form.value.destination_venue && show.venue === form.value.destination_venue) {
@@ -337,7 +374,10 @@ async function submitTransport(force = false) {
     // origin/destination de l'API (2026-08-04) — les arrêts intermédiaires
     // s'ajoutent ensuite sur la fiche.
     await api.post('/transports/', {
-      show: form.value.show,
+      // « Aucun spectacle » → show: null ; `project` est toujours envoyé —
+      // obligatoire sans spectacle, déduit/verrouillé sinon (migration 0028).
+      project: activeProjectId.value,
+      show: form.value.show === NO_SHOW ? null : form.value.show,
       status: 'confirmed',
       origin_venue: form.value.origin_venue,
       destination_venue: form.value.destination_venue,
@@ -458,7 +498,7 @@ async function submitTransport(force = false) {
               </div>
               <div class="transport-row__route">
                 <div class="transport-row__codes" :title="t.routeFull">{{ t.routeCodes }}</div>
-                <div class="transport-row__show">{{ t.show_title }}</div>
+                <div class="transport-row__show">{{ t.show_title ?? 'Aucun spectacle' }}</div>
               </div>
               <div class="transport-row__time">
                 <div class="transport-row__time-main">{{ t.timeLabel }}</div>
@@ -497,15 +537,20 @@ async function submitTransport(force = false) {
         </div>
         <div class="add-form__row">
           <label class="add-form__field">
-            <span class="add-form__label">Spectacle</span>
+            <!-- Libellé explicite (2026-08-06, demande de Samuel) : le
+                 spectacle sélectionné est celui de l'ARRIVÉE de la tournée.
+                 Liste filtrée selon le lieu d'arrivée (voir selectableShows),
+                 option « Aucun » pour les retours/logistique. -->
+            <span class="add-form__label">Spectacle desservi (arrivée)</span>
             <select
               v-model="form.show"
               class="add-form__input"
               :class="{ 'add-form__input--error': fieldErrors.show }"
               @change="fieldErrors.show = false"
             >
-              <option value="" disabled>Spectacle…</option>
-              <option v-for="s in shows" :key="s.id" :value="s.id">{{ s.display_title }}</option>
+              <option value="" disabled>Spectacle desservi…</option>
+              <option :value="NO_SHOW">— Aucun spectacle —</option>
+              <option v-for="s in selectableShows" :key="s.id" :value="s.id">{{ s.display_title }}</option>
             </select>
           </label>
           <label class="add-form__field">
@@ -555,7 +600,9 @@ async function submitTransport(force = false) {
             + Ajouter
           </div>
         </div>
-        <div v-if="fieldErrors.show" class="add-form__error">Choisis un spectacle.</div>
+        <div v-if="fieldErrors.show" class="add-form__error">
+          Choisis le spectacle desservi — ou « Aucun spectacle » pour un retour/déplacement logistique.
+        </div>
         <div v-if="fieldErrors.origin_venue || fieldErrors.destination_venue" class="add-form__error">
           Choisis les lieux de départ et d'arrivée.
         </div>

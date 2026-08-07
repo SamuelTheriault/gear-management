@@ -200,6 +200,20 @@ Samuel travaille en parallèle sur plusieurs productions qui n'ont rien en commu
 - **Suppression** (révisée le 2026-08-04 — jusque-là volontairement non implémentée) : les FK `project` de `Venue`, `MaterialCategory`, `Material`, `Show` et `Technician` sont passées de `on_delete=PROTECT` à `on_delete=CASCADE` (migration `0026_project_cascade_delete`, `AlterField` pur). Supprimer une `Project` efface donc désormais toute la production. `ProjectViewSet.destroy` (`owner_only_actions`, voir section 3bis) ne peut pas se contenter d'un `project.delete()` nu : trois autres FK du modèle restent volontairement en `PROTECT` (`Show.venue`, `TransportStop.venue`, `Material.category`), et Django les évalue indépendamment du fait que l'objet protégé soit lui-même promis à la suppression par un chemin `CASCADE` dans le même appel — un `project.delete()` direct lève donc un `ProtectedError` (500 non catché) dès qu'un lieu a des spectacles ou qu'une catégorie a du matériel, ce qui couvre presque tout projet réel. Contourné en supprimant d'abord ce qui protège, dans une transaction : les `Show` du projet (cascade déjà `Transport`/`TransportStop`/`TransportMaterial`/`ShowMaterial`/`ShowTechnician`, ce qui lève la protection sur `Venue`), puis `Material.category` mis à `null` pour le projet (lève la protection sur `MaterialCategory`) — `project.delete()` peut alors cascader `Venue`/`Material`/`MaterialCategory`/`Technician` sans plus rien qui bloque. La voie normale pour retirer une production terminée reste de l'archiver (`status='archived'`), pas de la supprimer — la suppression est irréversible, sans corbeille ; le frontend (`ProjetDetailView.vue`) exige de retaper le nom du projet avant d'activer le bouton, comme friction supplémentaire côté UI.
 - **Duplication pour une nouvelle édition** (décision du 2026-07-19, voir `inventory/duplication.py`) : `POST /api/projects/{id}/duplicate/` copie `venues`, `materials` (hiérarchie parent/enfant remappée vers les nouvelles lignes) et `technicians` vers un nouveau projet — **jamais** `shows`/`show_materials`/`show_technicians`/`transports` (une nouvelle édition a son propre calendrier, pas celui de la précédente). Le nouveau projet reprend `client_name` du projet source par défaut (surchargeable dans la requête) ; `notes`, `start_date`, `end_date` et `status` repartent à leurs valeurs par défaut (`status='active'`), quel que soit l'état du projet source. Réponse : `{'project': {...}, 'copied': {'venues': n, 'materials': n, 'technicians': n}}`. Opération atomique (tout ou rien) ; le projet source n'est jamais modifié.
 
+**Spectacle desservi optionnel (2026-08-06, migration `0028`)** : `Transport`
+porte une FK `project` directe et son `show` est nullable — décision de
+Samuel (« — Aucun spectacle — » au formulaire de création, l'étiquette
+précisant que le spectacle sélectionné est celui de l'ARRIVÉE, et la liste
+filtrée sur les spectacles du lieu d'arrivée choisi — un entrepôt à
+l'arrivée propose tout). Sans spectacle : aucune borne départ/arrivée, pas
+de couverture autogen, `show_title: null` côté API. `transport_detach`
+révisé : sans candidat de réancrage, la tournée survit « sans spectacle »
+au lieu d'être supprimée (catégorie `transports_detached` de
+`deletion_impact`) ; la suppression ne reste que pour une séquence < 2
+arrêts, désormais explicite (SET_NULL ne cascade pas). La suppression de
+projet purge les tournées AVANT les spectacles (protection
+`TransportStop.venue`).
+
 ## 4quinquies. Module transport — cohérence des emplacements (décision du 2026-07-24)
 
 Complément à la détection de conflits (section 4) : là où celle-ci vérifie les chevauchements d'horaire (capacité matériel, techniciens), ce module vérifie la cohérence **spatiale** du matériel dans le temps. Deux questions posées par Samuel :

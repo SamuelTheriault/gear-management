@@ -32,6 +32,19 @@ def _project_of_show(show_id):
     return show.project if show else None
 
 
+def _regenerate_for_project_id(project_id):
+    """Régénère les propositions du projet `project_id`, sauf si une
+    régénération est déjà en cours — pendant de `_regenerate_for_show` pour
+    les tournées, qui portent une FK `project` directe depuis le 2026-08-06
+    (leur `show` est devenu optionnel)."""
+    if is_regenerating() or project_id is None:
+        return
+    from .models import Project
+    project = Project.objects.filter(id=project_id).first()
+    if project is not None:
+        regenerate_project_proposals(project)
+
+
 def _regenerate_for_show(show_id):
     """Régénère les propositions du projet du spectacle `show_id`, sauf si une
     régénération est déjà en cours (garde de réentrance)."""
@@ -58,7 +71,7 @@ def _on_transport_change(instance, **kwargs):
     gérées par la régénération (et neutralisées par la garde de réentrance)."""
     if instance.status != Transport.STATUS_CONFIRMED:
         return
-    _regenerate_for_show(instance.show_id)
+    _regenerate_for_project_id(instance.project_id)
 
 
 @receiver(post_save, sender=TransportMaterial)
@@ -71,10 +84,10 @@ def _on_transport_material_change(instance, **kwargs):
     la couverture correcte)."""
     if is_regenerating():
         return
-    transport = Transport.objects.filter(id=instance.transport_id).select_related('show__project').first()
+    transport = Transport.objects.filter(id=instance.transport_id).first()
     if transport is None or transport.status != Transport.STATUS_CONFIRMED:
         return
-    _regenerate_for_show(transport.show_id)
+    _regenerate_for_project_id(transport.project_id)
 
 
 @receiver(post_save, sender=TransportStop)
@@ -88,10 +101,10 @@ def _on_transport_stop_change(instance, **kwargs):
     `TransportMaterial` ci-dessus."""
     if is_regenerating():
         return
-    transport = Transport.objects.filter(id=instance.transport_id).select_related('show__project').first()
+    transport = Transport.objects.filter(id=instance.transport_id).first()
     if transport is None or transport.status != Transport.STATUS_CONFIRMED:
         return
-    _regenerate_for_show(transport.show_id)
+    _regenerate_for_project_id(transport.project_id)
 
 
 @receiver(post_save, sender=Show)

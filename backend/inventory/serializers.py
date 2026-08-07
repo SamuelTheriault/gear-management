@@ -24,6 +24,8 @@ vérification.
 
 from datetime import timedelta
 
+from django.utils import timezone as django_timezone
+
 from dj_rest_auth.serializers import UserDetailsSerializer
 from rest_framework import serializers
 
@@ -32,14 +34,16 @@ from .conflicts import (
     get_technician_conflicts,
     get_transport_conflicts,
     get_transport_reference_shows,
+    get_truck_conflicts,
     get_venue_conflicts,
     serialize_material_conflict,
     serialize_reference_show,
     serialize_technician_conflict,
+    serialize_truck_conflict,
     serialize_venue_conflict,
     validate_transport_window,
 )
-from .maps import estimate_travel_minutes
+from .maps import estimate_travel
 from .rich_text import clean_notes
 from .models import (
     Material,
@@ -55,6 +59,7 @@ from .models import (
     TransportMaterial,
     TransportStop,
     TransportTechnician,
+    Truck,
     User,
     Venue,
 )
@@ -121,7 +126,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             'materials': obj.materials.count(),
             'technicians': obj.technicians.count(),
             'shows': obj.shows.count(),
-            'transports': Transport.objects.filter(show__project=obj).count(),
+            'transports': Transport.objects.filter(project=obj).count(),
         }
 
 
@@ -573,20 +578,23 @@ class ShowSerializer(serializers.ModelSerializer):
         `transports` ne compte que les déplacements qui DISPARAÎTRAIENT ;
         `transports_shortened` ceux qui survivraient, amputés de l'arrêt de ce
         lieu et du matériel qui y est manipulé (2026-08-05, voir
-        `transport_detach.py`). Avant cette distinction, la confirmation
-        annonçait la suppression de tournées qui, en réalité, desservent aussi
-        d'autres salles.
+        `transport_detach.py`) ; `transports_detached` (2026-08-06) ceux qui
+        survivraient SANS spectacle (aucun candidat de réancrage — `show`
+        est devenu optionnel, migration 0028). Avant ces distinctions, la
+        confirmation annonçait la suppression de tournées qui, en réalité,
+        desservent aussi d'autres salles.
         """
         from .transport_detach import plan_show_deletion
 
         if _en_liste(self):
             return None
-        supprimes, raccourcis = plan_show_deletion(obj)
+        supprimes, raccourcis, detachees = plan_show_deletion(obj)
         return {
             'materials': obj.show_materials.count(),
             'technicians': obj.show_technicians.count(),
             'transports': len(supprimes),
             'transports_shortened': len(raccourcis),
+            'transports_detached': len(detachees),
         }
 
     def validate(self, attrs):
@@ -899,6 +907,58 @@ class ShowTechnicianSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class TruckSerializer(serializers.ModelSerializer):
+    """Sérialise un camion de production (voir `Truck`, models.py —
+    chantier Camion du 2026-08-06).
+
+    `estimated_km` : somme des distances des segments des tournées CONFIRMÉES
+    du camion (« km estimé calculé selon les trajets Google Maps approuvés »,
+    demande de Samuel), arrondie au dixième. `km_is_partial` signale des
+    segments sans distance connue (lieux sans GPS, durée saisie à la main) —
+    l'affichage doit alors dire « au moins X km ». `transport_count` sert à
+    la garde de suppression côté frontend (PROTECT côté modèle).
+    """
+
+    project_name = serializers.CharField(source='project.name', read_only=True)
+    estimated_km = serializers.SerializerMethodField()
+    km_is_partial = serializers.SerializerMethodField()
+    transport_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Truck
+        fields = [
+            'id', 'project', 'project_name', 'name',
+            'reservation_start', 'reservation_end',
+            'reservation_number', 'contract_number', 'notes',
+            'estimated_km', 'km_is_partial', 'transport_count',
+        ]
+
+    def validate_notes(self, value):
+        """Assainit le HTML des notes — même règle que les autres fiches."""
+        return clean_notes(value)
+
+    def validate(self, attrs):
+        """La période de réservation doit être dans le bon sens."""
+        start = attrs.get('reservation_start', getattr(self.instance, 'reservation_start', None))
+        end = attrs.get('reservation_end', getattr(self.instance, 'reservation_end', None))
+        if start and end and end < start:
+            raise serializers.ValidationError({
+                'reservation_end': "Doit être après le début de la réservation.",
+            })
+        return attrs
+
+    def get_estimated_km(self, obj):
+        meters, _missing = obj.estimated_distance()
+        return round(meters / 1000, 1)
+
+    def get_km_is_partial(self, obj):
+        _meters, missing = obj.estimated_distance()
+        return missing > 0
+
+    def get_transport_count(self, obj):
+        return obj.transports.count()
+
+
 class TransportStopSerializer(serializers.ModelSerializer):
     """Sérialise un arrêt de tournée (voir `TransportStop`, models.py —
     tournées multi-arrêts du 2026-08-04).
@@ -921,11 +981,14 @@ class TransportStopSerializer(serializers.ModelSerializer):
         model = TransportStop
         fields = [
             'id', 'venue', 'venue_name', 'venue_code', 'is_storage', 'order',
-            'travel_minutes_from_previous', 'arrival_datetime',
+            'travel_minutes_from_previous', 'travel_distance_meters', 'arrival_datetime',
         ]
         extra_kwargs = {
             'order': {'read_only': True},
             'travel_minutes_from_previous': {'required': False},
+            # La distance n'est jamais saisie : remplie par Google Routes en
+            # même temps que la durée (2026-08-06, km estimé du camion).
+            'travel_distance_meters': {'read_only': True},
         }
 
 
@@ -1026,9 +1089,13 @@ class TransportSerializer(serializers.ModelSerializer):
     technicians = TransportTechnicianSerializer(
         many=True, source='transport_technicians', required=False,
     )
-    # `show` (« desservi » par ce transport) peut être n'importe quel Show, blocs
-    # compris — `display_title` plutôt que `title` (2026-08-02, voir `Show.display_title`).
-    show_title = serializers.CharField(source='show.display_title', read_only=True)
+    # `show` (« desservi » par ce transport — l'ARRIVÉE de la tournée) peut
+    # être n'importe quel Show, blocs compris — `display_title` plutôt que
+    # `title` (2026-08-02, voir `Show.display_title`). OPTIONNEL depuis le
+    # 2026-08-06 (« Aucun spectacle » — retours d'entrepôt, logistique) :
+    # `show_title` vaut alors None, et `project` (FK directe) porte seul
+    # l'isolation par projet.
+    show_title = serializers.CharField(source='show.display_title', read_only=True, default=None)
     # Lecture : lieux dérivés des premier/dernier arrêts (propriétés du
     # modèle). Écriture : chemin de compat ancien contrat — voir docstring.
     origin_venue = serializers.PrimaryKeyRelatedField(
@@ -1050,6 +1117,14 @@ class TransportSerializer(serializers.ModelSerializer):
     estimated_duration_minutes = serializers.IntegerField(
         source='total_duration_minutes', read_only=True,
     )
+    # Camion (2026-08-06, chantier 2) : chaque tournée en a un — défaut à la
+    # création = premier camion du projet (voir validate). Conflit d'horaire
+    # entre tournées du même camion : bloquant + `force`, comme les
+    # techniciens ; `truck_reservation_warning` est, lui, un simple
+    # AVERTISSEMENT (tournée hors de la période de réservation).
+    truck_name = serializers.CharField(source='truck.name', read_only=True, default='')
+    has_truck_conflict = serializers.SerializerMethodField()
+    truck_reservation_warning = serializers.SerializerMethodField()
     # Noms des techniciens affectés, à plat — évite au frontend de recomposer
     # la chaîne d'affichage à partir de `technicians` dans chaque liste.
     technician_names = serializers.SerializerMethodField()
@@ -1089,8 +1164,13 @@ class TransportSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Transport
+        # `project` : optionnel à l'écriture quand `show` est fourni (déduit
+        # du spectacle et verrouillé sur lui) ; obligatoire pour une tournée
+        # « sans spectacle » — voir validate().
+        extra_kwargs = {'project': {'required': False}, 'truck': {'required': False}}
         fields = [
-            'id', 'show', 'show_title', 'status', 'stops',
+            'id', 'project', 'show', 'show_title', 'status', 'stops',
+            'truck', 'truck_name', 'has_truck_conflict', 'truck_reservation_warning',
             'origin_venue', 'origin_venue_name', 'origin_venue_code',
             'destination_venue', 'destination_venue_name', 'destination_venue_code',
             'scheduled_datetime', 'estimated_duration_minutes', 'effective_end',
@@ -1137,7 +1217,7 @@ class TransportSerializer(serializers.ModelSerializer):
         arrets = list(obj.stops.select_related('venue').order_by('order'))
         if not arrets:
             return []
-        window_start, window_end = get_project_window(obj.show.project)
+        window_start, window_end = get_project_window(obj.project)
 
         groupes = []
         deja_vus = set()
@@ -1188,6 +1268,46 @@ class TransportSerializer(serializers.ModelSerializer):
         )
         return serialize_reference_show(arrival_show)
 
+    def get_has_truck_conflict(self, obj):
+        """True si une autre tournée confirmée du même camion chevauche
+        celle-ci — indicateur d'affichage, la validation bloquante vit dans
+        `validate` (même pattern que `has_technician_conflict`).
+
+        `None` en liste (budget de requêtes constant — voir
+        `ListQueryBudgetTests`) : la vérification interroge les tournées du
+        camion, une requête par ligne. Seule la fiche affiche cet indicateur ;
+        l'écran Conflits passe par le rapport project-wide, déjà groupé."""
+        if _en_liste(self):
+            return None
+        if obj.scheduled_datetime is None or obj.truck_id is None:
+            return False
+        return bool(get_truck_conflicts(
+            obj.scheduled_datetime, obj.total_duration_minutes, obj.truck, exclude_id=obj.id,
+        ))
+
+    def get_truck_reservation_warning(self, obj):
+        """Message si la tournée sort de la période de réservation du camion
+        (bornes de dates inclusives), `None` sinon. Non bloquant — décision de
+        Samuel : c'est un rappel logistique, pas une règle d'horaire."""
+        truck = obj.truck if obj.truck_id is not None else None
+        if truck is None or obj.scheduled_datetime is None:
+            return None
+        if truck.reservation_start is None and truck.reservation_end is None:
+            return None
+        depart = django_timezone.localdate(obj.scheduled_datetime)
+        fin = django_timezone.localdate(obj.effective_end) if obj.effective_end else depart
+        if truck.reservation_start and depart < truck.reservation_start:
+            return (
+                f"Cette tournée démarre avant la réservation du camion "
+                f"« {truck.name} » ({truck.reservation_start:%Y-%m-%d})."
+            )
+        if truck.reservation_end and fin > truck.reservation_end:
+            return (
+                f"Cette tournée se termine après la fin de la réservation du camion "
+                f"« {truck.name} » ({truck.reservation_end:%Y-%m-%d})."
+            )
+        return None
+
     def get_has_technician_conflict(self, obj):
         """True si AU MOINS UN des techniciens affectés est en conflit d'horaire
         sur ce déplacement (pour l'indicateur orange). False si aucun technicien
@@ -1225,7 +1345,7 @@ class TransportSerializer(serializers.ModelSerializer):
 
         if stops_data is not None:
             plan = [
-                {'venue': s['venue'], 'travel': s.get('travel_minutes_from_previous')}
+                {'venue': s['venue'], 'travel': s.get('travel_minutes_from_previous'), 'distance': None}
                 for s in stops_data
             ]
             return plan, True
@@ -1245,8 +1365,8 @@ class TransportSerializer(serializers.ModelSerializer):
                     })
                 return (
                     [
-                        {'venue': legacy_origin, 'travel': 0},
-                        {'venue': legacy_destination, 'travel': legacy_duration},
+                        {'venue': legacy_origin, 'travel': 0, 'distance': None},
+                        {'venue': legacy_destination, 'travel': legacy_duration, 'distance': None},
                     ],
                     True,
                 )
@@ -1258,7 +1378,7 @@ class TransportSerializer(serializers.ModelSerializer):
             # un lieu renvoyé identique (l'ancienne fiche renvoie tout le
             # formulaire) ne réestime rien.
             plan = [
-                {'venue': s.venue, 'travel': s.travel_minutes_from_previous}
+                {'venue': s.venue, 'travel': s.travel_minutes_from_previous, 'distance': s.travel_distance_meters}
                 for s in current_stops
             ]
             if plan:
@@ -1266,18 +1386,18 @@ class TransportSerializer(serializers.ModelSerializer):
                     legacy_origin_given and legacy_origin is not None
                     and legacy_origin.id != plan[0]['venue'].id
                 ):
-                    plan[0] = {'venue': legacy_origin, 'travel': 0}
+                    plan[0] = {'venue': legacy_origin, 'travel': 0, 'distance': None}
                     if len(plan) > 1:
-                        plan[1] = {'venue': plan[1]['venue'], 'travel': None}
+                        plan[1] = {'venue': plan[1]['venue'], 'travel': None, 'distance': None}
                 if (
                     legacy_destination_given and legacy_destination is not None
                     and legacy_destination.id != plan[-1]['venue'].id
                 ):
-                    plan[-1] = {'venue': legacy_destination, 'travel': None}
+                    plan[-1] = {'venue': legacy_destination, 'travel': None, 'distance': None}
             return plan, True
 
         plan = [
-            {'venue': s.venue, 'travel': s.travel_minutes_from_previous}
+            {'venue': s.venue, 'travel': s.travel_minutes_from_previous, 'distance': s.travel_distance_meters}
             for s in current_stops
         ]
         return plan, False
@@ -1310,13 +1430,17 @@ class TransportSerializer(serializers.ModelSerializer):
         })
 
     def _resolve_travel_times(self, plan, dirty):
-        """Complète les durées de segment manquantes du plan.
+        """Complète les durées (et distances) de segment manquantes du plan.
 
-        Premier arrêt : toujours 0. Segment inchangé (même couple de lieux à
-        la même position qu'avant) : garde sa durée actuelle — même règle que
-        l'ancienne non-réestimation sur un PATCH sans rapport (revue de code
-        du 2026-07-18). Sinon : estimation Google Routes, repli sur le défaut
-        de `Settings`.
+        Premier arrêt : toujours 0 (et pas de distance). Segment inchangé
+        (même couple de lieux à la même position qu'avant) : garde sa durée
+        ET sa distance actuelles — même règle que l'ancienne non-réestimation
+        sur un PATCH sans rapport (revue de code du 2026-07-18). Sinon :
+        estimation Google Routes (durée + distance dans le même appel, voir
+        `maps.estimate_travel` — la distance alimente le km estimé du camion,
+        2026-08-06), repli sur le défaut de `Settings` (durée seulement, la
+        distance reste inconnue : `Truck.estimated_distance` la signale
+        plutôt que de compter 0).
         """
         if not dirty:
             return
@@ -1324,22 +1448,40 @@ class TransportSerializer(serializers.ModelSerializer):
         for i, p in enumerate(plan):
             if i == 0:
                 p['travel'] = 0
+                p['distance'] = None
                 continue
-            if p['travel'] is not None:
-                continue
-            if (
+            pair_unchanged = (
                 i < len(current_stops)
                 and current_stops[i - 1].venue_id == plan[i - 1]['venue'].id
                 and current_stops[i].venue_id == p['venue'].id
-            ):
-                p['travel'] = current_stops[i].travel_minutes_from_previous
+            )
+            if p['travel'] is not None:
+                # Durée explicite : on la respecte (pause dîner, détour
+                # prévu…). La distance, elle, ne dépend que des lieux : couple
+                # inchangé → on garde celle en base ; couple changé sans
+                # distance connue → un appel Routes remplit la distance SEULE
+                # (les minutes de l'utilisateur restent intactes) — corrigé le
+                # 2026-08-07 (chantier 3) : avant, ce cas laissait la distance
+                # à NULL et trouait le km estimé du camion.
+                if pair_unchanged:
+                    p['distance'] = current_stops[i].travel_distance_meters
+                elif p.get('distance') is None:
+                    estimated = estimate_travel(plan[i - 1]['venue'], p['venue'])
+                    p['distance'] = estimated['meters'] if estimated else None
                 continue
-            estimated = estimate_travel_minutes(plan[i - 1]['venue'], p['venue'])
+            if pair_unchanged:
+                p['travel'] = current_stops[i].travel_minutes_from_previous
+                p['distance'] = current_stops[i].travel_distance_meters
+                continue
+            estimated = estimate_travel(plan[i - 1]['venue'], p['venue'])
             if estimated is None:
-                estimated = Settings.load().default_transport_duration_minutes
-            p['travel'] = estimated
+                p['travel'] = Settings.load().default_transport_duration_minutes
+                p['distance'] = None
+            else:
+                p['travel'] = estimated['minutes']
+                p['distance'] = estimated['meters']
 
-    def _normalized_material_lines(self, material_lines, plan, show):
+    def _normalized_material_lines(self, material_lines, plan, project):
         """Valide et normalise les lignes de matériel en dicts
         `{'material', 'quantity', 'load': index, 'unload': index}`.
 
@@ -1355,7 +1497,7 @@ class TransportSerializer(serializers.ModelSerializer):
         seen = set()
         for line in material_lines:
             material = line['material']
-            if show is not None and not _same_project(show, material):
+            if not _same_project(project, material):
                 raise serializers.ValidationError({
                     'materials': f"Le matériel « {material.name} » appartient à un autre projet que le déplacement.",
                 })
@@ -1404,6 +1546,42 @@ class TransportSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         show = attrs.get('show', getattr(self.instance, 'show', None))
+
+        # Résolution du PROJET (2026-08-06, `show` optionnel — migration
+        # 0028) : avec un spectacle, le projet est LE SIEN (fourni différent
+        # → erreur, absent → déduit) ; sans spectacle, `project` devient
+        # obligatoire — c'est lui qui porte l'isolation par projet.
+        project = attrs.get('project', getattr(self.instance, 'project', None))
+        if show is not None:
+            if project is not None and project.id != show.project_id:
+                raise serializers.ValidationError({
+                    'project': "Doit être le projet du spectacle desservi (ou laisse le champ vide, il est déduit).",
+                })
+            project = show.project
+        if project is None:
+            raise serializers.ValidationError({
+                'project': (
+                    "Une tournée sans spectacle doit indiquer sa production "
+                    "(champ `project`)."
+                ),
+            })
+        attrs['project'] = project
+
+        # Camion (2026-08-06) : défaut = premier camion du projet (chaque
+        # projet en reçoit un à sa création — signals.creer_camion_par_defaut
+        # et migration 0029), même projet exigé sinon.
+        truck = attrs.get('truck', getattr(self.instance, 'truck', None))
+        if truck is None:
+            truck = project.trucks.order_by('id').first()
+            if truck is None:
+                raise serializers.ValidationError({
+                    'truck': "Ce projet n'a aucun camion — crée-en un dans l'écran Camions.",
+                })
+        elif not _same_project(project, truck):
+            raise serializers.ValidationError({
+                'truck': f"Le camion « {truck.name} » appartient à un autre projet.",
+            })
+        attrs['truck'] = truck
 
         # Durée envoyée par l'ancien contrat (le champ déclaré est en lecture
         # seule — la valeur se lit dans le payload brut). Ignorée si `stops`
@@ -1465,13 +1643,14 @@ class TransportSerializer(serializers.ModelSerializer):
                 'scheduled_datetime': "Obligatoire pour un déplacement confirmé (heure prévue du déplacement).",
             })
 
-        # Isolation par projet (voir Project, models.py) : le spectacle, tous
-        # les lieux d'arrêt et les techniciens/matériel fournis doivent
-        # appartenir au même projet.
+        # Isolation par projet (voir Project, models.py) : tous les lieux
+        # d'arrêt et les techniciens/matériel fournis doivent appartenir au
+        # même projet que la tournée — comparés à `project` (FK directe),
+        # plus au spectacle, qui peut être absent (2026-08-06).
         for p in plan:
-            if not _same_project(show, p['venue']):
+            if not _same_project(project, p['venue']):
                 raise serializers.ValidationError(
-                    "Le spectacle et les lieux d'un déplacement doivent tous appartenir au même projet."
+                    "Les lieux d'un déplacement doivent tous appartenir au même projet que la tournée."
                 )
 
         # Techniciens affectés (écriture imbriquée, plusieurs possibles depuis
@@ -1482,7 +1661,7 @@ class TransportSerializer(serializers.ModelSerializer):
             seen_technician_ids = set()
             for line in technician_lines:
                 technician = line['technician']
-                if show is not None and not _same_project(show, technician):
+                if not _same_project(project, technician):
                     raise serializers.ValidationError({
                         'technicians': (
                             f"Le technicien « {technician.name} » appartient à un autre "
@@ -1508,7 +1687,7 @@ class TransportSerializer(serializers.ModelSerializer):
         # overridable par `force`).
         material_lines = attrs.pop('transport_materials', None)
         if material_lines is not None:
-            attrs['_material_lines'] = self._normalized_material_lines(material_lines, plan, show)
+            attrs['_material_lines'] = self._normalized_material_lines(material_lines, plan, project)
         elif self.instance is not None and stops_dirty:
             # La séquence change sans que les lignes soient refournies : les
             # lignes existantes doivent encore pointer des arrêts valides —
@@ -1563,6 +1742,24 @@ class TransportSerializer(serializers.ModelSerializer):
                     ),
                 })
 
+        # Conflit de CAMION (2026-08-06, décision de Samuel : même règle que
+        # les techniciens) : le camion ne peut pas faire deux tournées qui se
+        # chevauchent — bloquant + `force`, même bandeau côté frontend.
+        if scheduled_datetime and duration and not force:
+            exclude_id = self.instance.id if self.instance else None
+            truck_overlaps = get_truck_conflicts(
+                scheduled_datetime, duration, truck, exclude_id=exclude_id,
+            )
+            if truck_overlaps:
+                raise serializers.ValidationError({
+                    'conflicts': [serialize_truck_conflict(t) for t in truck_overlaps],
+                    'detail': (
+                        f"Le camion « {truck.name} » fait déjà une autre tournée sur cette "
+                        'fenêtre. Ajoute "force": true dans la requête pour forcer malgré '
+                        "le chevauchement."
+                    ),
+                })
+
         # Fenêtre départ/arrivée (décision Samuel du 2026-07-30, voir
         # conflicts.py) : la tournée doit avoir lieu entre la fin effective du
         # spectacle de départ (au PREMIER arrêt) et le début effectif du
@@ -1597,12 +1794,16 @@ class TransportSerializer(serializers.ModelSerializer):
                 if stop.travel_minutes_from_previous != p['travel']:
                     stop.travel_minutes_from_previous = p['travel']
                     update_fields.append('travel_minutes_from_previous')
+                if stop.travel_distance_meters != p.get('distance'):
+                    stop.travel_distance_meters = p.get('distance')
+                    update_fields.append('travel_distance_meters')
                 if update_fields:
                     stop.save(update_fields=update_fields)
             else:
                 existing.append(TransportStop.objects.create(
                     transport=transport, venue=p['venue'], order=index,
                     travel_minutes_from_previous=p['travel'],
+                    travel_distance_meters=p.get('distance'),
                 ))
         while len(existing) > len(plan):
             existing.pop().delete()
@@ -1622,6 +1823,7 @@ class TransportSerializer(serializers.ModelSerializer):
             TransportStop.objects.create(
                 transport=transport, venue=p['venue'], order=index,
                 travel_minutes_from_previous=p['travel'],
+                travel_distance_meters=p.get('distance'),
             )
             for index, p in enumerate(plan)
         ]

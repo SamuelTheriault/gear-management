@@ -89,7 +89,9 @@ def _build_full_project():
     # Tournée à 2 arrêts (2026-08-04) — équivalent de l'ancien A→B, voir
     # `Transport`/`TransportStop` (models.py).
     transport = Transport.objects.create(
-        show=spectacle, scheduled_datetime=timezone.now() - timezone.timedelta(hours=4),
+project=spectacle.project,
+truck=spectacle.project.trucks.order_by('id').first(),
+show=spectacle, scheduled_datetime=timezone.now() - timezone.timedelta(hours=4),
     )
     depart = TransportStop.objects.create(
         transport=transport, venue=entrepot, order=0, travel_minutes_from_previous=0,
@@ -178,7 +180,10 @@ class PortabilityRoundTripTests(TestCase):
             project=project, title="Filage", venue=venue_c, event_type=Show.EVENT_PERFORMANCE,
             start_datetime=timezone.now(), end_datetime=timezone.now() + timezone.timedelta(hours=1),
         )
-        transport = Transport.objects.create(show=spectacle, scheduled_datetime=timezone.now())
+        transport = Transport.objects.create(
+project=spectacle.project,
+truck=spectacle.project.trucks.order_by('id').first(),
+show=spectacle, scheduled_datetime=timezone.now())
         TransportStop.objects.create(transport=transport, venue=venue_a, order=0, travel_minutes_from_previous=0)
         stop_b = TransportStop.objects.create(
             transport=transport, venue=venue_b, order=1, travel_minutes_from_previous=20,

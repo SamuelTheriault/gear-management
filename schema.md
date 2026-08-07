@@ -186,7 +186,8 @@ Table ajoutée le 2026-07-18 (hors des 8 tables initiales). **Refonte en tourné
 | Champ | Type | Description |
 |---|---|---|
 | id | INT, PK | Identifiant unique |
-| show_id | INT, FK → shows.id | Spectacle desservi par cette tournée |
+| project_id | INT, FK → projects.id (CASCADE) | Production de la tournée — FK DIRECTE depuis le 2026-08-06 (migration `0028`) : l'isolation ne passe plus par le spectacle |
+| show_id | INT, FK → shows.id (SET_NULL), **nullable** | Spectacle desservi (l'ARRIVÉE de la tournée) — OPTIONNEL depuis le 2026-08-06 (« — Aucun spectacle — » au formulaire : retours d'entrepôt, logistique). SET_NULL en filet — la suppression explicite d'un spectacle passe par `transport_detach.py` (réancrage, ou détachement si aucun candidat) |
 | status | ENUM('confirmed','to_approve') (default 'confirmed') | Cycle de vie (ajouté le 2026-07-24) — voir note ci-dessous |
 | scheduled_datetime | DATETIME, **nullable** | Heure de départ de la tournée (départ du premier arrêt) — nullable depuis le 2026-07-24 (une proposition `to_approve` n'a pas encore d'heure). Obligatoire pour un `status='confirmed'` (validé par `TransportSerializer`) |
 | notes | TEXT | Notes diverses |
@@ -206,6 +207,27 @@ Table ajoutée le 2026-07-18 (hors des 8 tables initiales). **Refonte en tourné
 **Matériel transporté** (décision du 2026-07-24) : *quel* matériel monte dans un déplacement est décrit par la table de liaison `transport_materials` (section 9), pas directement ici. Ce lien alimente le module de cohérence des emplacements (voir section 9 et `transport_coherence.py`).
 
 **Statut `to_approve` / `confirmed`** (décision du 2026-07-24) : un déplacement `confirmed` est créé/complété par l'utilisateur — il a une heure, participe à la timeline de position (cohérence) et à la détection de conflit du technicien. Un déplacement `to_approve` est une **proposition générée automatiquement** (voir `transport_autogen.py`) quand du matériel est requis à un lieu où rien ne l'amène : lieux + matériel préremplis, mais heure/technicien à saisir. Une proposition est affichée en orange et ne « livre » rien tant qu'elle n'est pas confirmée (elle n'entre pas dans la timeline de position). Deux façons de créer un transport : manuellement (`confirmed` d'emblée) ou automatiquement (`to_approve`, à compléter puis confirmer).
+
+---
+
+## 8ter. `trucks`
+
+Table ajoutée le 2026-08-06 (chantier Camion, décisions de Samuel) — la flotte de la production. Un camion par défaut (« Camion ») est créé avec chaque projet (signal `creer_camion_par_defaut` ; migration `0029` pour les projets existants) : chaque tournée est assignée à un camion (`transports.truck_id`, PROTECT, défaut = premier camion du projet).
+
+| Champ | Type | Description |
+|---|---|---|
+| id | INT, PK | Identifiant unique |
+| project_id | INT, FK → projects.id (CASCADE) | Production |
+| name | VARCHAR(255) (default « Camion ») | Nom d'usage (« Cube 16 pi ») |
+| reservation_start / reservation_end | DATE, nullables | UNE période de réservation par camion — une 2e location = une 2e fiche camion |
+| reservation_number / contract_number | VARCHAR(100) | Numéros chez le loueur |
+| notes | TEXT | Notes (assainies nh3) |
+
+**Conflit de camion** : deux tournées confirmées du même camion ne peuvent pas se chevaucher — bloquant + `force` (`conflicts.get_truck_conflicts`), 4e groupe du rapport project-wide (`truck_conflicts`). Une tournée HORS de la période de réservation déclenche un simple AVERTISSEMENT (`TransportSerializer.truck_reservation_warning`), jamais un refus.
+
+**Km estimé** : `TransportStop.travel_distance_meters` (rempli par le même appel Google Routes que la durée — FieldMask `routes.distanceMeters`) sommé sur les tournées CONFIRMÉES du camion (`Truck.estimated_distance`). Les segments sans distance connue sont exclus ET comptés (`km_is_partial` → « au moins X km »).
+
+**Suppression** : refusée si des tournées y sont assignées, ou s'il est le dernier camion du projet (chaque tournée doit pouvoir recevoir un défaut). Duplication de projet : les NOMS de la flotte sont recopiés, pas les réservations. Export/import JSON : fiche complète, réimportable.
 
 ---
 

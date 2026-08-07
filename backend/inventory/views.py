@@ -75,6 +75,8 @@ from .portability import (
     export_project_data,
     import_project_data,
 )
+from .maps import estimate_travel
+from .transport_ordering import OrderingUnavailable, suggest_stop_order
 from .transport_coherence import (
     get_material_journey,
     get_material_schedule,
@@ -95,6 +97,7 @@ from .models import (
     ShowTechnician,
     Technician,
     Transport,
+    Truck,
     TransportTechnician,
     User,
     Venue,
@@ -110,6 +113,7 @@ from .serializers import (
     ShowTechnicianSerializer,
     TechnicianSerializer,
     TransportSerializer,
+    TruckSerializer,
     UserSerializer,
     VenueSerializer,
 )
@@ -408,11 +412,14 @@ class ProjectViewSet(viewsets.ModelViewSet):
         suppression par un autre chemin CASCADE (`Show.project`,
         `Material.project`) dans le même appel. Contourné en supprimant
         d'abord ce qui protège, dans l'ordre :
-        1. Les `Show` du projet — cascade déjà `Transport`/`TransportStop`/
-           `TransportMaterial`/`ShowMaterial`/`ShowTechnician`
-           (`on_delete=CASCADE` sur chacun), ce qui lève la protection de
-           `Show.venue` ET `TransportStop.venue` sur `Venue` en un seul geste.
-        2. `Material.category` mis à `None` pour le projet — lève la
+        1. Les `Transport` du projet (FK `project` directe depuis la
+           migration 0028 — la suppression des `Show` ne les emporte plus,
+           `Transport.show` est passé en SET_NULL) — cascade
+           `TransportStop`/`TransportMaterial`/`TransportTechnician`, ce qui
+           lève la protection de `TransportStop.venue` sur `Venue`.
+        2. Les `Show` du projet — cascade `ShowMaterial`/`ShowTechnician` et
+           lève la protection de `Show.venue`.
+        3. `Material.category` mis à `None` pour le projet — lève la
            protection sur `MaterialCategory`.
         Le `project.delete()` final peut alors cascader `Venue`/`Material`/
         `MaterialCategory`/`Technician` sans plus rien qui bloque. Tout dans
@@ -420,6 +427,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
         """
         project = self.get_object()
         with transaction.atomic():
+            Transport.objects.filter(project=project).delete()
             Show.objects.filter(project=project).delete()
             Material.objects.filter(project=project).update(category=None)
             project.delete()
@@ -663,7 +671,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
                     })
             for tt in (
                 TransportTechnician.objects
-                .filter(technician=technician, transport__show__project=project,
+                .filter(technician=technician, transport__project=project,
                         transport__scheduled_datetime__isnull=False)
                 .select_related('transport')
                 .prefetch_related('transport__stops__venue')
@@ -1320,6 +1328,45 @@ class ShowTechnicianViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSe
         return queryset
 
 
+class TruckViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewsets.ModelViewSet):
+    """CRUD sur les camions de production (chantier Camion, 2026-08-06),
+    filtrable par projet (`?project=<id>`).
+
+    Suppression : **refusée** tant que des tournées y sont assignées
+    (`Transport.truck` en PROTECT — sans traitement, Django lèverait un
+    `ProtectedError` que DRF rendrait en 500, même pattern que
+    `VenueViewSet.destroy`). Réassigner les tournées à un autre camion
+    d'abord. Le DERNIER camion d'un projet est aussi protégé : chaque tournée
+    doit pouvoir recevoir un camion par défaut.
+    """
+
+    queryset = Truck.objects.select_related('project').all()
+    serializer_class = TruckSerializer
+    permission_classes = [HasProjectAccess]
+
+    def destroy(self, request, *args, **kwargs):
+        """Supprime un camion, sauf s'il est utilisé ou s'il est le dernier."""
+        truck = self.get_object()
+        used_by = truck.transports.count()
+        if used_by:
+            return Response(
+                {
+                    'detail': (
+                        f"Ce camion est assigné à {used_by} tournée(s). "
+                        "Réassigne-les à un autre camion avant de le supprimer."
+                    ),
+                    'transports': used_by,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not Truck.objects.filter(project_id=truck.project_id).exclude(id=truck.id).exists():
+            return Response(
+                {'detail': "Impossible de supprimer le dernier camion du projet — chaque tournée doit pouvoir en recevoir un."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().destroy(request, *args, **kwargs)
+
+
 class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
     """CRUD standard sur les déplacements (livraison/ramassage), validation de conflit dans le serializer.
 
@@ -1329,14 +1376,15 @@ class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
     les déplacements assignés à un technicien (ajouté le 2026-07-28 en portant
     la fiche technicien du frontend — même correctif que sur
     `ShowMaterialViewSet`/`ShowTechnicianViewSet`) ; `?project=<id>` (ajouté le
-    2026-07-29 en portant l'écran Transports) — `Transport` n'a pas de FK
-    `project` direct (il est isolé via son `show`), donc ce filtre traverse la
-    relation (`show__project_id`).
+    2026-07-29 en portant l'écran Transports) — depuis le 2026-08-06
+    (migration 0028), `Transport` porte une FK `project` DIRECTE (son `show`
+    est devenu optionnel) : le filtre et l'isolation ne traversent plus le
+    spectacle.
     """
 
     queryset = (
         Transport.objects
-        .select_related('show')
+        .select_related('show', 'truck')
         .prefetch_related(
             'stops__venue',
             'transport_materials__material',
@@ -1348,16 +1396,20 @@ class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
     )
     serializer_class = TransportSerializer
     permission_classes = [HasProjectAccess]
-    project_lookup = 'show__project_id'
+    project_lookup = 'project_id'
 
     def get_create_project_id(self, request):
+        """Projet visé par une création : celui du spectacle desservi si
+        fourni, sinon le champ `project` direct (tournée « sans spectacle »,
+        2026-08-06)."""
         show_id = request.data.get('show')
-        if not show_id:
-            return None
-        return Show.objects.filter(id=show_id).values_list('project_id', flat=True).first()
+        if show_id:
+            return Show.objects.filter(id=show_id).values_list('project_id', flat=True).first()
+        project_id = request.data.get('project')
+        return project_id or None
 
     def get_object_project_id(self, obj):
-        return obj.show.project_id
+        return obj.project_id
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -1373,9 +1425,13 @@ class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
             # techniciens par déplacement) — `distinct()` parce qu'un JOIN sur
             # une relation inverse peut dupliquer les lignes.
             queryset = queryset.filter(transport_technicians__technician_id=technician_id).distinct()
+        truck_id = self.request.query_params.get('truck')
+        if truck_id:
+            # Chronologie d'utilisation d'un camion (fiche Camion, 2026-08-06).
+            queryset = queryset.filter(truck_id=truck_id)
         project_id = self.request.query_params.get('project')
         if project_id:
-            queryset = queryset.filter(show__project_id=project_id)
+            queryset = queryset.filter(project_id=project_id)
         return queryset
 
     @action(detail=True, methods=['get'], url_path='material-availability')
@@ -1422,7 +1478,7 @@ class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
         rows = get_venue_material_availability(
             stop.venue,
             at=at,
-            project=transport.show.project,
+            project=transport.project,
             # Un transport ne doit pas se décompter lui-même : sinon rouvrir la
             # modale d'un transport déjà rempli montrerait son propre
             # chargement comme parti.
@@ -1445,6 +1501,126 @@ class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
                 }
                 for row in rows
             ],
+        })
+
+    @action(detail=False, methods=['post'], url_path='order-suggestion')
+    def order_suggestion(self, request):
+        """Suggestion d'ordre optimal des arrêts — chantier 3 (2026-08-07).
+
+        STATELESS : reçoit la séquence EN COURS D'ÉDITION (pas forcément
+        enregistrée) et retourne l'ordre qui minimise le temps de route —
+        c'est le frontend qui applique la suggestion au formulaire, et
+        l'enregistrement normal qui persiste. Voir `transport_ordering.py`
+        pour la méthode (énumération exacte, premier arrêt fixe, précédences
+        chargement→déchargement).
+
+        Corps : `{'project': <id>, 'stops': [<venue_id>, ...],
+        'materials': [{'load': <index>, 'unload': <index>}, ...]}` — les
+        index de matériel sont des POSITIONS dans `stops` (0-indexées),
+        mêmes conventions que les lignes de la fiche.
+
+        Réponse : le dict de `suggest_stop_order` tel quel (`order`,
+        `segments`, totaux avant/après, `already_optimal`). 400 avec un
+        message affichable si la matrice de trajets est inconstructible
+        (clé Google Routes absente, lieu sans GPS…) ou si la séquence est
+        invalide. Accessible en rôle viewer : la suggestion ne modifie rien
+        (`_resolve_csv_project` porte le contrôle d'accès — action
+        `detail=False`, donc hors `has_object_permission`, même mécanique
+        que les exports CSV).
+        """
+        project = _resolve_csv_project(request, request.data.get('project'), required_edit=False)
+        if project is None:
+            return Response({'project': "Le projet est requis."}, status=status.HTTP_400_BAD_REQUEST)
+
+        stops_raw = request.data.get('stops')
+        if not isinstance(stops_raw, list):
+            return Response({'stops': "Liste d'identifiants de lieux attendue."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            venue_ids = [int(v) for v in stops_raw]
+        except (TypeError, ValueError):
+            return Response({'stops': "Liste d'identifiants de lieux attendue."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if len(venue_ids) < 3:
+            return Response(
+                {'stops': "Il faut au moins 3 arrêts pour réordonner — un aller simple n'a qu'un seul ordre."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        venues_by_id = {v.id: v for v in Venue.objects.filter(project=project, id__in=set(venue_ids))}
+        missing = sorted({vid for vid in venue_ids if vid not in venues_by_id})
+        if missing:
+            return Response(
+                {'stops': f"Lieu(x) introuvable(s) dans ce projet : {', '.join(str(m) for m in missing)}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        venues = [venues_by_id[vid] for vid in venue_ids]
+
+        precedence_pairs = []
+        for line in (request.data.get('materials') or []):
+            try:
+                load = int(line.get('load'))
+                unload = int(line.get('unload'))
+            except (TypeError, ValueError, AttributeError):
+                return Response(
+                    {'materials': "Chaque ligne doit fournir `load` et `unload` (positions 0-indexées)."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not (0 <= load < len(venue_ids)) or not (0 <= unload < len(venue_ids)) or load >= unload:
+                return Response(
+                    {'materials': (
+                        f"Portion invalide ({load} → {unload}) : positions 0 à {len(venue_ids) - 1}, "
+                        "chargement avant déchargement."
+                    )},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            precedence_pairs.append((load, unload))
+
+        try:
+            suggestion = suggest_stop_order(venues, precedence_pairs)
+        except OrderingUnavailable as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(suggestion)
+
+    @action(detail=True, methods=['post'], url_path='refresh-distances')
+    def refresh_distances(self, request, pk=None):
+        """Réestime les DISTANCES des segments de cette tournée, durées
+        intactes — chantier 3 (2026-08-07).
+
+        Raison d'être : les tournées d'avant la migration 0029 n'ont aucune
+        distance stockée (pas de rétro-remplissage), et une durée saisie à la
+        main sur un couple de lieux changé laissait la distance à NULL
+        (corrigé dans `_resolve_travel_times` le même jour, mais les données
+        existantes restent trouées) — le km estimé du camion
+        (`Truck.estimated_distance`) affichait « au moins » sans que rien ne
+        permette de compléter. Ce bouton appelle Google Routes segment par
+        segment et ne touche QUE `travel_distance_meters` : une durée ajustée
+        à la main (pause dîner, détour prévu) n'est jamais écrasée.
+
+        Réponse : `{'transport': <fiche sérialisée>, 'refreshed': <n>,
+        'unavailable': <n>}` — `unavailable` compte les segments toujours
+        sans distance (clé absente, lieu sans GPS, appel en échec) ; le
+        frontend l'affiche tel quel. POST = rôle editor requis (via
+        `has_object_permission`).
+        """
+        transport = self.get_object()
+        stops = transport.ordered_stops
+        refreshed = 0
+        unavailable = 0
+        for previous, stop in zip(stops, stops[1:]):
+            estimation = estimate_travel(previous.venue, stop.venue)
+            meters = estimation['meters'] if estimation else None
+            if meters is None:
+                unavailable += 1
+                continue
+            refreshed += 1
+            if stop.travel_distance_meters != meters:
+                stop.travel_distance_meters = meters
+                stop.save(update_fields=['travel_distance_meters'])
+        serializer = self.get_serializer(transport)
+        return Response({
+            'transport': serializer.data,
+            'refreshed': refreshed,
+            'unavailable': unavailable,
         })
 
 
