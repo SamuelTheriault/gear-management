@@ -4,29 +4,22 @@ Tableau de bord manuel. À mettre à jour à chaque étape franchie ou décision
 prise. Complète `recapitulatif_projet.md` (contenu fonctionnel) sans le
 dupliquer — ce fichier ne suit que **l'avancement**, pas le scope.
 
-Dernière mise à jour : 2026-08-06 (matin, vérification automatique) —
-**gros chantier du 2026-08-05 soir NON COMMITTÉ** dans l'arbre de travail
-(~2 900 lignes sur 39 fichiers + 8 nouveaux), sur la branche
-`docs/suivi-etape20-2026-08-05`. Le commit de suivi de l'étape 20
-(`3311b20`) est poussé sur cette branche mais pas encore mergé dans `main`.
+Dernière mise à jour : 2026-08-06 (soir) — lot 21 commité, mergé
+(PR #27) et déployé avec ses correctifs de relecture ; points non bloquants
+de la relecture mergés (PR #28) et déployés dans la foulée (Railway SUCCESS
+20 h 52). Le suivi de l'étape 20 (`3311b20`) a été mergé par la PR #26.
+Prochain chantier : travaux sur le module transport (session du 2026-08-06
+soir).
 
 ## Statut global
 
 Backend et frontend sont en ligne sur le même service Railway (Dockerfile,
-WhiteNoise sert le build Vue — étape 13), à jour avec `main` (`18f45a8`,
-PR #25), migrations `0001`→`0026` appliquées. OAuth Google testé en vrai
-navigateur et fonctionnel (étape 7).
-
-**Chantier non commité (étape 21, 2026-08-05 soir)** — vérifié contre le
-code, correspond aux notes CLAUDE.md du même soir : passe de corrections
-d'affichage (menu, contraste, `touched_shows`, info-bulles Dashboard),
-`transport_detach.py` (supprimer un spectacle n'emporte plus la tournée),
-`Venue.display_order` réordonnable (migration `0027`, **non appliquée en
-prod**), Parcours Technicien complet (montages/démontages + clic), pincer
-pour zoomer (`useZoomGestures.js`), notes en texte riche (`rich_text.py` +
-`nh3` backend, TipTap frontend), garde-fou de sortie d'édition
-(`useLeaveGuard.js`/`LeaveEditPrompt.vue`). 434 tests comptés dans les
-fichiers (cohérent avec CLAUDE.md), suite non relancée ici.
+WhiteNoise sert le build Vue — étape 13), à jour avec `main` GitHub
+(`a28bc20`, merge PR #28, déploiement Railway SUCCESS du 2026-08-06
+20 h 52), migrations `0001`→`0027` appliquées, dépendances `nh3` (pip) et
+TipTap (npm) installées au build. OAuth Google testé en vrai navigateur et
+fonctionnel (étape 7). ⚠️ Le `main` LOCAL (`9deb704`) est en retard d'un
+merge sur GitHub — `git pull` avant de partir une nouvelle branche.
 
 **⚠️ Incident opérationnel du 2026-08-04, résolu sans perte de données :**
 deux sessions Cowork ont travaillé sur le même dossier `gear-management` en
@@ -85,41 +78,36 @@ modèle backend) : voir « Points de vigilance ».
 | 18 | Info-bulle flottante Dashboard/Parcours (`FloatingTooltip.vue`, remplace l'ancienne info-bulle CSS-only piégée par le clipping du défilement zoomé) + rattrapage de `schema.md`/`architecture.md`/`recapitulatif_projet.md` sur les étapes 14-17 | ✅ Mergée dans `main` (PR #18) et déployée. Extrait à la main de `wip/checkpoint-2026-08-04` (périmé — prédate les tournées, aurait régressé Transport/Dashboard si appliqué tel quel). Revue `code-reviewer` : code propre (aucune régression du checkpoint périmé), 1 oubli corrigé (doc rattrapée pas committée avec le code au premier passage). Frontend + doc seulement, aucun changement backend | 2026-08-05 |
 | 19 | Interface Import/Export (étape 17 côté frontend) : section « Import / Export » sur Réglages — export JSON/XML complet d'un projet, export CSV par section (matériel/lieux/techniciens/spectacles), import JSON (nouveau projet), import CSV par section (append/remplace, confirmé par modale) | ✅ Mergée dans `main` (PR #22) et déployée. Brouillon retrouvé déjà présent, non committé, dans l'arbre de travail — complété par le seul chaînon manquant (`api.downloadUrl()` dans `client.js`) plutôt que réécrit, après vérification champ par champ contre l'API réelle. Inclut au passage le rattrapage `CLAUDE.md` de l'étape 18 (tooltip), resté non committé lui aussi. Revue `code-reviewer` : rien à corriger, 3 suggestions mineures non bloquantes. Frontend + doc seulement, aucun changement backend | 2026-08-05 |
 | 20 | Correctif de renvoi `schema.md`/`architecture.md` (section 12 → 9 pour `transport_materials`) + tests des filtres `?show`/`?material`/`?technician` (`ShowMaterialViewSet`/`ShowTechnicianViewSet`/`TransportViewSet`) et `?project=` (`TransportViewSet`), jusqu'ici sans couverture | ✅ Mergée dans `main` (PR #25) et déployée. 8 tests ajoutés (`QueryParamFilterAPITests`), suite à 401 tests, flake8 propre, aucune migration | 2026-08-05 |
-| 21 | Lot du 2026-08-05 soir : corrections d'affichage + `touched_shows`, détachement de tournée à la suppression d'un spectacle (`transport_detach.py`), ordre des lieux réordonnable (migration `0027`), Parcours Technicien complet, pincer pour zoomer + ⌘0, notes en texte riche (nh3/TipTap), garde-fou « quitter en cours d'édition » | 🔶 **Codé mais non commité** — 434 tests dans les fichiers, migration `0027` non appliquée en prod, nouvelles dépendances `nh3` (pip) et TipTap (npm) à installer | 2026-08-05 |
+| 21 | Lot du 2026-08-05 soir : corrections d'affichage + `touched_shows`, détachement de tournée à la suppression d'un spectacle (`transport_detach.py`), ordre des lieux réordonnable (migration `0027`), Parcours Technicien complet, pincer pour zoomer + ⌘0, notes en texte riche (nh3/TipTap), garde-fou « quitter en cours d'édition » | ✅ Commitée, mergée dans `main` (PR #27) et déployée le 2026-08-06 — migration `0027` appliquée en prod, `nh3`/TipTap installés au build. Inclut les correctifs de relecture (XSS des imports, réancrage, garde-fou de navigation) | 2026-08-06 |
+| 22 | Points non bloquants de la relecture de l'étape 21 : atomicité, reorder, listes allégées (`dc25a46`) | ✅ Mergée dans `main` (PR #28) et déployée — Railway SUCCESS 2026-08-06 20 h 52 (`a28bc20`) | 2026-08-06 |
+| 23 | Travaux transport, chantier 1 : `Transport.project` direct + spectacle desservi OPTIONNEL (migration `0028`, « — Aucun spectacle — »), formulaire clarifié (« Spectacle desservi (arrivée) », liste filtrée par lieu d'arrivée), `transport_detach` révisé (détachement au lieu de suppression), correctif suppression de projet | 🔶 Prêt sur `feature/transport-show-optionnel` (454 tests + flake8, Playwright OK) — PR à ouvrir/merger, migration `0028` au déploiement | 2026-08-06 |
+| 24 | Travaux transport, chantier 2 : entité **Camion** (table `trucks`, camion par défaut par projet, migration `0029`), tournée assignée à un camion (conflit d'horaire bloquant + force, 4e groupe de l'écran Conflits), période de réservation (avertissement non bloquant), km estimé via distances Google Routes par segment, écrans Camions + fiche | 🔶 Prêt sur la MÊME branche `feature/transport-show-optionnel` (467 tests + flake8, Playwright OK) — une seule PR pour les chantiers 1+2, migrations `0028`+`0029` au déploiement | 2026-08-06 |
+| 25 | Travaux transport, chantier 3 : **suggestion d'ordre optimal des arrêts** (`transport_ordering.py` — énumération exacte, premier arrêt fixe, précédences chargement→déchargement, `POST /transports/order-suggestion/` stateless + bouton « Suggérer un ordre optimal » avec bandeau avant/après et remap des lignes de matériel), bouton « Réestimer les distances » (`POST /transports/{id}/refresh-distances/`, distances seules, durées intactes — comble les tournées pré-`0029`), correctif serializer (durée manuelle sur couple changé → distance quand même estimée) | 🔶 Prêt sur la MÊME branche `feature/transport-show-optionnel` (`ce2cba9`, 483 tests + flake8, Playwright OK) — toujours une seule PR pour les chantiers 1+2+3, migrations `0028`+`0029` au déploiement, AUCUNE migration nouvelle | 2026-08-07 |
 
 ## Prochaine action concrète
 
-**Committer et ouvrir la PR du lot 21** (2026-08-05 soir, ~2 900 lignes non
-commitées) : relancer la suite complète (434 tests attendus) + flake8,
-retirer `backend/inventory/test_diag_tmp.py` (fichier de diagnostic vide,
-résidu), passer `code-reviewer`, puis merger. Au déploiement : `pip install
--r requirements.txt` (nh3), `npm install` (TipTap), `python manage.py
-migrate` (0027). Merger aussi le commit de suivi `3311b20` (étape 20),
-toujours en attente sur `docs/suivi-etape20-2026-08-05`.
+**Merger les chantiers transport 1+2+3** (`feature/transport-show-optionnel`,
+prêt : 483 tests + flake8, migrations `0028`+`0029` au déploiement — une
+seule PR, demande de Samuel). Côté Samuel aussi : configurer
+`GOOGLE_MAPS_API_KEY` (dans `backend/.env` en local ET vérifier les
+Variables Railway) — sans elle, ni km estimé, ni suggestion d'ordre, ni
+réestimation des distances ne fonctionnent. Rattraper aussi la doc de
+référence sur le lot 21 (voir Points de vigilance).
 
 ## Points de vigilance
 
-- **~2 900 lignes non commitées dans l'arbre de travail** (lot 21, vérifié
-  le 2026-08-06) — le plus gros en-cours non versionné du projet à ce jour.
-  À committer en priorité pour ne pas risquer une perte (voir l'incident des
-  deux sessions du 2026-08-04).
-- **`test_diag_tmp.py`** : fichier de diagnostic vide, non suivi par git —
-  à ne pas committer avec le lot 21, à supprimer.
 - **🟡 Doc de référence en retard sur le lot 21** : `transport_detach`
   (comportement de suppression), notes riches (`clean_notes`/nh3),
   `touched_shows` et `Venue.display_order` (ce dernier est déjà dans le
   `schema.md` non commité) sont absents d'`architecture.md`/
   `recapitulatif_projet.md` — à rattraper dans une session interactive,
   comme pour les étapes 14-17.
-- **`main` local réaligné sur GitHub** (vérifié le 2026-08-05 soir) : un
-  `git fetch` a exceptionnellement réussi (habituellement « Host key
-  verification failed » depuis ce bac à sable), confirmant que `origin/main`
-  pointe bien sur `18f45a8` (le merge de la PR #25, déploiement Railway
-  SUCCESS 17 h 47) — le `main` local a été réaligné par fast-forward sur
-  cette base. L'ancienne divergence de SHA de merge (étapes 15-16) est
-  résolue. Si le réseau redevient indisponible dans une session future,
-  revérifier avant de partir d'un `main` local qui pourrait être à nouveau
-  périmé plutôt que de le supposer à jour.
+- **`main` local en retard d'un merge sur GitHub** (vérifié le 2026-08-06
+  soir via l'API Railway : dernier déploiement = `a28bc20`, merge PR #28,
+  alors que le `main` local pointe `9deb704`) : `git pull` depuis le poste
+  de Samuel avant toute nouvelle branche. Règle générale : ne jamais
+  supposer le `main` local à jour depuis le bac à sable (fetch souvent
+  indisponible — « Host key verification failed »).
 - **Un seul chantier de code à la fois dans ce dossier** — voir l'incident
   du 2026-08-04 en « Statut global ». Deux sessions Cowork simultanées sur
   le même dossier peuvent se marcher dessus (branche qui change seule,

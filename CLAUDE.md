@@ -3231,97 +3231,54 @@ retrait d'un arrêt sont laissées à la session transport.
 
 Suite de tests : 447 (8 ajoutés), flake8 propre, aucune migration.
 
-## Mise à jour (2026-08-06, soir) — Transport : spectacle desservi optionnel + formulaire clarifié
+## 2026-08-07 — Chantier 3 : suggestion d'ordre optimal + réestimation des distances
 
-Chantier 1 des travaux transport du 2026-08-06 (décisions de Samuel). Suite
-complète : **454 tests OK** + flake8 ; build Vite + parcours Playwright
-vérifiés (filtrage du sélecteur validé avec deux spectacles sur deux lieux).
+Suite (et fin) des travaux transport cadrés le 2026-08-06 — empilé sur
+`feature/transport-show-optionnel` (`ce2cba9`), toujours UNE seule PR pour
+les chantiers 1+2+3. Aucune migration nouvelle.
 
-**Backend (migration `0028_transport_project_show_optional`, 3 temps)** :
-- `Transport.project` : FK DIRECTE (CASCADE), remplie depuis `show.project`
-  à la migration. L'isolation par projet, les filtres `?project=`, l'export/
-  import (`portability`), l'horizon/fenêtre de projet et les signaux ne
-  traversent plus le spectacle.
-- `Transport.show` : NULLABLE (SET_NULL en filet). Révise la décision du
-  2026-08-05 (transport_detach) qui avait écarté la nullabilité — l'option
-  « — Aucun spectacle — » du formulaire la rend nécessaire (retours
-  d'entrepôt, logistique). Serializer : `project` requis sans spectacle,
-  déduit et VERROUILLÉ sur `show.project` avec (mismatch → 400) ;
-  `show_title`/`departure_show`/`arrival_show` → null sans spectacle ;
-  l'isolation lieux/techniciens/matériel se valide contre `project`.
-- `transport_detach` : sans candidat de réancrage la tournée devient « sans
-  spectacle » (nouvelle catégorie `detachees` / `transports_detached` dans
-  `deletion_impact`) au lieu d'être supprimée ; la suppression (< 2 arrêts
-  restants) est explicite (SET_NULL ne cascade plus). PIÈGE corrigé au
-  passage : la suppression de PROJET comptait sur la cascade show→transport
-  pour lever la protection `TransportStop.venue` — elle purge maintenant
-  les tournées AVANT les spectacles (`ProjectViewSet.destroy`).
-- Autogen : une tournée sans spectacle ne compte jamais comme couverture ;
-  les propositions naissent toujours d'un spectacle (inchangé).
+- **`transport_ordering.py` (nouveau)** : ordre optimal des arrêts par
+  énumération EXACTE des permutations (tournées réelles ≤ 8 arrêts, 7! au
+  pire — l'optimum est garanti, pas d'heuristique). Premier arrêt FIXE ;
+  précédences du matériel (chargé en X, déchargé en Y → X avant Y) ;
+  candidats à arrêts consécutifs identiques écartés (règle du serializer).
+  Matrice de trajets par couples ORIENTÉS de lieux distincts, mémoïsée ;
+  `OrderingUnavailable` au premier couple inestimable — un optimum sur des
+  données inventées n'aurait aucun sens, on affiche l'erreur plutôt.
+- **`POST /api/transports/order-suggestion/`** : STATELESS — reçoit la
+  séquence en cours d'édition (`project`, `stops` en ids de lieux,
+  `materials` en positions load/unload), ne lit ni n'écrit aucune tournée.
+  Le frontend applique au FORMULAIRE, l'enregistrement normal persiste.
+  Accès en rôle viewer via `_resolve_csv_project` (action `detail=False`,
+  même mécanique que les exports CSV).
+- **`POST /api/transports/{id}/refresh-distances/`** : réestime les
+  DISTANCES segment par segment, durées INTACTES (une durée ajustée à la
+  main — pause dîner, détour — n'est jamais écrasée). Comble les tournées
+  d'avant la migration `0029` (pas de rétro-remplissage) et les trous
+  laissés par les durées manuelles. Retourne `refreshed`/`unavailable` + la
+  fiche sérialisée.
+- **Correctif `_resolve_travel_times`** : durée saisie à la main sur un
+  couple de lieux CHANGÉ laissait la distance à NULL — désormais l'appel
+  Routes remplit la distance SEULE (les minutes de l'utilisateur restent).
+  Conséquence testée : la création avec durée explicite fait maintenant UN
+  appel Routes (deux tests de `test_settings_and_maps.py` mis à jour).
+- **Fiche tournée** : bouton « Suggérer un ordre optimal » (édition, ≥ 3
+  arrêts, grisé si un lieu manque), bandeau avant/après (trajet en toutes
+  lettres, minutes + km), « Appliquer cet ordre » réordonne le formulaire
+  (durées de la matrice de la suggestion) et REMAPPE les lignes de matériel
+  (`order.indexOf`), « Ignorer » referme ; un watcher périme la suggestion
+  dès que la séquence bouge (ses index ne décrivent plus rien). Bouton
+  « Réestimer les distances » en LECTURE, dans l'entête de la carte
+  Séquence ; km par segment affiché dans la séquence quand il est connu.
+- **Vérification visuelle Playwright** sur serveur local seedé avec
+  `estimate_travel` remplacé par une matrice factice (pas de clé Google
+  dans le bac à sable) : lecture avant/après réestimation, suggestion,
+  application, re-suggestion « déjà optimal » — 5 captures propres.
+- Piège sandbox rencontré : le POST Playwright échouait en 403 CSRF avec un
+  simple cookie de session injecté — il faut AUSSI un cookie `csrftoken`
+  (le client API du frontend le renvoie en en-tête `X-CSRFToken`).
 
-**Frontend** :
-- TransportsView : champ renommé « Spectacle desservi (arrivée) » (demande
-  explicite de Samuel — on indique clairement que le spectacle sélectionné
-  est celui de l'arrivée), liste FILTRÉE sur les spectacles du lieu
-  d'arrivée choisi (entrepôt ou rien → liste complète), option
-  « — Aucun spectacle — » (sentinelle `NO_SHOW` → `show: null` +
-  `project` toujours envoyé). Changer l'arrivée invalide un spectacle
-  devenu incohérent (le champ se vide). Groupes/filtres « Par spectacle » :
-  clé nulle → « Aucun spectacle ».
-- TransportDetailView : le chargement passe par `transport.project` (plus
-  de GET /shows/{id} qui plantait sans spectacle), breadcrumb « Tournée
-  sans spectacle », champ statique « Aucun spectacle ».
-- SpectacleDetailView : la confirmation de suppression annonce la nouvelle
-  catégorie (« resteront planifiés, sans spectacle rattaché »).
-
-À suivre (chantiers 2 et 3 déjà cadrés avec Samuel) : entité **Camion**
-(fiche réservation/contrat/notes, un camion par défaut par projet, tournée
-assignée à un camion avec conflit d'horaire façon techniciens, une période
-de réservation par camion, km estimé via distances stockées par segment —
-champ distance à ajouter sur TransportStop, l'API Routes la retourne déjà) ;
-**ordre des arrêts optimisé** (bouton « Suggérer un ordre », premier arrêt
-fixe, précédences chargement<déchargement, énumération exacte ≤ 8 arrêts).
-
-## Mise à jour (2026-08-06, soir, suite) — Chantier 2 : entité Camion
-
-Empilé sur `feature/transport-show-optionnel` (même PR que le chantier 1,
-demande de Samuel). Suite : **467 tests OK** + flake8 ; build Vite +
-Playwright (liste Camions, fiche avec km/avertissements) sans erreur.
-
-**Backend (migration `0029_trucks`, 3 temps)** :
-- `Truck` : project (CASCADE), name, reservation_start/end (UNE période par
-  camion — décision Samuel : 2e location = 2e fiche), reservation_number,
-  contract_number, notes (nh3). Camion « Camion » par défaut : signal
-  `creer_camion_par_defaut` (nouveaux projets) + migration (existants).
-- `Transport.truck` : obligatoire, PROTECT, défaut = premier camion du
-  projet (serializer + autogen). `TruckViewSet.destroy` : garde lisible
-  (camion utilisé, ou dernier du projet). Duplication : NOMS de flotte
-  recopiés, pas les réservations. Portability : export/import complets
-  (camions + réf truck + distances), repli premier camion pour les
-  fichiers d'avant 0029.
-- Conflit de camion : `get_truck_conflicts` (tournées confirmées du même
-  camion qui se chevauchent) — bloquant + `force` dans le serializer, type
-  `truck_transport` dans le bandeau, 4e groupe `truck_conflicts` du rapport
-  project-wide (l'écran Conflits l'affiche, lien « Voir la tournée »).
-  `has_truck_conflict` (fiche ; `None` en liste — budget de requêtes) et
-  `truck_reservation_warning` (non bloquant, dates inclusives) exposés.
-- Distances : `TransportStop.travel_distance_meters`, rempli par
-  `maps.estimate_travel` (durée + `routes.distanceMeters`, MÊME appel API —
-  coût inchangé ; `estimate_travel_minutes` reste en enveloppe de compat).
-  Le plan du serializer transporte `distance` ; segment au couple de lieux
-  inchangé → distance conservée ; durée manuelle sur un couple changé →
-  distance inconnue (None). `Truck.estimated_distance()` = somme sur les
-  tournées confirmées + décompte des segments sans distance
-  (`estimated_km`/`km_is_partial` : « au moins X km », jamais un total
-  partiel déguisé en total).
-
-**Frontend** :
-- Nav « Camions » (après Techniciens) ; `CamionsView` (liste : réservation,
-  n°, km, nb tournées + ajout rapide par nom) ; `CamionDetailView` (fiche
-  useFicheEdition : période/n°s/notes ; km estimé ; chronologie
-  d'utilisation via `?truck=` avec avertissements par tournée).
-- Fiche transport : sélecteur de camion (édition), nom + avertissements
-  (lecture). Écran Conflits : groupe « Conflits de camion ».
-
-Chantier 3 (ordre des arrêts optimisé) : cadré, PAS commencé — voir la
-mémoire de projet et l'entrée précédente.
+Suite de tests : 483 (16 ajoutés, `test_transport_ordering.py`), flake8
+propre, build Vue OK. Reste côté Samuel : configurer `GOOGLE_MAPS_API_KEY`
+(local + Railway) — tout le chantier 3 se dégrade en messages clairs sans
+elle, mais ne fonctionne qu'avec.
