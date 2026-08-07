@@ -39,7 +39,62 @@ logger = logging.getLogger(__name__)
 
 ROUTES_API_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 GEOCODING_API_URL = "https://maps.googleapis.com/maps/api/geocode/json"
+PLACES_AUTOCOMPLETE_URL = "https://places.googleapis.com/v1/places:autocomplete"
 REQUEST_TIMEOUT_SECONDS = 5
+
+
+def autocomplete_address(query):
+    """Retourne jusqu'à 5 adresses suggérées (chaînes formatées par Google)
+    pour une saisie partielle, via l'API Places Autocomplete (New) — `[]` si
+    la suggestion n'est pas possible (clé absente, saisie trop courte,
+    appel en échec).
+
+    Ajouté le 2026-08-07 (demande de Samuel, dans la foulée du géocodage) :
+    proposer les adresses en menu déroulant pendant la saisie, pour des
+    adresses PROPRES dès la source — un géocodage qui réussit à tous les
+    coups vaut mieux qu'un géocodage qui devine. Nécessite d'activer
+    « Places API (New) » sur la même clé Google Cloud que Routes/Geocoding.
+
+    La clé reste CÔTÉ SERVEUR (même principe que Routes/Geocoding, voir
+    security.md) : le frontend passe par `GET /api/venues/
+    address-autocomplete/?q=…` plutôt que d'embarquer le SDK JS Google et
+    une clé publique. `locationBias` (cercle de 50 km sur Montréal) BIAISE
+    les résultats vers la base de Samuel sans rien exclure — une adresse de
+    tournée en Gaspésie ou en France sort quand même. `languageCode=fr-CA`
+    formate en français.
+    """
+    api_key = getattr(settings, 'GOOGLE_MAPS_API_KEY', '') or ''
+    query = (query or '').strip()
+    if not api_key or len(query) < 4:
+        return []
+    try:
+        response = requests.post(
+            PLACES_AUTOCOMPLETE_URL,
+            json={
+                'input': query,
+                'languageCode': 'fr-CA',
+                'locationBias': {
+                    'circle': {
+                        'center': {'latitude': 45.5088, 'longitude': -73.5617},
+                        'radius': 50000.0,
+                    },
+                },
+            },
+            headers={'Content-Type': 'application/json', 'X-Goog-Api-Key': api_key},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except Exception:
+        logger.warning("Échec de l'appel Places Autocomplete pour « %s »", query, exc_info=True)
+        return []
+
+    suggestions = []
+    for s in (data.get('suggestions') or []):
+        text = ((s.get('placePrediction') or {}).get('text') or {}).get('text')
+        if text:
+            suggestions.append(text)
+    return suggestions[:5]
 
 
 def geocode_address(address):
