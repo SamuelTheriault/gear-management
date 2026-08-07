@@ -81,17 +81,16 @@ modèle backend) : voir « Points de vigilance ».
 | 21 | Lot du 2026-08-05 soir : corrections d'affichage + `touched_shows`, détachement de tournée à la suppression d'un spectacle (`transport_detach.py`), ordre des lieux réordonnable (migration `0027`), Parcours Technicien complet, pincer pour zoomer + ⌘0, notes en texte riche (nh3/TipTap), garde-fou « quitter en cours d'édition » | ✅ Commitée, mergée dans `main` (PR #27) et déployée le 2026-08-06 — migration `0027` appliquée en prod, `nh3`/TipTap installés au build. Inclut les correctifs de relecture (XSS des imports, réancrage, garde-fou de navigation) | 2026-08-06 |
 | 22 | Points non bloquants de la relecture de l'étape 21 : atomicité, reorder, listes allégées (`dc25a46`) | ✅ Mergée dans `main` (PR #28) et déployée — Railway SUCCESS 2026-08-06 20 h 52 (`a28bc20`) | 2026-08-06 |
 | 23 | Travaux transport, chantier 1 : `Transport.project` direct + spectacle desservi OPTIONNEL (migration `0028`, « — Aucun spectacle — »), formulaire clarifié (« Spectacle desservi (arrivée) », liste filtrée par lieu d'arrivée), `transport_detach` révisé (détachement au lieu de suppression), correctif suppression de projet | 🔶 Prêt sur `feature/transport-show-optionnel` (454 tests + flake8, Playwright OK) — PR à ouvrir/merger, migration `0028` au déploiement | 2026-08-06 |
+| 24 | Travaux transport, chantier 2 : entité **Camion** (table `trucks`, camion par défaut par projet, migration `0029`), tournée assignée à un camion (conflit d'horaire bloquant + force, 4e groupe de l'écran Conflits), période de réservation (avertissement non bloquant), km estimé via distances Google Routes par segment, écrans Camions + fiche | 🔶 Prêt sur la MÊME branche `feature/transport-show-optionnel` (467 tests + flake8, Playwright OK) — une seule PR pour les chantiers 1+2, migrations `0028`+`0029` au déploiement | 2026-08-06 |
 
 ## Prochaine action concrète
 
-**Merger le chantier 1 transport** (`feature/transport-show-optionnel`,
-prêt : 454 tests + flake8, migration `0028` à appliquer au déploiement) puis
-enchaîner les chantiers cadrés avec Samuel : **2. entité Camion** (fiche
-réservation/contrat/notes, camion par défaut par projet, tournée assignée
-avec conflit d'horaire, km estimé via distances par segment) et **3. ordre
-des arrêts optimisé** (premier arrêt fixe, précédences
-chargement<déchargement). Rattraper aussi la doc de référence sur le lot 21
-(voir Points de vigilance).
+**Merger les chantiers transport 1+2** (`feature/transport-show-optionnel`,
+prêt : 467 tests + flake8, migrations `0028`+`0029` au déploiement — une
+seule PR, demande de Samuel), puis enchaîner le **chantier 3 : ordre des
+arrêts optimisé** (premier arrêt fixe, précédences
+chargement<déchargement, matrice Routes — cadré, non commencé). Rattraper
+aussi la doc de référence sur le lot 21 (voir Points de vigilance).
 
 ## Points de vigilance
 
