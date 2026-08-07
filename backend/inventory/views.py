@@ -804,10 +804,28 @@ class VenueViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewset
                 {'project': "Le projet est requis."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        ordre = request.data.get('order')
-        if not isinstance(ordre, list):
+        brut = request.data.get('order')
+        if not isinstance(brut, list):
             return Response(
                 {'order': "Une liste d'identifiants de lieux est attendue."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # Convertir AVANT la requête : `filter(id__in=['abc'])` lève un
+        # `ValueError` que DRF rend en 500 (relecture du 2026-08-05). Un
+        # identifiant non numérique est une erreur d'appel, elle mérite une
+        # 400 explicite.
+        try:
+            ordre = [int(venue_id) for venue_id in brut]
+        except (TypeError, ValueError):
+            return Response(
+                {'order': "Les identifiants de lieux doivent être des entiers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(set(ordre)) != len(ordre):
+            # Cohérent avec le refus des ids étrangers juste en dessous : un
+            # doublon décale les rangs sans que l'appelant s'en aperçoive.
+            return Response(
+                {'order': "Un même lieu ne peut pas apparaître deux fois."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1082,7 +1100,24 @@ class ShowViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewsets
     """CRUD standard sur les fiches spectacles, filtrable par projet (`?project=<id>`),
     plus l'action `conflicts` en lecture seule."""
 
-    queryset = Show.objects.select_related('project', 'venue').all()
+    # `parent_show` et les équipes sont préchargés pour `technician_names`
+    # (2026-08-05, relecture) : ce champ sert en LISTE (info-bulles du Tableau
+    # de bord), il ne doit donc pas coûter une requête par ligne. Sur un bloc
+    # qui hérite, l'équipe lue est celle du parent — d'où la seconde
+    # précharge.
+    queryset = (
+        Show.objects
+        .select_related('project', 'venue', 'parent_show')
+        .prefetch_related(
+            'show_technicians__technician',
+            'parent_show__show_technicians__technician',
+            # `engagement_start`/`engagement_end` (exposés depuis le
+            # 2026-08-01) parcourent `self.phases` : sans ce préchargement,
+            # c'est encore une requête par ligne de liste.
+            'phases',
+        )
+        .all()
+    )
     serializer_class = ShowSerializer
     permission_classes = [HasProjectAccess]
 
@@ -1097,8 +1132,15 @@ class ShowViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewsets
         suppression de projet, réancrer une tournée sur un spectacle
         lui-même en cours de suppression n'aurait aucun sens.
         """
-        detach_show_from_transports(instance)
-        instance.delete()
+        # Transaction (2026-08-05, relecture) : le détachement supprime des
+        # arrêts, des lignes de matériel et renumérote. Sans elle, un échec de
+        # la suppression qui suit laisserait les tournées définitivement
+        # amputées avec le spectacle toujours en place — l'inverse exact de ce
+        # que promet ce garde-fou. `ATOMIC_REQUESTS` n'est pas activé sur ce
+        # projet, il faut donc l'ouvrir explicitement.
+        with transaction.atomic():
+            detach_show_from_transports(instance)
+            instance.delete()
 
     @action(detail=True, methods=['get'])
     def conflicts(self, request, pk=None):

@@ -492,9 +492,30 @@ class Venue(models.Model):
         return self.name
 
     def save(self, *args, **kwargs):
-        """Normalise `code` en majuscules (ex. "chap" saisi -> "CHAP" stocké)."""
+        """Normalise `code` en majuscules et place un nouveau lieu EN FIN de
+        liste si le projet a déjà été réordonné.
+
+        Sans ça, un lieu créé après un réordonnancement naîtrait à
+        `display_order = 0` et passerait donc devant tous les autres —
+        exactement l'inverse de ce que promet `VenueViewSet.reorder`
+        (relecture du 2026-08-05).
+
+        La condition « déjà réordonné » compte : sur un projet qui ne l'a
+        jamais été, tous les lieux restent à 0 et le tri secondaire par nom
+        garde l'ordre alphabétique d'origine. Attribuer un rang dès la
+        création ferait basculer ces projets-là en ordre de création, ce qui
+        n'est pas ce qu'on veut.
+        """
         if self.code:
             self.code = self.code.upper()
+        if self._state.adding and not self.display_order and self.project_id:
+            dernier = (
+                Venue.objects
+                .filter(project_id=self.project_id)
+                .aggregate(models.Max('display_order'))['display_order__max']
+            )
+            if dernier:
+                self.display_order = dernier + 1
         super().save(*args, **kwargs)
 
 
