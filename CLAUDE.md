@@ -3388,3 +3388,32 @@ Plutôt que d'argumenter, rendre la confusion impossible :
   la fiche Lieu — même graisse, soulignement au survol seulement.
 
 Suite : 503 tests, flake8, build Vue OK. Aucune migration.
+
+## 2026-08-07 (soir, suite) — Instrumentation du géocodage (fix/logs-geocodage)
+
+Le symptôme de Samuel persiste (« les lieux ont adresses et coordonnées,
+même via les liens du message ») alors que le backend voit lat=None au
+refresh — et les logs Railway ne permettent PAS de trancher : découverte en
+cours de route, sans config LOGGING, les `logger.info` applicatifs ne
+sortent jamais en prod (le handler de dernier recours de Python ne laisse
+passer que WARNING+), et le seul chemin d'échec du géocodage sans warning
+(clé/adresse vide) était exactement le chemin silencieux. Toute inférence
+« pas de log = pas d'appel » était donc invalide.
+
+- `config/settings.py` : config LOGGING explicite — logger `inventory` en
+  INFO sur stdout (Railway capture stdout), volume faible (événements
+  ponctuels, pas du par-requête).
+- `maps.geocode_address` : logge non-tentative (clé/adresse vide), succès,
+  et surtout l'échec « sans résultat » avec le `status` de GOOGLE
+  (REQUEST_DENIED = Geocoding API pas activée sur la clé, ZERO_RESULTS =
+  adresse introuvable, OVER_QUERY_LIMIT = quota) + `error_message`.
+- `maps._ensure_coordinates` : logge l'état du lieu (GPS/adresse en base)
+  avant le géocodage au vol, et le succès sauvé.
+- `refresh_distances` : logge l'état EXACT vu par le serveur pour chaque
+  arrêt (id, nom, GPS oui/non, adresse oui/non) et le résultat par segment.
+- `VenueSerializer.validate` : logge la décision (géocodage déclenché ou
+  non, avec les quatre booléens de la condition).
+
+Prochain épisode : Samuel resauve une fiche Lieu avec adresse + reclique
+« Réestimer les distances », et les logs Railway diront enfin qui ment —
+la base, le géocodage, ou Google.

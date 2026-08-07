@@ -270,3 +270,27 @@ REST_AUTH = {
 # désactivée (fallback sur Settings.default_transport_duration_minutes) —
 # aucune erreur au démarrage.
 GOOGLE_MAPS_API_KEY = env('GOOGLE_MAPS_API_KEY', default='')
+
+# --- Journalisation applicative (2026-08-07, soir) ---
+# Ajoutée pendant le débogage du géocodage : sans config LOGGING, les
+# `logger.info(...)` du code applicatif ne sortent JAMAIS en production
+# (le handler « dernier recours » de Python ne laisse passer que
+# WARNING et plus), ce qui a rendu un incident indiagnosticable dans les
+# logs Railway — impossible de savoir si un appel Google avait eu lieu.
+# Handler stdout sans filtre de DEBUG : Railway capture stdout/stderr.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'simple': {'format': '[{asctime}] {levelname} {name} — {message}', 'style': '{'},
+    },
+    'handlers': {
+        'console': {'class': 'logging.StreamHandler', 'formatter': 'simple'},
+    },
+    'loggers': {
+        # Tout le code applicatif (inventory.maps, inventory.views, …) en
+        # INFO — le volume reste faible, ce sont des événements ponctuels
+        # (géocodage, estimation de trajet), pas du par-requête.
+        'inventory': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+    },
+}
