@@ -229,15 +229,33 @@ class VenueSerializer(serializers.ModelSerializer):
         la plupart des lieux n'en avaient pas — et durées, distances/km
         camion et suggestion d'ordre échouaient tous.
 
-        Règles : on ne géocode que si l'utilisateur n'a PAS fourni de
-        coordonnées dans ce payload (une saisie manuelle reste prioritaire),
-        et seulement quand l'adresse change ou que les coordonnées sont
-        vides — resauver une fiche intacte ne consomme pas d'appel
-        Geocoding. Échec silencieux (clé absente, adresse introuvable) : la
-        fiche s'enregistre sans coordonnées, comme avant ; le filet au vol
-        de `maps._ensure_coordinates` retentera à la première estimation.
+        Règles : on ne géocode que si l'utilisateur n'a PAS saisi de
+        coordonnées lui-même (une saisie manuelle reste prioritaire), et
+        seulement quand l'adresse change ou que les coordonnées sont vides —
+        resauver une fiche intacte ne consomme pas d'appel Geocoding. Échec
+        silencieux (clé absente, adresse introuvable) : la fiche
+        s'enregistre sans coordonnées, comme avant ; le filet au vol de
+        `maps._ensure_coordinates` retentera à la première estimation.
+
+        « Saisi des coordonnées » se juge sur un CHANGEMENT DE VALEUR, pas
+        sur la présence de la clé dans le payload (corrigé le 2026-08-07,
+        retour de Samuel le jour même du merge) : la fiche Lieu du frontend
+        renvoie TOUT son formulaire à chaque enregistrement —
+        `latitude`/`longitude` sont donc toujours présents, à `null` quand
+        les champs sont vides. Tester `'latitude' in attrs` bloquait
+        silencieusement le géocodage sur exactement le flux recommandé
+        (« ajoute une adresse à la fiche Lieu »). Corollaire assumé : des
+        coordonnées RENVOYÉES TELLES QUELLES pendant que l'adresse change
+        sont re-géocodées — les anciennes coordonnées décrivent l'ancienne
+        adresse, les garder serait pire.
         """
-        coords_given = 'latitude' in attrs or 'longitude' in attrs
+        provided_lat = attrs.get('latitude')
+        provided_lon = attrs.get('longitude')
+        coords_typed = (provided_lat is not None or provided_lon is not None) and (
+            self.instance is None
+            or provided_lat != self.instance.latitude
+            or provided_lon != self.instance.longitude
+        )
         address = attrs.get('address', getattr(self.instance, 'address', '') if self.instance else '')
         address_changed = 'address' in attrs and (
             self.instance is None or attrs['address'] != self.instance.address
@@ -247,7 +265,7 @@ class VenueSerializer(serializers.ModelSerializer):
             and self.instance.latitude is not None
             and self.instance.longitude is not None
         )
-        if not coords_given and address.strip() and (address_changed or not has_coords):
+        if not coords_typed and address.strip() and (address_changed or not has_coords):
             geocoded = geocode_address(address)
             if geocoded is not None:
                 attrs['latitude'] = geocoded['latitude']
