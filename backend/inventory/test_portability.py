@@ -90,6 +90,7 @@ def _build_full_project():
     # `Transport`/`TransportStop` (models.py).
     transport = Transport.objects.create(
 project=spectacle.project,
+truck=spectacle.project.trucks.order_by('id').first(),
 show=spectacle, scheduled_datetime=timezone.now() - timezone.timedelta(hours=4),
     )
     depart = TransportStop.objects.create(
@@ -181,6 +182,7 @@ class PortabilityRoundTripTests(TestCase):
         )
         transport = Transport.objects.create(
 project=spectacle.project,
+truck=spectacle.project.trucks.order_by('id').first(),
 show=spectacle, scheduled_datetime=timezone.now())
         TransportStop.objects.create(transport=transport, venue=venue_a, order=0, travel_minutes_from_previous=0)
         stop_b = TransportStop.objects.create(

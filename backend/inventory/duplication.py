@@ -13,7 +13,7 @@ d'assignation/horaire (`Show`, `ShowMaterial`, `ShowTechnician`,
 
 from django.db import transaction
 
-from .models import Material, MaterialCategory, Project, Technician, Venue
+from .models import Material, MaterialCategory, Project, Technician, Truck, Venue
 
 
 def duplicate_project(source_project, name, client_name=''):
@@ -99,6 +99,18 @@ def duplicate_project(source_project, name, client_name=''):
                 new_material.parent_material = material_id_map[material.parent_material_id]
                 new_material.save(update_fields=['parent_material'])
 
+        # Camions (2026-08-06) : la flotte de base se recopie (les NOMS —
+        # une nouvelle édition loue généralement le même genre de véhicule),
+        # mais ni les dates ni les numéros de réservation/contrat ni les
+        # notes : ce sont des données de LA location de l'édition source.
+        # `get_or_create` : le signal `creer_camion_par_defaut` a déjà doté
+        # le nouveau projet d'un « Camion ».
+        truck_count = 0
+        for truck in source_project.trucks.all():
+            _, created = Truck.objects.get_or_create(project=new_project, name=truck.name)
+            if created:
+                truck_count += 1
+
         technician_count = 0
         for technician in source_project.technicians.all():
             Technician.objects.create(
@@ -115,5 +127,6 @@ def duplicate_project(source_project, name, client_name=''):
             'materials': len(material_id_map),
             'technicians': technician_count,
             'material_categories': len(category_id_map),
+            'trucks': truck_count,
         }
         return new_project, counts

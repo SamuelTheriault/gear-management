@@ -3281,3 +3281,47 @@ de réservation par camion, km estimé via distances stockées par segment —
 champ distance à ajouter sur TransportStop, l'API Routes la retourne déjà) ;
 **ordre des arrêts optimisé** (bouton « Suggérer un ordre », premier arrêt
 fixe, précédences chargement<déchargement, énumération exacte ≤ 8 arrêts).
+
+## Mise à jour (2026-08-06, soir, suite) — Chantier 2 : entité Camion
+
+Empilé sur `feature/transport-show-optionnel` (même PR que le chantier 1,
+demande de Samuel). Suite : **467 tests OK** + flake8 ; build Vite +
+Playwright (liste Camions, fiche avec km/avertissements) sans erreur.
+
+**Backend (migration `0029_trucks`, 3 temps)** :
+- `Truck` : project (CASCADE), name, reservation_start/end (UNE période par
+  camion — décision Samuel : 2e location = 2e fiche), reservation_number,
+  contract_number, notes (nh3). Camion « Camion » par défaut : signal
+  `creer_camion_par_defaut` (nouveaux projets) + migration (existants).
+- `Transport.truck` : obligatoire, PROTECT, défaut = premier camion du
+  projet (serializer + autogen). `TruckViewSet.destroy` : garde lisible
+  (camion utilisé, ou dernier du projet). Duplication : NOMS de flotte
+  recopiés, pas les réservations. Portability : export/import complets
+  (camions + réf truck + distances), repli premier camion pour les
+  fichiers d'avant 0029.
+- Conflit de camion : `get_truck_conflicts` (tournées confirmées du même
+  camion qui se chevauchent) — bloquant + `force` dans le serializer, type
+  `truck_transport` dans le bandeau, 4e groupe `truck_conflicts` du rapport
+  project-wide (l'écran Conflits l'affiche, lien « Voir la tournée »).
+  `has_truck_conflict` (fiche ; `None` en liste — budget de requêtes) et
+  `truck_reservation_warning` (non bloquant, dates inclusives) exposés.
+- Distances : `TransportStop.travel_distance_meters`, rempli par
+  `maps.estimate_travel` (durée + `routes.distanceMeters`, MÊME appel API —
+  coût inchangé ; `estimate_travel_minutes` reste en enveloppe de compat).
+  Le plan du serializer transporte `distance` ; segment au couple de lieux
+  inchangé → distance conservée ; durée manuelle sur un couple changé →
+  distance inconnue (None). `Truck.estimated_distance()` = somme sur les
+  tournées confirmées + décompte des segments sans distance
+  (`estimated_km`/`km_is_partial` : « au moins X km », jamais un total
+  partiel déguisé en total).
+
+**Frontend** :
+- Nav « Camions » (après Techniciens) ; `CamionsView` (liste : réservation,
+  n°, km, nb tournées + ajout rapide par nom) ; `CamionDetailView` (fiche
+  useFicheEdition : période/n°s/notes ; km estimé ; chronologie
+  d'utilisation via `?truck=` avec avertissements par tournée).
+- Fiche transport : sélecteur de camion (édition), nom + avertissements
+  (lecture). Écran Conflits : groupe « Conflits de camion ».
+
+Chantier 3 (ordre des arrêts optimisé) : cadré, PAS commencé — voir la
+mémoire de projet et l'entrée précédente.

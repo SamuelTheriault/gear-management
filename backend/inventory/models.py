@@ -963,6 +963,101 @@ class ShowTechnician(models.Model):
         return f"{self.technician} → {self.show}"
 
 
+class Truck(models.Model):
+    """Camion de production — ajouté le 2026-08-06 (décision de Samuel,
+    chantier 2 des travaux transport ; migration `0029`).
+
+    Chaque projet reçoit UN camion par défaut à sa création (« Camion », voir
+    `signals.creer_camion_par_defaut` — même pattern que les catégories de
+    matériel), et la migration en a doté les projets existants. Chaque
+    tournée (`Transport.truck`) est assignée à un camion, avec détection de
+    conflit d'horaire comme pour les techniciens : un camion ne peut pas
+    faire deux tournées qui se chevauchent (bloquant + `force`, voir
+    `conflicts.get_truck_conflicts`).
+
+    Réservation : UNE période par camion (décision de Samuel — une deuxième
+    location = une deuxième fiche camion, ex. « Cube 16 pi — semaine 2 »),
+    avec numéro de réservation et de contrat. Une tournée planifiée hors de
+    la période déclenche un AVERTISSEMENT non bloquant côté API/frontend
+    (`TransportSerializer.truck_reservation_warning`) — c'est un rappel de
+    logistique, pas une règle d'horaire.
+
+    Km estimé : somme des distances des segments (voir
+    `TransportStop.travel_distance_meters`, rempli par Google Routes en même
+    temps que la durée) des tournées CONFIRMÉES et horodatées du camion —
+    « le km estimé calculé selon les trajets Google Maps approuvés »
+    (Samuel). Les segments sans distance connue (lieux sans GPS, durée
+    saisie à la main) ne comptent pas : `estimated_distance()` retourne
+    aussi ce décompte pour que l'affichage dise « au moins X km » plutôt que
+    de faire passer un total partiel pour complet.
+    """
+
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name='trucks',
+        help_text="Production à laquelle ce camion appartient.",
+    )
+    name = models.CharField(
+        max_length=255,
+        default='Camion',
+        help_text="Nom d'usage (ex. « Cube 16 pi », « Van Catimini »).",
+    )
+    reservation_start = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Début de la période de réservation/location (optionnel).",
+    )
+    reservation_end = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Fin de la période de réservation/location (optionnel).",
+    )
+    reservation_number = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Numéro de réservation chez le loueur.",
+    )
+    contract_number = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Numéro de contrat de location.",
+    )
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        db_table = 'trucks'
+        ordering = ['project', 'name']
+
+    def __str__(self):
+        return f"{self.name} ({self.project})"
+
+    def estimated_distance(self):
+        """Distance estimée parcourue par ce camion, d'après les tournées
+        confirmées et horodatées qui lui sont assignées.
+
+        Retourne `(meters, missing_segments)` : la somme des
+        `travel_distance_meters` connus des segments (arrêts d'ordre > 0), et
+        le nombre de segments SANS distance connue — pour afficher un total
+        honnête (« au moins X km ») quand l'estimation Routes n'a pas couvert
+        toute la route.
+        """
+        stops = TransportStop.objects.filter(
+            transport__truck=self,
+            transport__status=Transport.STATUS_CONFIRMED,
+            transport__scheduled_datetime__isnull=False,
+            order__gt=0,
+        )
+        meters = 0
+        missing = 0
+        for stop in stops:
+            if stop.travel_distance_meters is None:
+                missing += 1
+            else:
+                meters += stop.travel_distance_meters
+        return meters, missing
+
+
 class Transport(models.Model):
     """Tournée de matériel : une séquence ordonnée d'arrêts (voir `TransportStop`),
     pour un spectacle donné.
@@ -1025,6 +1120,19 @@ class Transport(models.Model):
             "`show`, devenu OPTIONNEL (voir ci-dessous). CASCADE : la "
             "suppression d'un projet emporte ses tournées, comme avant via "
             "le spectacle."
+        ),
+    )
+    truck = models.ForeignKey(
+        Truck,
+        on_delete=models.PROTECT,
+        related_name='transports',
+        help_text=(
+            "Camion qui fait cette tournée (ajouté le 2026-08-06, migration "
+            "0029). Défaut à la création : le premier camion du projet (voir "
+            "TransportSerializer). PROTECT : un camion encore assigné à des "
+            "tournées ne peut pas être supprimé — garde lisible dans "
+            "TruckViewSet.destroy. Conflit d'horaire entre tournées du même "
+            "camion : voir conflicts.get_truck_conflicts (bloquant + force)."
         ),
     )
     show = models.ForeignKey(
@@ -1210,6 +1318,18 @@ class TransportStop(models.Model):
             "arrêt. Pré-remplie via l'API Google Routes quand les deux lieux "
             "ont des coordonnées GPS (voir TransportSerializer et "
             "inventory/maps.py) ; sinon, valeur par défaut tirée de Settings."
+        ),
+    )
+    travel_distance_meters = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Distance du segment depuis l'arrêt précédent, en mètres — "
+            "remplie par Google Routes en même temps que la durée (2026-08-06, "
+            "migration 0029). NULL = inconnue (lieux sans GPS, durée saisie à "
+            "la main, ou segment antérieur à cette migration) : le km estimé "
+            "du camion (Truck.estimated_distance) l'exclut et le signale "
+            "plutôt que de compter 0. Toujours NULL sur le premier arrêt."
         ),
     )
 

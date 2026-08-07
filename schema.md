@@ -210,6 +210,27 @@ Table ajoutée le 2026-07-18 (hors des 8 tables initiales). **Refonte en tourné
 
 ---
 
+## 8ter. `trucks`
+
+Table ajoutée le 2026-08-06 (chantier Camion, décisions de Samuel) — la flotte de la production. Un camion par défaut (« Camion ») est créé avec chaque projet (signal `creer_camion_par_defaut` ; migration `0029` pour les projets existants) : chaque tournée est assignée à un camion (`transports.truck_id`, PROTECT, défaut = premier camion du projet).
+
+| Champ | Type | Description |
+|---|---|---|
+| id | INT, PK | Identifiant unique |
+| project_id | INT, FK → projects.id (CASCADE) | Production |
+| name | VARCHAR(255) (default « Camion ») | Nom d'usage (« Cube 16 pi ») |
+| reservation_start / reservation_end | DATE, nullables | UNE période de réservation par camion — une 2e location = une 2e fiche camion |
+| reservation_number / contract_number | VARCHAR(100) | Numéros chez le loueur |
+| notes | TEXT | Notes (assainies nh3) |
+
+**Conflit de camion** : deux tournées confirmées du même camion ne peuvent pas se chevaucher — bloquant + `force` (`conflicts.get_truck_conflicts`), 4e groupe du rapport project-wide (`truck_conflicts`). Une tournée HORS de la période de réservation déclenche un simple AVERTISSEMENT (`TransportSerializer.truck_reservation_warning`), jamais un refus.
+
+**Km estimé** : `TransportStop.travel_distance_meters` (rempli par le même appel Google Routes que la durée — FieldMask `routes.distanceMeters`) sommé sur les tournées CONFIRMÉES du camion (`Truck.estimated_distance`). Les segments sans distance connue sont exclus ET comptés (`km_is_partial` → « au moins X km »).
+
+**Suppression** : refusée si des tournées y sont assignées, ou s'il est le dernier camion du projet (chaque tournée doit pouvoir recevoir un défaut). Duplication de projet : les NOMS de la flotte sont recopiés, pas les réservations. Export/import JSON : fiche complète, réimportable.
+
+---
+
 ## 8bis. `transport_stops`
 
 Table ajoutée le 2026-08-04 (refonte tournées) — les arrêts d'une tournée, dans l'ordre.

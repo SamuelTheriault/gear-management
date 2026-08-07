@@ -50,6 +50,7 @@ from .models import (
     ShowTechnician,
     Technician,
     Transport,
+    Truck,
     TransportMaterial,
     TransportStop,
     TransportTechnician,
@@ -154,6 +155,21 @@ def export_project_data(project):
             }
             for t in project.technicians.all()
         ],
+        # Camions (2026-08-06, chantier Camion) — la réservation complète
+        # voyage avec le projet, l'export JSON reste réimportable à
+        # l'identique.
+        'trucks': [
+            {
+                'id': tk.id,
+                'name': tk.name,
+                'reservation_start': tk.reservation_start,
+                'reservation_end': tk.reservation_end,
+                'reservation_number': tk.reservation_number,
+                'contract_number': tk.contract_number,
+                'notes': tk.notes,
+            }
+            for tk in project.trucks.all()
+        ],
         'shows': [
             {
                 'id': s.id,
@@ -196,6 +212,7 @@ def export_project_data(project):
                 'id': tr.id,
                 'status': tr.status,
                 'show': tr.show_id,
+                'truck': tr.truck_id,
                 'scheduled_datetime': tr.scheduled_datetime,
                 'notes': tr.notes,
                 'stops': [
@@ -203,6 +220,7 @@ def export_project_data(project):
                         'order': stop.order,
                         'venue': stop.venue_id,
                         'travel_minutes_from_previous': stop.travel_minutes_from_previous,
+                        'travel_distance_meters': stop.travel_distance_meters,
                     }
                     for stop in tr.ordered_stops
                 ],
@@ -406,6 +424,22 @@ def import_project_data(data, name=None, client_name=None):
                 new_material.parent_material = parent
                 new_material.save(update_fields=['parent_material'])
 
+            # Camions : le signal a déjà créé « Camion » sur le nouveau
+            # projet — `get_or_create` par nom évite le doublon, et on
+            # complète la fiche avec la réservation du fichier.
+            truck_id_map = {}
+            for tk in data.get('trucks') or []:
+                new_truck, _ = Truck.objects.get_or_create(
+                    project=new_project, name=tk.get('name') or 'Camion',
+                )
+                new_truck.reservation_start = _parse_date(tk.get('reservation_start'))
+                new_truck.reservation_end = _parse_date(tk.get('reservation_end'))
+                new_truck.reservation_number = tk.get('reservation_number') or ''
+                new_truck.contract_number = tk.get('contract_number') or ''
+                new_truck.notes = clean_notes(tk.get('notes') or '')
+                new_truck.save()
+                truck_id_map[tk.get('id')] = new_truck
+
             technician_id_map = {}
             for t in data.get('technicians') or []:
                 new_technician = Technician.objects.create(
@@ -505,9 +539,17 @@ def import_project_data(data, name=None, client_name=None):
                     raise PortabilityError(
                         "Un déplacement du fichier n'a pas assez d'arrêts (au moins 2 attendus)."
                     )
+                # Camion : celui du fichier s'il se résout, sinon le
+                # premier du nouveau projet (fichiers d'avant la migration
+                # 0029, ou référence invalide — on ne bloque pas un import
+                # complet pour ça, chaque tournée doit juste avoir un camion).
+                truck_obj = truck_id_map.get(tr.get('truck'))
+                if truck_obj is None:
+                    truck_obj = Truck.objects.filter(project=new_project).order_by('id').first()
                 new_transport = Transport.objects.create(
                     project=new_project,
                     show=show_obj,
+                    truck=truck_obj,
                     status=tr.get('status') or Transport.STATUS_CONFIRMED,
                     scheduled_datetime=_parse_datetime(tr.get('scheduled_datetime')),
                     notes=clean_notes(tr.get('notes') or ''),
@@ -519,11 +561,13 @@ def import_project_data(data, name=None, client_name=None):
                         raise PortabilityError(
                             "Un arrêt de déplacement référence un lieu introuvable dans le fichier."
                         )
+                    distance = stop.get('travel_distance_meters')
                     new_stop = TransportStop.objects.create(
                         transport=new_transport,
                         venue=venue_obj,
                         order=position,
                         travel_minutes_from_previous=int(stop.get('travel_minutes_from_previous') or 0),
+                        travel_distance_meters=int(distance) if distance is not None else None,
                     )
                     stop_obj_by_order[stop.get('order')] = new_stop
                 for tech_ref in tr.get('technicians') or []:

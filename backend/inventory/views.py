@@ -95,6 +95,7 @@ from .models import (
     ShowTechnician,
     Technician,
     Transport,
+    Truck,
     TransportTechnician,
     User,
     Venue,
@@ -110,6 +111,7 @@ from .serializers import (
     ShowTechnicianSerializer,
     TechnicianSerializer,
     TransportSerializer,
+    TruckSerializer,
     UserSerializer,
     VenueSerializer,
 )
@@ -1324,6 +1326,45 @@ class ShowTechnicianViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSe
         return queryset
 
 
+class TruckViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewsets.ModelViewSet):
+    """CRUD sur les camions de production (chantier Camion, 2026-08-06),
+    filtrable par projet (`?project=<id>`).
+
+    Suppression : **refusée** tant que des tournées y sont assignées
+    (`Transport.truck` en PROTECT — sans traitement, Django lèverait un
+    `ProtectedError` que DRF rendrait en 500, même pattern que
+    `VenueViewSet.destroy`). Réassigner les tournées à un autre camion
+    d'abord. Le DERNIER camion d'un projet est aussi protégé : chaque tournée
+    doit pouvoir recevoir un camion par défaut.
+    """
+
+    queryset = Truck.objects.select_related('project').all()
+    serializer_class = TruckSerializer
+    permission_classes = [HasProjectAccess]
+
+    def destroy(self, request, *args, **kwargs):
+        """Supprime un camion, sauf s'il est utilisé ou s'il est le dernier."""
+        truck = self.get_object()
+        used_by = truck.transports.count()
+        if used_by:
+            return Response(
+                {
+                    'detail': (
+                        f"Ce camion est assigné à {used_by} tournée(s). "
+                        "Réassigne-les à un autre camion avant de le supprimer."
+                    ),
+                    'transports': used_by,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not Truck.objects.filter(project_id=truck.project_id).exclude(id=truck.id).exists():
+            return Response(
+                {'detail': "Impossible de supprimer le dernier camion du projet — chaque tournée doit pouvoir en recevoir un."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().destroy(request, *args, **kwargs)
+
+
 class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
     """CRUD standard sur les déplacements (livraison/ramassage), validation de conflit dans le serializer.
 
@@ -1341,7 +1382,7 @@ class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
 
     queryset = (
         Transport.objects
-        .select_related('show')
+        .select_related('show', 'truck')
         .prefetch_related(
             'stops__venue',
             'transport_materials__material',
@@ -1382,6 +1423,10 @@ class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
             # techniciens par déplacement) — `distinct()` parce qu'un JOIN sur
             # une relation inverse peut dupliquer les lignes.
             queryset = queryset.filter(transport_technicians__technician_id=technician_id).distinct()
+        truck_id = self.request.query_params.get('truck')
+        if truck_id:
+            # Chronologie d'utilisation d'un camion (fiche Camion, 2026-08-06).
+            queryset = queryset.filter(truck_id=truck_id)
         project_id = self.request.query_params.get('project')
         if project_id:
             queryset = queryset.filter(project_id=project_id)

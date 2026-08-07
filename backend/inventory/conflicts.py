@@ -84,6 +84,7 @@ from .models import (
     Show,
     ShowMaterial,
     ShowTechnician,
+    Transport,
     TransportTechnician,
 )
 
@@ -319,6 +320,54 @@ def get_transport_conflicts(scheduled_datetime, duration_minutes, technician, ex
         if windows_overlap(new_start, new_end, start, end):
             conflicts.append(obj)
     return conflicts
+
+
+def get_truck_conflicts(scheduled_datetime, duration_minutes, truck, exclude_id=None):
+    """Tournées du même camion qui chevaucheraient la fenêtre
+    `[scheduled_datetime, scheduled_datetime + duration_minutes]` — ajouté le
+    2026-08-06 (chantier Camion, décision de Samuel : même règle que les
+    techniciens, un camion ne peut pas faire deux tournées en même temps).
+
+    Seules les tournées CONFIRMÉES et horodatées comptent (une proposition
+    sans heure n'a pas de fenêtre). Bloquant + `force` dans
+    `TransportSerializer.validate`, comme les autres conflits.
+
+    `exclude_id` : id du `Transport` à exclure lors d'une mise à jour.
+    """
+    if scheduled_datetime is None or duration_minutes is None or truck is None:
+        return []
+    new_start = scheduled_datetime
+    new_end = scheduled_datetime + timedelta(minutes=duration_minutes)
+    candidates = (
+        Transport.objects
+        .filter(truck=truck, status=Transport.STATUS_CONFIRMED, scheduled_datetime__isnull=False)
+        .select_related('show')
+        .prefetch_related('stops__venue')
+    )
+    if exclude_id is not None:
+        candidates = candidates.exclude(id=exclude_id)
+    return [
+        t for t in candidates
+        if t.effective_end is not None
+        and windows_overlap(new_start, new_end, t.scheduled_datetime, t.effective_end)
+    ]
+
+
+def serialize_truck_conflict(transport):
+    """Représentation compacte d'une tournée en conflit de camion, pour la
+    réponse API — même esprit que `serialize_technician_conflict`, avec le
+    trajet en plus (c'est ce qui identifie une tournée à l'écran)."""
+    stops = transport.ordered_stops
+    return {
+        'type': 'truck_transport',
+        'transport_id': transport.id,
+        'truck_id': transport.truck_id,
+        'show_id': transport.show_id,
+        'show_title': transport.show.display_title if transport.show_id else None,
+        'route': ' → '.join(stop.venue.name for stop in stops),
+        'scheduled_datetime': transport.scheduled_datetime,
+        'estimated_duration_minutes': transport.total_duration_minutes,
+    }
 
 
 def find_departure_show(venue, before_datetime, exclude_show_id=None):
@@ -601,10 +650,40 @@ def get_project_conflicts(project):
                 'b': serialize_technician_conflict(other),
             })
 
+    # Conflits de camion (2026-08-06) : deux tournées confirmées du même
+    # camion qui se chevauchent — même dédoublonnage par paire que les autres
+    # groupes.
+    transports = list(
+        Transport.objects
+        .filter(project_id=project.id, status=Transport.STATUS_CONFIRMED, scheduled_datetime__isnull=False)
+        .select_related('show', 'truck')
+        .prefetch_related('stops__venue')
+    )
+    seen_truck_pairs = set()
+    truck_conflicts = []
+    for transport in transports:
+        others = get_truck_conflicts(
+            transport.scheduled_datetime,
+            transport.total_duration_minutes,
+            transport.truck,
+            exclude_id=transport.id,
+        )
+        for other in others:
+            key = frozenset({transport.id, other.id})
+            if key in seen_truck_pairs:
+                continue
+            seen_truck_pairs.add(key)
+            truck_conflicts.append({
+                'truck_name': transport.truck.name,
+                'a': serialize_truck_conflict(transport),
+                'b': serialize_truck_conflict(other),
+            })
+
     return {
         'venue_conflicts': venue_conflicts,
         'material_conflicts': material_conflicts,
         'technician_conflicts': technician_conflicts,
+        'truck_conflicts': truck_conflicts,
     }
 
 

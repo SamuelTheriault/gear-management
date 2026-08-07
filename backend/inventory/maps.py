@@ -1,8 +1,9 @@
 """
 Intégration Google Routes API — estime le temps de trajet entre deux lieux
 (Venue) ayant des coordonnées GPS, pour pré-remplir automatiquement la durée
-d'un segment de tournée (`TransportStop.travel_minutes_from_previous` — voir
-`TransportSerializer.validate`).
+ET la distance d'un segment de tournée (`TransportStop.travel_minutes_from_previous`/`travel_distance_meters` — voir
+`TransportSerializer.validate` ; la distance alimente le km estimé du camion,
+2026-08-06).
 
 Décision du 2026-07-18 : utiliser l'endpoint "Compute Routes" (un trajet
 simple, une origine et une destination) plutôt que "Compute Route Matrix"
@@ -40,10 +41,25 @@ REQUEST_TIMEOUT_SECONDS = 5
 
 
 def estimate_travel_minutes(origin_venue, destination_venue):
-    """Retourne la durée de trajet estimée (minutes, arrondie à l'entier) en
+    """Retourne la durée de trajet estimée (minutes) — voir `estimate_travel`.
+
+    Enveloppe de compatibilité : les appelants qui ne veulent que la durée
+    (ex. `transport_autogen.estimate_travel_minutes_by_id`) continuent de
+    passer par ici ; `estimate_travel` retourne durée ET distance depuis le
+    2026-08-06 (km estimé du camion, chantier 2)."""
+    result = estimate_travel(origin_venue, destination_venue)
+    return result['minutes'] if result else None
+
+
+def estimate_travel(origin_venue, destination_venue):
+    """Retourne `{'minutes': int, 'meters': int|None}` pour le trajet en
     voiture entre `origin_venue` et `destination_venue` via l'API Google
     Routes, ou `None` si le calcul n'est pas possible (clé API absente,
-    coordonnées manquantes sur l'une des deux venues, ou appel en échec)."""
+    coordonnées manquantes sur l'une des deux venues, ou appel en échec).
+
+    `meters` vient de `routes.distanceMeters` (ajouté au FieldMask le
+    2026-08-06 — même appel, même coût, une donnée de plus) et alimente
+    `TransportStop.travel_distance_meters` pour le km estimé du camion."""
     api_key = getattr(settings, 'GOOGLE_MAPS_API_KEY', '') or ''
     if not api_key:
         return None
@@ -69,7 +85,7 @@ def estimate_travel_minutes(origin_venue, destination_venue):
         # FieldMask requis par l'API Routes (contrairement à l'ancienne
         # Distance Matrix) — on ne demande que la durée, pas la géométrie
         # complète du trajet, pour garder la réponse minimale.
-        "X-Goog-FieldMask": "routes.duration",
+        "X-Goog-FieldMask": "routes.duration,routes.distanceMeters",
     }
 
     try:
@@ -98,4 +114,8 @@ def estimate_travel_minutes(origin_venue, destination_venue):
     except ValueError:
         return None
 
-    return max(1, round(seconds / 60))
+    meters = routes[0].get('distanceMeters')
+    if not isinstance(meters, int) or meters < 0:
+        meters = None
+
+    return {'minutes': max(1, round(seconds / 60)), 'meters': meters}

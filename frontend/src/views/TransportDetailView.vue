@@ -150,6 +150,9 @@ const transport = ref(null)
 const venues = ref([])
 const technicians = ref([])
 const materialsCatalog = ref([])
+// Camions du projet (2026-08-06) : chaque tournée en a un — sélecteur en
+// édition, nom + avertissement de réservation en lecture.
+const trucks = ref([])
 const loading = ref(false)
 const loadError = ref(null)
 
@@ -342,6 +345,7 @@ function buildForm(t) {
   }
   return {
     scheduled_datetime: scheduledDefault,
+    truck: t.truck,
     // Séquence d'arrêts (tournées 2026-08-04) : `travel` est la durée du
     // segment depuis l'arrêt précédent. `''` (champ vidé) = « à estimer par
     // le serveur » — on n'envoie alors pas la clé (voir save()).
@@ -372,14 +376,16 @@ async function loadTransport() {
     // (`show` est devenu optionnel — plus de détour par la fiche spectacle,
     // qui plantait sur une tournée « sans spectacle »).
     const projectId = transport.value.project
-    const [venuesData, techniciansData, materialsData] = await Promise.all([
+    const [venuesData, techniciansData, materialsData, trucksData] = await Promise.all([
       api.get('/venues/', { project: projectId }),
       api.get('/technicians/', { project: projectId }),
       api.get('/materials/', { project: projectId }),
+      api.get('/trucks/', { project: projectId }),
     ])
     venues.value = Array.isArray(venuesData) ? venuesData : (venuesData.results ?? [])
     technicians.value = Array.isArray(techniciansData) ? techniciansData : (techniciansData.results ?? [])
     materialsCatalog.value = Array.isArray(materialsData) ? materialsData : (materialsData.results ?? [])
+    trucks.value = Array.isArray(trucksData) ? trucksData : (trucksData.results ?? [])
 
     form.value = buildForm(transport.value)
     saveError.value = null
@@ -854,6 +860,7 @@ async function save({ confirm = false, force = false } = {}) {
   try {
     const payload = {
       scheduled_datetime: form.value.scheduled_datetime ? new Date(form.value.scheduled_datetime).toISOString() : null,
+      truck: form.value.truck,
       // Séquence d'arrêts : l'ordre est la position dans la liste. Une durée
       // laissée vide n'envoie pas la clé — le serveur estime (Routes, repli
       // Settings) ; le premier arrêt n'a jamais de durée (segment inexistant).
@@ -990,6 +997,20 @@ const {
             <div class="summary-label">Durée totale</div>
             <div class="summary-value">{{ transport.estimated_duration_minutes }} min</div>
           </div>
+          <div>
+            <div class="summary-label">Camion</div>
+            <div class="summary-value">{{ transport.truck_name || '—' }}</div>
+          </div>
+        </div>
+
+        <!-- Avertissements camion (2026-08-06) : chevauchement avec une autre
+             tournée du même camion (a été forcé), ou tournée hors de la
+             période de réservation — non bloquants, mais à voir. -->
+        <div v-if="transport.has_truck_conflict" class="conflict-note">
+          Le camion « {{ transport.truck_name }} » fait une autre tournée qui chevauche celle-ci.
+        </div>
+        <div v-if="transport.truck_reservation_warning" class="conflict-note">
+          {{ transport.truck_reservation_warning }}
         </div>
 
         <!-- Séquence d'arrêts (tournées 2026-08-04) : une ligne par arrêt,
@@ -1164,9 +1185,20 @@ const {
           Ajoute une heure de départ pour pouvoir confirmer ce transport.
         </div>
 
-        <div class="field">
-          <div class="field__label">Spectacle desservi (arrivée)</div>
-          <div class="field__static">{{ transport.show_title ?? 'Aucun spectacle' }}</div>
+        <div class="field-grid">
+          <div class="field">
+            <div class="field__label">Spectacle desservi (arrivée)</div>
+            <div class="field__static">{{ transport.show_title ?? 'Aucun spectacle' }}</div>
+          </div>
+          <div class="field">
+            <div class="field__label">Camion</div>
+            <select v-model="form.truck" class="field__input">
+              <option v-for="t in trucks" :key="t.id" :value="t.id">{{ t.name }}</option>
+            </select>
+          </div>
+        </div>
+        <div v-if="transport.truck_reservation_warning" class="conflict-note">
+          {{ transport.truck_reservation_warning }}
         </div>
 
         <!-- Séquence d'arrêts (tournées 2026-08-04) : l'ordre est la position

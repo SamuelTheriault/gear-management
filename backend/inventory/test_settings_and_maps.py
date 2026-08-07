@@ -169,9 +169,9 @@ class TransportAutoEstimationTests(TestCase):
             start_datetime=_dt(14), end_datetime=_dt(16),
         )
 
-    @patch('inventory.serializers.estimate_travel_minutes')
+    @patch('inventory.serializers.estimate_travel')
     def test_auto_fills_duration_when_not_provided(self, mock_estimate):
-        mock_estimate.return_value = 22
+        mock_estimate.return_value = {'minutes': 22, 'meters': 22000}
         response = self.client.post('/api/transports/', {
             'show': self.show.id, 'transport_type': 'delivery',
             'origin_venue': self.origin.id, 'destination_venue': self.destination.id,
@@ -181,9 +181,9 @@ class TransportAutoEstimationTests(TestCase):
         self.assertEqual(response.data['estimated_duration_minutes'], 22)
         mock_estimate.assert_called_once()
 
-    @patch('inventory.serializers.estimate_travel_minutes')
+    @patch('inventory.serializers.estimate_travel')
     def test_explicit_duration_is_not_overridden(self, mock_estimate):
-        mock_estimate.return_value = 999
+        mock_estimate.return_value = {'minutes': 999, 'meters': 999000}
         response = self.client.post('/api/transports/', {
             'show': self.show.id, 'transport_type': 'delivery',
             'origin_venue': self.origin.id, 'destination_venue': self.destination.id,
@@ -193,7 +193,7 @@ class TransportAutoEstimationTests(TestCase):
         self.assertEqual(response.data['estimated_duration_minutes'], 30)
         mock_estimate.assert_not_called()
 
-    @patch('inventory.serializers.estimate_travel_minutes')
+    @patch('inventory.serializers.estimate_travel')
     def test_falls_back_to_settings_default_when_maps_returns_none(self, mock_estimate):
         mock_estimate.return_value = None
         response = self.client.post('/api/transports/', {
@@ -204,12 +204,12 @@ class TransportAutoEstimationTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['estimated_duration_minutes'], 60)
 
-    @patch('inventory.serializers.estimate_travel_minutes')
+    @patch('inventory.serializers.estimate_travel')
     def test_unrelated_patch_does_not_recompute_or_overwrite_duration(self, mock_estimate):
         """Régression (trouvée en revue de code, 2026-07-18) : un PATCH qui ne
         touche ni au trajet ni à la durée ne doit ni rappeler l'API Google ni
         écraser une durée déjà en place (ex. corrigée manuellement)."""
-        mock_estimate.return_value = 22
+        mock_estimate.return_value = {'minutes': 22, 'meters': 22000}
         create_response = self.client.post('/api/transports/', {
             'show': self.show.id, 'transport_type': 'delivery',
             'origin_venue': self.origin.id, 'destination_venue': self.destination.id,
@@ -219,7 +219,7 @@ class TransportAutoEstimationTests(TestCase):
         transport_id = create_response.data['id']
         mock_estimate.assert_not_called()  # durée fournie explicitement à la création
 
-        mock_estimate.return_value = 999
+        mock_estimate.return_value = {'minutes': 999, 'meters': 999000}
         patch_response = self.client.patch(f'/api/transports/{transport_id}/', {
             'notes': 'mise à jour sans rapport avec le trajet',
         }, format='json')
@@ -227,11 +227,11 @@ class TransportAutoEstimationTests(TestCase):
         self.assertEqual(patch_response.data['estimated_duration_minutes'], 45)
         mock_estimate.assert_not_called()
 
-    @patch('inventory.serializers.estimate_travel_minutes')
+    @patch('inventory.serializers.estimate_travel')
     def test_patch_changing_destination_venue_recomputes_duration(self, mock_estimate):
         """Si le trajet change réellement (nouvelle destination) et qu'aucune
         durée explicite n'est fournie, on doit recalculer."""
-        mock_estimate.return_value = 22
+        mock_estimate.return_value = {'minutes': 22, 'meters': 22000}
         create_response = self.client.post('/api/transports/', {
             'show': self.show.id, 'transport_type': 'delivery',
             'origin_venue': self.origin.id, 'destination_venue': self.destination.id,
@@ -240,7 +240,7 @@ class TransportAutoEstimationTests(TestCase):
         transport_id = create_response.data['id']
 
         other_destination = Venue.objects.create(project=self.project, name="Autre salle", latitude=45.50, longitude=-73.58)
-        mock_estimate.return_value = 37
+        mock_estimate.return_value = {'minutes': 37, 'meters': 37000}
         patch_response = self.client.patch(f'/api/transports/{transport_id}/', {
             'destination_venue': other_destination.id,
         }, format='json')
