@@ -3333,3 +3333,32 @@ estimate-travel), flake8, build Vue, Playwright (sous-menu, formulaire
 prérempli 18 h 30 pour un début effectif 19 h 00 à 30 min de route,
 diagnostic nommant les lieux). Le suivi passe aussi les étapes 23-25 à
 « Mergée et déployée » (promis « au prochain lot » — c'est celui-ci).
+
+## 2026-08-07 (fin de journée) — Correctif géocodage : la fiche Lieu renvoie tout son formulaire
+
+Retour de Samuel quelques heures après le merge de l'étape 26 : « l'app ne
+voit pas les coordonnées mais elles apparaissent bien dans les fiches
+lieux ». Deux découvertes, sur `fix/geocodage-fiche-lieu` :
+
+- **Bug réel dans `VenueSerializer.validate`** : `'latitude' in attrs` était
+  TOUJOURS vrai — la fiche Lieu renvoie tout son formulaire à chaque PATCH,
+  latitude/longitude compris (à `null` quand vides). Le géocodage à
+  l'enregistrement ne se déclenchait donc JAMAIS depuis la fiche, précisément
+  le flux recommandé dans le message d'aide. Corrigé : « saisi des
+  coordonnées » se juge sur un CHANGEMENT DE VALEUR (non nulles ET
+  différentes de l'instance). Corollaire assumé et testé : des coordonnées
+  renvoyées telles quelles pendant que l'adresse change sont re-géocodées
+  (elles décrivent l'ancienne adresse).
+- **Le diagnostic « les coordonnées apparaissent dans les fiches » était un
+  trompe-l'œil** : `LieuDetailView.mapSrc` affiche une carte Google dès
+  qu'il y a une ADRESSE, même sans coordonnées en base — voir une carte ne
+  veut pas dire avoir le GPS (le vrai indicateur est la section « GPS »
+  chiffrée, qui n'apparaît que si les champs sont remplis). Confirmé par
+  les logs Railway : AUCUN appel Google (même pas un échec loggé) pendant
+  les tests de Samuel → les lieux nommés par le message n'avaient ni
+  coordonnées ni adresse en base ; sans adresse, `geocode_address` sort
+  avant tout appel réseau.
+
+2 tests de régression (PATCH « façon fiche » avec coords null + adresse ;
+coords inchangées + adresse changée → re-géocodage). Suite : 502 tests,
+flake8 propre, aucun changement frontend, aucune migration.

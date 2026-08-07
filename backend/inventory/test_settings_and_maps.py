@@ -554,3 +554,41 @@ class GeocodingTests(TestCase):
         self.assertEqual(result, {'minutes': 10, 'meters': 8000})
         origin.refresh_from_db()
         self.assertEqual(origin.latitude, Decimal('45.601000'))
+
+    @patch('inventory.serializers.geocode_address')
+    def test_full_form_patch_with_null_coords_still_geocodes(self, mock_geocode):
+        """Régression (2026-08-07, retour de Samuel le jour du merge) : la
+        fiche Lieu renvoie TOUT son formulaire — latitude/longitude sont
+        toujours dans le payload, à null quand vides. Le géocodage doit se
+        déclencher quand même (l'ancien test `'latitude' in attrs` le
+        bloquait sur exactement le flux recommandé)."""
+        from decimal import Decimal
+        venue = Venue.objects.create(project=self.project, name="Salon 58")
+        mock_geocode.return_value = {'latitude': Decimal('45.470000'), 'longitude': Decimal('-73.590000')}
+        # PATCH « façon fiche Lieu » : tout le formulaire, coords vides.
+        response = self.client.patch(f'/api/venues/{venue.id}/', {
+            'name': "Salon 58", 'code': '', 'address': "5850 Rue St-Denis, Montréal",
+            'contact_name': '', 'contact_info': '', 'notes': '',
+            'is_storage': False, 'latitude': None, 'longitude': None, 'color': '',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data['latitude'], '45.470000')
+        mock_geocode.assert_called_once()
+
+    @patch('inventory.serializers.geocode_address')
+    def test_unchanged_coords_with_new_address_are_re_geocoded(self, mock_geocode):
+        """Des coordonnées renvoyées TELLES QUELLES par le formulaire pendant
+        que l'adresse change décrivent l'ancienne adresse : on re-géocode."""
+        from decimal import Decimal
+        venue = Venue.objects.create(
+            project=self.project, name="Salle", address="ancienne adresse",
+            latitude=Decimal('45.500000'), longitude=Decimal('-73.500000'),
+        )
+        mock_geocode.return_value = {'latitude': Decimal('46.810000'), 'longitude': Decimal('-71.210000')}
+        response = self.client.patch(f'/api/venues/{venue.id}/', {
+            'address': "300 Boul. René-Lévesque E, Québec",
+            'latitude': '45.500000', 'longitude': '-73.500000',  # renvoyées inchangées
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data['latitude'], '46.810000')
+        mock_geocode.assert_called_once()
