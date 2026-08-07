@@ -1620,20 +1620,39 @@ class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
         # Diagnostic actionnable (2026-08-07, retour de Samuel : « 0
         # segment(s) réestimé(s) » sans savoir pourquoi) : on nomme la cause —
         # clé absente, ou les lieux précis restés sans GPS après la tentative
-        # de géocodage au vol d'`estimate_travel` (donc sans adresse
-        # géocodable non plus). Le frontend compose le message.
+        # de géocodage au vol d'`estimate_travel`. Affiné le soir même
+        # (2e retour : « mes lieux ont des adresses et coordonnées inscrites »
+        # alors que la base disait le contraire — il regardait très
+        # probablement d'AUTRES fiches, homonymes ou d'un autre projet) :
+        # chaque lieu problématique est retourné avec son ID, pour que le
+        # frontend fasse un lien vers LA fiche exacte, et séparé en deux
+        # familles qui n'appellent pas la même action — sans adresse ni GPS
+        # (compléter la fiche) vs adresse présente mais géocodage en échec
+        # (Geocoding API non activée sur la clé, adresse introuvable…).
         api_key_missing = not (getattr(django_settings, 'GOOGLE_MAPS_API_KEY', '') or '')
-        venues_without_gps = sorted({
-            s.venue.name for s in stops
+        sans_gps = {
+            s.venue.id: s.venue for s in stops
             if s.venue.latitude is None or s.venue.longitude is None
-        })
+        }
+        venues_missing_everything = sorted(
+            ({'id': v.id, 'name': v.name} for v in sans_gps.values() if not v.address.strip()),
+            key=lambda v: v['name'],
+        )
+        venues_geocoding_failed = sorted(
+            ({'id': v.id, 'name': v.name} for v in sans_gps.values() if v.address.strip()),
+            key=lambda v: v['name'],
+        )
         serializer = self.get_serializer(transport)
         return Response({
             'transport': serializer.data,
             'refreshed': refreshed,
             'unavailable': unavailable,
             'api_key_missing': api_key_missing,
-            'venues_without_gps': venues_without_gps,
+            # Noms seuls, conservé pour compatibilité — le message du
+            # frontend se construit sur les deux listes détaillées.
+            'venues_without_gps': sorted(v.name for v in sans_gps.values()),
+            'venues_missing_everything': venues_missing_everything,
+            'venues_geocoding_failed': venues_geocoding_failed,
         })
 
     @action(detail=False, methods=['post'], url_path='estimate-travel')

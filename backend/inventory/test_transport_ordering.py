@@ -284,6 +284,34 @@ class RefreshDistancesDiagnosticTests(TestCase):
         self.assertEqual(response.data['unavailable'], 1)
         self.assertTrue(response.data['api_key_missing'])  # pas de clé dans le bac à sable
         self.assertEqual(response.data['venues_without_gps'], ['Alpha', 'Bravo'])
+        # Sans adresse ni GPS → « complète la fiche » ; ids inclus pour que
+        # le frontend fasse un lien vers LA fiche exacte (2e retour de
+        # Samuel du 2026-08-07 : il vérifiait des fiches homonymes).
+        self.assertEqual(
+            response.data['venues_missing_everything'],
+            [{'id': self.a.id, 'name': 'Alpha'}, {'id': self.b.id, 'name': 'Bravo'}],
+        )
+        self.assertEqual(response.data['venues_geocoding_failed'], [])
+
+    @patch('inventory.views.estimate_travel')
+    def test_separates_geocoding_failures_from_empty_venues(self, mock_estimate):
+        mock_estimate.return_value = None
+        self.a.address = "1234 Rue Imaginaire, Laval"
+        self.a.save(update_fields=['address'])
+        response = self.client.post(
+            f'/api/transports/{self.transport.id}/refresh-distances/', {}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        # Alpha a une adresse mais toujours pas de GPS → échec de géocodage ;
+        # Bravo n'a rien → fiche à compléter.
+        self.assertEqual(
+            response.data['venues_geocoding_failed'],
+            [{'id': self.a.id, 'name': 'Alpha'}],
+        )
+        self.assertEqual(
+            response.data['venues_missing_everything'],
+            [{'id': self.b.id, 'name': 'Bravo'}],
+        )
 
     @patch('inventory.views.estimate_travel')
     def test_no_gps_complaint_when_venues_have_coordinates(self, mock_estimate):

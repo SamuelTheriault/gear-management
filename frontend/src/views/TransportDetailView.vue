@@ -654,7 +654,12 @@ async function refreshDistances() {
       refreshed: data.refreshed,
       unavailable: data.unavailable,
       apiKeyMissing: data.api_key_missing,
-      venuesWithoutGps: data.venues_without_gps ?? [],
+      // Depuis le 2e retour de Samuel du 2026-08-07 (« mes lieux ont des
+      // adresses et coordonnées inscrits » — mais pas CES fiches-là) :
+      // chaque lieu problématique arrive avec son id → lien direct vers la
+      // fiche exacte, sans risque de confondre avec un homonyme.
+      missingEverything: data.venues_missing_everything ?? [],
+      geocodingFailed: data.venues_geocoding_failed ?? [],
     }
   } catch (e) {
     refreshError.value = e.data?.detail ?? 'Impossible de réestimer les distances.'
@@ -1162,10 +1167,11 @@ const {
             </button>
           </div>
           <div v-if="refreshError" class="conflict-note">{{ refreshError }}</div>
-          <!-- Diagnostic actionnable (2026-08-07, retour de Samuel : le
-               message générique ne disait pas QUOI corriger) : la cause
-               précise vient du backend — clé absente, ou la liste des lieux
-               restés sans GPS malgré le géocodage d'adresse au vol. -->
+          <!-- Diagnostic actionnable (2026-08-07, deux retours de Samuel le
+               même jour) : la cause précise vient du backend, et chaque lieu
+               problématique est un LIEN vers sa fiche exacte — au 2e retour,
+               les fiches qu'il vérifiait n'étaient pas celles que la tournée
+               référence (homonymes / autre projet). -->
           <div v-else-if="refreshResult" class="fiche-hint">
             {{ refreshResult.refreshed }} segment(s) réestimé(s)<template v-if="refreshResult.unavailable">,
             {{ refreshResult.unavailable }} sans distance</template>.
@@ -1173,9 +1179,27 @@ const {
               <template v-if="refreshResult.apiKeyMissing">
                 La clé Google Routes n'est pas configurée sur ce serveur (GOOGLE_MAPS_API_KEY).
               </template>
-              <template v-else-if="refreshResult.venuesWithoutGps.length">
-                Ajoute une adresse (ou des coordonnées GPS) à : {{ refreshResult.venuesWithoutGps.join(', ') }} —
-                l'adresse est géocodée automatiquement à l'enregistrement de la fiche Lieu.
+              <template v-else-if="refreshResult.missingEverything.length || refreshResult.geocodingFailed.length">
+                <template v-if="refreshResult.missingEverything.length">
+                  Ces fiches Lieu (celles que CETTE tournée utilise) n'ont ni adresse ni coordonnées GPS :
+                  <RouterLink
+                    v-for="v in refreshResult.missingEverything"
+                    :key="v.id"
+                    :to="`/lieux/${v.id}`"
+                    class="fiche-hint__link"
+                  >{{ v.name }}</RouterLink>
+                  — ouvre-les et ajoute l'adresse.
+                </template>
+                <template v-if="refreshResult.geocodingFailed.length">
+                  Ces lieux ont une adresse mais le géocodage a échoué :
+                  <RouterLink
+                    v-for="v in refreshResult.geocodingFailed"
+                    :key="v.id"
+                    :to="`/lieux/${v.id}`"
+                    class="fiche-hint__link"
+                  >{{ v.name }}</RouterLink>
+                  — vérifie que « Geocoding API » est activée sur la clé Google Cloud, ou que l'adresse est trouvable sur Google Maps.
+                </template>
               </template>
               <template v-else>
                 L'appel Google Routes a échoué — réessaie dans un moment.
@@ -1186,7 +1210,12 @@ const {
             <div v-for="(s, i) in decoratedStops" :key="s.id" class="stop-row">
               <div class="stop-row__num">{{ i + 1 }}</div>
               <div class="stop-row__body">
-                <div class="stop-row__name">{{ s.venue_name }}</div>
+                <!-- Nom cliquable vers la fiche Lieu (2026-08-07, 2e retour
+                     de Samuel) : « quel lieu exactement ? » ne doit jamais
+                     se deviner — surtout avec des homonymes entre projets. -->
+                <RouterLink :to="`/lieux/${s.venue}`" class="stop-row__name stop-row__name--link">
+                  {{ s.venue_name }}
+                </RouterLink>
                 <div class="stop-row__meta">
                   <template v-if="i === 0">Départ<template v-if="s.arrival_datetime"> · {{ fmtTime(s.arrival_datetime) }}</template></template>
                   <template v-else>
@@ -2160,6 +2189,27 @@ const {
 .stop-row__name {
   font: 600 13px system-ui;
   color: rgb(var(--fg-rgb));
+}
+
+/* Nom d'arrêt cliquable vers la fiche Lieu (2026-08-07) : même graisse que
+   le nom statique, le lien ne se signale qu'au survol — la séquence reste
+   lisible comme une liste, pas comme une pile de liens bleus. */
+.stop-row__name--link {
+  display: inline-block;
+  text-decoration: none;
+}
+
+.stop-row__name--link:hover {
+  color: var(--link);
+  text-decoration: underline;
+}
+
+/* Liens de lieux dans le message de diagnostic (2026-08-07) : séparés par
+   des virgules via marges, soulignés pour être reconnus comme cliquables. */
+.fiche-hint__link {
+  color: var(--link);
+  text-decoration: underline;
+  margin: 0 2px;
 }
 
 .stop-row__meta {

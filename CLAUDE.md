@@ -3362,3 +3362,29 @@ lieux ». Deux découvertes, sur `fix/geocodage-fiche-lieu` :
 2 tests de régression (PATCH « façon fiche » avec coords null + adresse ;
 coords inchangées + adresse changée → re-géocodage). Suite : 502 tests,
 flake8 propre, aucun changement frontend, aucune migration.
+
+## 2026-08-07 (soir) — Diagnostic « quels lieux exactement ? » (fix/diagnostic-lieux-tournee)
+
+3e retour de Samuel sur le même symptôme, APRÈS le déploiement du correctif
+géocodage (#32) : « mes lieux ont des adresses et coordonnées inscrits »,
+mais les logs Railway ne montrent AUCUN appel Google pendant ses essais —
+même pas un échec. Verdict : les lieux que CETTE tournée référence n'ont ni
+GPS ni adresse en base ; les fiches qu'il vérifie n'y correspondent pas
+(homonymes — plusieurs « Entrepôt » entre projets — ou fiches d'un autre
+projet). S'ajoute le trompe-l'œil déjà noté : la carte de la fiche Lieu
+s'affiche dès qu'il y a une adresse, sans garantir de GPS en base.
+
+Plutôt que d'argumenter, rendre la confusion impossible :
+
+- `refresh-distances` sépare les lieux problématiques en deux familles avec
+  ID : `venues_missing_everything` (ni adresse ni GPS → compléter la fiche)
+  et `venues_geocoding_failed` (adresse présente mais géocodage en échec →
+  Geocoding API pas activée / adresse introuvable). `venues_without_gps`
+  (noms seuls) conservé pour compatibilité.
+- Le message de la fiche tournée fait de chaque lieu un LIEN vers sa fiche
+  exacte (« celles que CETTE tournée utilise »), et distingue les deux
+  actions à faire.
+- Les noms d'arrêts de la séquence (mode lecture) deviennent des liens vers
+  la fiche Lieu — même graisse, soulignement au survol seulement.
+
+Suite : 503 tests, flake8, build Vue OK. Aucune migration.
