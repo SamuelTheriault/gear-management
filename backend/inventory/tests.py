@@ -17,7 +17,9 @@ Niveaux :
 from datetime import timedelta
 
 from django.contrib.auth.models import User as DjangoUser
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework import status
@@ -5233,3 +5235,148 @@ class ShowDeletionReanchoringTests(TestCase):
             transport.show.venue_id,
             list(transport.stops.values_list('venue_id', flat=True)),
         )
+
+
+class ListQueryBudgetTests(TestCase):
+    """Les listes ne doivent pas grossir en requêtes avec le nombre de lignes.
+
+    Relecture du 2026-08-05 : `GET /transports/` montait à 245 requêtes pour
+    20 tournées et `GET /shows/` à 481, parce que `touched_shows`,
+    `deletion_impact` et `phases` — des informations de FICHE — étaient
+    calculés pour chaque ligne.
+
+    Ces tests comparent 5 lignes et 20 lignes : c'est l'ÉCART qui compte, pas
+    le nombre absolu (qui dépend du nombre de requêtes fixes de la vue).
+    Un test sur un seul volume passerait même avec un N+1.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.salle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.alex = Technician.objects.create(project=self.project, name="Alex")
+
+    def _peupler(self, combien, depart_jour):
+        """Crée `combien` spectacles, chacun avec un montage, une équipe et
+        une tournée à deux arrêts."""
+        for i in range(combien):
+            show = Show.objects.create(
+                project=self.project, title=f"Spectacle {i}", venue=self.salle,
+                event_type='performance',
+                start_datetime=_dt(20, day=depart_jour + i),
+                end_datetime=_dt(22, day=depart_jour + i),
+                buffer_before_minutes=0, buffer_after_minutes=0,
+            )
+            Show.objects.create(
+                project=self.project, title="", venue=self.salle, event_type='setup',
+                start_datetime=_dt(16, day=depart_jour + i),
+                end_datetime=_dt(19, day=depart_jour + i),
+                buffer_before_minutes=0, buffer_after_minutes=0, parent_show=show,
+            )
+            ShowTechnician.objects.create(show=show, technician=self.alex)
+            _creer_transport(
+                show=show, origin_venue=self.entrepot, destination_venue=self.salle,
+                scheduled_datetime=_dt(10, day=depart_jour + i),
+                estimated_duration_minutes=60, status='confirmed',
+            )
+
+    def _requetes(self, url):
+        with CaptureQueriesContext(connection) as capture:
+            response = self.client.get(url, {'project': self.project.id})
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return len(capture), response.data
+
+    def test_transport_list_does_not_grow_with_the_number_of_rows(self):
+        self._peupler(5, 1)
+        petites, _ = self._requetes('/api/transports/')
+        self._peupler(15, 6)
+        grandes, data = self._requetes('/api/transports/')
+        self.assertEqual(len(data), 20)
+        # Quelques requêtes de plus sont normales (préchargements dont la
+        # taille ne dépend pas du nombre de lignes) ; une par ligne, non.
+        self.assertLess(grandes - petites, 5, f"{petites} -> {grandes} requêtes")
+
+    def test_show_list_does_not_grow_with_the_number_of_rows(self):
+        self._peupler(5, 1)
+        petites, _ = self._requetes('/api/shows/')
+        self._peupler(15, 6)
+        grandes, data = self._requetes('/api/shows/')
+        self.assertEqual(len(data), 40)  # 20 spectacles + leurs 20 montages
+        self.assertLess(grandes - petites, 5, f"{petites} -> {grandes} requêtes")
+
+    def test_the_fiche_still_carries_what_the_list_drops(self):
+        # L'allègement ne doit pas priver la FICHE de ces champs.
+        self._peupler(1, 1)
+        show = Show.objects.get(title="Spectacle 0")
+        detail = self.client.get(f'/api/shows/{show.id}/').data
+        self.assertIsNotNone(detail['deletion_impact'])
+        self.assertEqual(len(detail['phases']), 1)
+
+        transport = Transport.objects.get(show=show)
+        detail = self.client.get(f'/api/transports/{transport.id}/').data
+        self.assertIsNotNone(detail['touched_shows'])
+
+    def test_the_list_still_carries_the_technicians(self):
+        # `technician_names` sert au Tableau de bord : il reste en liste.
+        self._peupler(1, 1)
+        _, data = self._requetes('/api/shows/')
+        evenement = next(s for s in data if s['title'] == "Spectacle 0")
+        self.assertEqual(evenement['technician_names'], ["Alex"])
+        # Le montage hérite de l'équipe de son événement.
+        montage = next(s for s in data if s['event_type'] == 'setup')
+        self.assertEqual(montage['technician_names'], ["Alex"])
+
+
+class VenueOrderingEdgeCasesTests(TestCase):
+    """Bords du réordonnancement des lieux (relecture du 2026-08-05).
+
+    Deux écarts entre le code et sa propre documentation : un identifiant non
+    numérique remontait en 500 au lieu d'une 400, et un lieu créé APRÈS un
+    réordonnancement naissait à `display_order = 0`, donc passait en tête —
+    l'inverse de ce que promet `VenueViewSet.reorder`.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+        self.project = Project.objects.create(name="Projet test")
+        self.chapelle = Venue.objects.create(project=self.project, name="Chapelle")
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt")
+
+    def _noms(self):
+        return [
+            v['name'] for v in
+            self.client.get('/api/venues/', {'project': self.project.id}).data
+        ]
+
+    def test_a_non_numeric_id_is_refused_not_crashed(self):
+        response = self.client.post('/api/venues/reorder/', {
+            'project': self.project.id, 'order': [self.chapelle.id, 'abc'],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('order', response.data)
+
+    def test_a_duplicate_is_refused(self):
+        response = self.client.post('/api/venues/reorder/', {
+            'project': self.project.id, 'order': [self.chapelle.id, self.chapelle.id],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_venue_created_after_a_reorder_goes_last(self):
+        self.client.post('/api/venues/reorder/', {
+            'project': self.project.id, 'order': [self.entrepot.id, self.chapelle.id],
+        }, format='json')
+        # « Ailleurs » est premier dans l'ordre alphabétique : sans rang, il
+        # passerait devant l'ordre choisi.
+        Venue.objects.create(project=self.project, name="Ailleurs")
+        self.assertEqual(self._noms(), ["Entrepôt", "Chapelle", "Ailleurs"])
+
+    def test_a_project_never_reordered_stays_alphabetical(self):
+        # Le rang n'est attribué QUE si le projet a déjà été réordonné —
+        # sinon on basculerait tous les projets en ordre de création.
+        Venue.objects.create(project=self.project, name="Ailleurs")
+        self.assertEqual(self._noms(), ["Ailleurs", "Chapelle", "Entrepôt"])

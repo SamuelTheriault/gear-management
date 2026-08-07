@@ -3188,3 +3188,45 @@ requêtes — `touched_shows` et `deletion_impact` calculés pour chaque ligne d
 liste alors qu'ils ne servent qu'en fiche) ; `reorder` en 500 sur un id non
 numérique ; un lieu créé après un réordonnancement passe en tête ; durées de
 segment périmées après retrait d'un arrêt.
+
+## Mise à jour (2026-08-05, suite) — Points non bloquants de la relecture
+
+Quatre des cinq points restants ; les durées de segment périmées après
+retrait d'un arrêt sont laissées à la session transport.
+
+- **Suppression d'un spectacle rendue atomique** (`ShowViewSet.perform_destroy`) :
+  le détachement des tournées et la suppression sont dans une même
+  `transaction.atomic()`. Sans elle, un échec du second laissait les tournées
+  définitivement amputées avec le spectacle toujours en place — l'inverse de
+  ce que promet le garde-fou. `ATOMIC_REQUESTS` n'est pas activé sur ce
+  projet, il faut donc l'ouvrir explicitement.
+- **`reorder`** convertit les identifiants AVANT la requête : `filter(id__in=
+  ['abc'])` levait un `ValueError` rendu en 500. Les doublons sont refusés
+  aussi, par cohérence avec le refus des ids étrangers déjà en place.
+- **Un lieu créé après un réordonnancement passe désormais EN FIN** de liste
+  (`Venue.save`). La condition « le projet a déjà été réordonné » compte :
+  attribuer un rang à la création sur un projet jamais réordonné le ferait
+  basculer de l'ordre alphabétique à l'ordre de création.
+- **Listes allégées** : `GET /transports/` passe de **245 à 5 requêtes** et
+  `GET /shows/` de **481 à 6**, à nombre de lignes constant.
+  - Nouveau helper `_en_liste(serializer)` (`serializers.py`) : `phases`,
+    `deletion_impact` (Show), `touched_shows`, `departure_show` et
+    `arrival_show` (Transport) renvoient `None` quand `view.action == 'list'`.
+    **L'inversion est volontaire** — on n'allège QUE la liste : sans vue dans
+    le contexte (sérialisation manuelle, imbriquée, tests), le champ reste
+    calculé, donc rien ne disparaît chez un appelant imprévu.
+  - Aucun écran de liste n'utilisait ces champs — vérifié un par un.
+    `TransportsView.vue` refait d'ailleurs déjà la déduction des spectacles de
+    référence côté client (voir sa note de tête).
+  - `technician_names` RESTE en liste (info-bulles du Tableau de bord) :
+    corrigé autrement, par `.all()` au lieu de `.select_related(...)` — ce
+    dernier refait une requête et contournait le `prefetch_related` du
+    ViewSet.
+  - `ShowViewSet` précharge maintenant `phases` : `engagement_start`/
+    `engagement_end` (exposés le 2026-08-01) parcourent `self.phases`, ce qui
+    faisait à soi seul une requête par ligne.
+  - `ListQueryBudgetTests` compare 5 et 20 lignes : c'est l'ÉCART qui est
+    testé, pas le nombre absolu — un test sur un seul volume passerait même
+    avec un N+1.
+
+Suite de tests : 447 (8 ajoutés), flake8 propre, aucune migration.

@@ -60,6 +60,20 @@ from .models import (
 )
 
 
+def _en_liste(serializer):
+    """Sommes-nous en train de sérialiser une LISTE ?
+
+    Sert à ne pas calculer, pour chaque ligne, des champs qui ne servent qu'en
+    fiche (relecture du 2026-08-05 : `GET /transports/` montait à 245 requêtes
+    pour 20 tournées, `GET /shows/` à 481). L'inversion est volontaire — on
+    n'allège QUE la liste : sans vue dans le contexte (sérialisation manuelle,
+    imbriquée, tests), le champ reste calculé, donc rien ne disparaît
+    silencieusement d'un appelant qu'on n'aurait pas prévu.
+    """
+    view = serializer.context.get('view')
+    return getattr(view, 'action', None) == 'list'
+
+
 def _project_id_of(obj):
     """Id de projet d'un objet — l'objet peut être un `Project` lui-même (→ son
     propre id) ou tout modèle isolé par projet portant un FK `project` (→ son
@@ -485,16 +499,29 @@ class ShowSerializer(serializers.ModelSerializer):
         ]
 
     def get_technician_names(self, obj):
-        """Noms des techniciens qui travaillent sur cet événement."""
+        """Noms des techniciens qui travaillent sur cet événement.
+
+        `.all()` et non `.select_related(...)` : le second REFAIT une requête
+        et contourne le `prefetch_related` du ViewSet, ce qui redonnait un
+        appel par ligne de liste (relecture du 2026-08-05). Ce champ, lui,
+        sert bien en liste — le Tableau de bord l'affiche dans ses
+        info-bulles.
+        """
         source = obj.parent_show if obj.inherits_resources else obj
-        return [st.technician.name for st in source.show_technicians.select_related('technician')]
+        return [st.technician.name for st in source.show_technicians.all()]
 
     def get_phases(self, obj):
         """Blocs rattachés à cet événement, dans l'ordre chronologique.
 
+        `None` en liste : chaque entrée porte son propre `deletion_impact`,
+        donc plusieurs requêtes par bloc — et aucun écran de liste ne les
+        affiche (seule la fiche le fait). Voir `_en_liste`.
+
         Renvoie une liste vide pour un bloc (pas de récursion) — la hiérarchie
         est volontairement limitée à un niveau.
         """
+        if _en_liste(self):
+            return None
         if obj.parent_show_id is not None:
             return []
         return [
@@ -540,6 +567,9 @@ class ShowSerializer(serializers.ModelSerializer):
     def get_deletion_impact(self, obj):
         """Ce qui arriverait vraiment si ce spectacle était supprimé.
 
+        `None` en liste : `plan_show_deletion` interroge les tournées une par
+        une, et seule la fenêtre de confirmation d'une fiche s'en sert.
+
         `transports` ne compte que les déplacements qui DISPARAÎTRAIENT ;
         `transports_shortened` ceux qui survivraient, amputés de l'arrêt de ce
         lieu et du matériel qui y est manipulé (2026-08-05, voir
@@ -549,6 +579,8 @@ class ShowSerializer(serializers.ModelSerializer):
         """
         from .transport_detach import plan_show_deletion
 
+        if _en_liste(self):
+            return None
         supprimes, raccourcis = plan_show_deletion(obj)
         return {
             'materials': obj.show_materials.count(),
@@ -1083,6 +1115,9 @@ class TransportSerializer(serializers.ModelSerializer):
     def get_touched_shows(self, obj):
         """Spectacles des lieux visités, groupés par lieu dans l'ordre des arrêts.
 
+        `None` en liste : une requête par lieu visité, pour une information
+        que seule la fiche affiche.
+
         Retourne `[{venue_id, venue_name, shows: [{id, title, start, end,
         event_type}]}]`. Un lieu qui revient à plusieurs arrêts (tournée
         aller-retour) n'apparaît qu'une fois.
@@ -1097,6 +1132,8 @@ class TransportSerializer(serializers.ModelSerializer):
         """
         from .transport_coherence import get_project_window
 
+        if _en_liste(self):
+            return None
         arrets = list(obj.stops.select_related('venue').order_by('order'))
         if not arrets:
             return []
@@ -1132,12 +1169,20 @@ class TransportSerializer(serializers.ModelSerializer):
         return groupes
 
     def get_departure_show(self, obj):
+        # `None` en liste : la déduction interroge les spectacles du lieu, une
+        # requête par bout et par tournée. Seule la fiche les affiche —
+        # TransportsView.vue refait la déduction côté client à partir des
+        # spectacles déjà chargés (voir sa note de tête).
+        if _en_liste(self):
+            return None
         departure_show, _arrival_show = get_transport_reference_shows(
             obj.show, obj.origin_venue, obj.destination_venue,
         )
         return serialize_reference_show(departure_show)
 
     def get_arrival_show(self, obj):
+        if _en_liste(self):
+            return None
         _departure_show, arrival_show = get_transport_reference_shows(
             obj.show, obj.origin_venue, obj.destination_venue,
         )
