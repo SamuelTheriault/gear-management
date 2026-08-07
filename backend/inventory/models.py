@@ -1014,11 +1014,39 @@ class Transport(models.Model):
             "tant qu'elle n'est pas confirmée. Ajouté le 2026-07-24."
         ),
     )
-    show = models.ForeignKey(
-        Show,
+    project = models.ForeignKey(
+        Project,
         on_delete=models.CASCADE,
         related_name='transports',
-        help_text="Spectacle desservi par ce déplacement.",
+        help_text=(
+            "Production à laquelle cette tournée appartient — FK directe "
+            "ajoutée le 2026-08-06 (migration 0028, remplie depuis "
+            "show.project) : l'isolation par projet passait jusque-là par "
+            "`show`, devenu OPTIONNEL (voir ci-dessous). CASCADE : la "
+            "suppression d'un projet emporte ses tournées, comme avant via "
+            "le spectacle."
+        ),
+    )
+    show = models.ForeignKey(
+        Show,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='transports',
+        help_text=(
+            "Spectacle desservi (l'ARRIVÉE de la tournée) — OPTIONNEL depuis "
+            "le 2026-08-06 (décision de Samuel : option « Aucun spectacle » "
+            "au formulaire, pour les retours d'entrepôt et les déplacements "
+            "logistiques). Révise le choix documenté dans transport_detach.py "
+            "(2026-08-05), qui avait écarté la nullabilité : une tournée dont "
+            "le spectacle disparaît sans candidat de réancrage devient « sans "
+            "spectacle » au lieu d'être supprimée. Sans spectacle, la fenêtre "
+            "départ/arrivée (validate_transport_window) n'a pas de bornes et "
+            "les propositions auto ne sont pas concernées (elles naissent "
+            "toujours d'un spectacle). SET_NULL en filet de sécurité — la "
+            "suppression EXPLICITE d'un spectacle passe par "
+            "transport_detach.py, qui fait plus fin."
+        ),
     )
     scheduled_datetime = models.DateTimeField(
         null=True,
@@ -1043,7 +1071,8 @@ class Transport(models.Model):
     def __str__(self):
         stops = self.ordered_stops
         trajet = ' → '.join(str(stop.venue) for stop in stops) if stops else '(sans arrêt)'
-        return f"Tournée — {self.show} ({trajet})"
+        rattachement = self.show if self.show_id is not None else 'sans spectacle'
+        return f"Tournée — {rattachement} ({trajet})"
 
     @property
     def ordered_stops(self):

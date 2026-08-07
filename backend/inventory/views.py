@@ -408,11 +408,14 @@ class ProjectViewSet(viewsets.ModelViewSet):
         suppression par un autre chemin CASCADE (`Show.project`,
         `Material.project`) dans le même appel. Contourné en supprimant
         d'abord ce qui protège, dans l'ordre :
-        1. Les `Show` du projet — cascade déjà `Transport`/`TransportStop`/
-           `TransportMaterial`/`ShowMaterial`/`ShowTechnician`
-           (`on_delete=CASCADE` sur chacun), ce qui lève la protection de
-           `Show.venue` ET `TransportStop.venue` sur `Venue` en un seul geste.
-        2. `Material.category` mis à `None` pour le projet — lève la
+        1. Les `Transport` du projet (FK `project` directe depuis la
+           migration 0028 — la suppression des `Show` ne les emporte plus,
+           `Transport.show` est passé en SET_NULL) — cascade
+           `TransportStop`/`TransportMaterial`/`TransportTechnician`, ce qui
+           lève la protection de `TransportStop.venue` sur `Venue`.
+        2. Les `Show` du projet — cascade `ShowMaterial`/`ShowTechnician` et
+           lève la protection de `Show.venue`.
+        3. `Material.category` mis à `None` pour le projet — lève la
            protection sur `MaterialCategory`.
         Le `project.delete()` final peut alors cascader `Venue`/`Material`/
         `MaterialCategory`/`Technician` sans plus rien qui bloque. Tout dans
@@ -420,6 +423,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
         """
         project = self.get_object()
         with transaction.atomic():
+            Transport.objects.filter(project=project).delete()
             Show.objects.filter(project=project).delete()
             Material.objects.filter(project=project).update(category=None)
             project.delete()
@@ -663,7 +667,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
                     })
             for tt in (
                 TransportTechnician.objects
-                .filter(technician=technician, transport__show__project=project,
+                .filter(technician=technician, transport__project=project,
                         transport__scheduled_datetime__isnull=False)
                 .select_related('transport')
                 .prefetch_related('transport__stops__venue')
@@ -1329,9 +1333,10 @@ class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
     les déplacements assignés à un technicien (ajouté le 2026-07-28 en portant
     la fiche technicien du frontend — même correctif que sur
     `ShowMaterialViewSet`/`ShowTechnicianViewSet`) ; `?project=<id>` (ajouté le
-    2026-07-29 en portant l'écran Transports) — `Transport` n'a pas de FK
-    `project` direct (il est isolé via son `show`), donc ce filtre traverse la
-    relation (`show__project_id`).
+    2026-07-29 en portant l'écran Transports) — depuis le 2026-08-06
+    (migration 0028), `Transport` porte une FK `project` DIRECTE (son `show`
+    est devenu optionnel) : le filtre et l'isolation ne traversent plus le
+    spectacle.
     """
 
     queryset = (
@@ -1348,16 +1353,20 @@ class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
     )
     serializer_class = TransportSerializer
     permission_classes = [HasProjectAccess]
-    project_lookup = 'show__project_id'
+    project_lookup = 'project_id'
 
     def get_create_project_id(self, request):
+        """Projet visé par une création : celui du spectacle desservi si
+        fourni, sinon le champ `project` direct (tournée « sans spectacle »,
+        2026-08-06)."""
         show_id = request.data.get('show')
-        if not show_id:
-            return None
-        return Show.objects.filter(id=show_id).values_list('project_id', flat=True).first()
+        if show_id:
+            return Show.objects.filter(id=show_id).values_list('project_id', flat=True).first()
+        project_id = request.data.get('project')
+        return project_id or None
 
     def get_object_project_id(self, obj):
-        return obj.show.project_id
+        return obj.project_id
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -1375,7 +1384,7 @@ class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
             queryset = queryset.filter(transport_technicians__technician_id=technician_id).distinct()
         project_id = self.request.query_params.get('project')
         if project_id:
-            queryset = queryset.filter(show__project_id=project_id)
+            queryset = queryset.filter(project_id=project_id)
         return queryset
 
     @action(detail=True, methods=['get'], url_path='material-availability')
@@ -1422,7 +1431,7 @@ class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
         rows = get_venue_material_availability(
             stop.venue,
             at=at,
-            project=transport.show.project,
+            project=transport.project,
             # Un transport ne doit pas se décompter lui-même : sinon rouvrir la
             # modale d'un transport déjà rempli montrerait son propre
             # chargement comme parti.

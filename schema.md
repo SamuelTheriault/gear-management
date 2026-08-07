@@ -186,7 +186,8 @@ Table ajoutée le 2026-07-18 (hors des 8 tables initiales). **Refonte en tourné
 | Champ | Type | Description |
 |---|---|---|
 | id | INT, PK | Identifiant unique |
-| show_id | INT, FK → shows.id | Spectacle desservi par cette tournée |
+| project_id | INT, FK → projects.id (CASCADE) | Production de la tournée — FK DIRECTE depuis le 2026-08-06 (migration `0028`) : l'isolation ne passe plus par le spectacle |
+| show_id | INT, FK → shows.id (SET_NULL), **nullable** | Spectacle desservi (l'ARRIVÉE de la tournée) — OPTIONNEL depuis le 2026-08-06 (« — Aucun spectacle — » au formulaire : retours d'entrepôt, logistique). SET_NULL en filet — la suppression explicite d'un spectacle passe par `transport_detach.py` (réancrage, ou détachement si aucun candidat) |
 | status | ENUM('confirmed','to_approve') (default 'confirmed') | Cycle de vie (ajouté le 2026-07-24) — voir note ci-dessous |
 | scheduled_datetime | DATETIME, **nullable** | Heure de départ de la tournée (départ du premier arrêt) — nullable depuis le 2026-07-24 (une proposition `to_approve` n'a pas encore d'heure). Obligatoire pour un `status='confirmed'` (validé par `TransportSerializer`) |
 | notes | TEXT | Notes diverses |

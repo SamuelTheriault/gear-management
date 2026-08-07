@@ -190,13 +190,15 @@ def _build_confirmed_cover(project):
     lines = (
         TransportMaterial.objects.filter(
             transport__status=Transport.STATUS_CONFIRMED,
-            transport__show__project=project,
+            transport__project=project,
         )
         .select_related('transport', 'transport__show', 'unload_stop')
     )
     for line in lines:
         transport = line.transport
-        if line.unload_stop.venue_id == transport.show.venue_id:
+        # Une tournée « sans spectacle » (2026-08-06) ne couvre aucune
+        # livraison au sens de l'autogen — rien à ajouter.
+        if transport.show_id is not None and line.unload_stop.venue_id == transport.show.venue_id:
             cover.add((transport.show_id, line.material_id))
     return cover
 
@@ -232,7 +234,7 @@ def regenerate_project_proposals(project):
             # tournées (2026-08-04) — d'où le prefetch des arrêts.
             existing = {}
             existing_qs = (
-                Transport.objects.filter(status=Transport.STATUS_TO_APPROVE, show__project=project)
+                Transport.objects.filter(status=Transport.STATUS_TO_APPROVE, project=project)
                 .select_related('show')
                 .prefetch_related('stops')
             )
@@ -263,6 +265,7 @@ def regenerate_project_proposals(project):
                         from .models import Settings
                         duration = Settings.load().default_transport_duration_minutes
                     transport = Transport.objects.create(
+                        project=show.project,
                         show=show,
                         status=Transport.STATUS_TO_APPROVE,
                         scheduled_datetime=None,

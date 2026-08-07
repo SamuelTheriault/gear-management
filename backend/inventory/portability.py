@@ -79,7 +79,7 @@ def export_project_data(project):
     )
     shows = list(project.shows.select_related('venue', 'parent_show').all())
     transports = list(
-        Transport.objects.filter(show__project=project)
+        Transport.objects.filter(project=project)
         .select_related('show')
         .prefetch_related(
             'stops__venue',
@@ -490,8 +490,13 @@ def import_project_data(data, name=None, client_name=None):
             # l'import, seule la position dans la séquence est fiable.
             transport_count = 0
             for tr in data.get('transports') or []:
-                show_obj = show_id_map.get(tr.get('show'))
-                if show_obj is None:
+                # `show` est OPTIONNEL depuis le 2026-08-06 (tournée « sans
+                # spectacle », migration 0028) : null dans le fichier = tournée
+                # logistique, on ne l'invente pas. Une référence NON nulle qui
+                # ne résout pas reste une erreur (fichier incohérent).
+                show_ref = tr.get('show')
+                show_obj = show_id_map.get(show_ref) if show_ref is not None else None
+                if show_ref is not None and show_obj is None:
                     raise PortabilityError(
                         "Un déplacement référence un spectacle introuvable dans le fichier."
                     )
@@ -501,6 +506,7 @@ def import_project_data(data, name=None, client_name=None):
                         "Un déplacement du fichier n'a pas assez d'arrêts (au moins 2 attendus)."
                     )
                 new_transport = Transport.objects.create(
+                    project=new_project,
                     show=show_obj,
                     status=tr.get('status') or Transport.STATUS_CONFIRMED,
                     scheduled_datetime=_parse_datetime(tr.get('scheduled_datetime')),

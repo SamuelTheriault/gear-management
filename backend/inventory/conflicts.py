@@ -564,7 +564,7 @@ def get_project_conflicts(project):
     )
     transport_technicians = list(
         TransportTechnician.objects
-        .filter(transport__show__project_id=project.id, transport__scheduled_datetime__isnull=False)
+        .filter(transport__project_id=project.id, transport__scheduled_datetime__isnull=False)
         .select_related('transport', 'transport__show', 'technician')
         .prefetch_related('transport__stops')
     )
@@ -625,7 +625,9 @@ def serialize_technician_conflict(obj):
             'type': 'transport',
             'transport_id': transport.id,
             'show_id': transport.show_id,
-            'show_title': transport.show.display_title,
+            # `show` est optionnel depuis le 2026-08-06 (tournée « sans
+            # spectacle ») — None plutôt qu'un plantage d'attribut.
+            'show_title': transport.show.display_title if transport.show_id else None,
             'scheduled_datetime': transport.scheduled_datetime,
             # La clé garde son nom historique pour le frontend, mais c'est la
             # durée TOTALE de la tournée (somme des segments — 2026-08-04).

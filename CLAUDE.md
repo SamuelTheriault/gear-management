@@ -3230,3 +3230,54 @@ retrait d'un arrêt sont laissées à la session transport.
     avec un N+1.
 
 Suite de tests : 447 (8 ajoutés), flake8 propre, aucune migration.
+
+## Mise à jour (2026-08-06, soir) — Transport : spectacle desservi optionnel + formulaire clarifié
+
+Chantier 1 des travaux transport du 2026-08-06 (décisions de Samuel). Suite
+complète : **454 tests OK** + flake8 ; build Vite + parcours Playwright
+vérifiés (filtrage du sélecteur validé avec deux spectacles sur deux lieux).
+
+**Backend (migration `0028_transport_project_show_optional`, 3 temps)** :
+- `Transport.project` : FK DIRECTE (CASCADE), remplie depuis `show.project`
+  à la migration. L'isolation par projet, les filtres `?project=`, l'export/
+  import (`portability`), l'horizon/fenêtre de projet et les signaux ne
+  traversent plus le spectacle.
+- `Transport.show` : NULLABLE (SET_NULL en filet). Révise la décision du
+  2026-08-05 (transport_detach) qui avait écarté la nullabilité — l'option
+  « — Aucun spectacle — » du formulaire la rend nécessaire (retours
+  d'entrepôt, logistique). Serializer : `project` requis sans spectacle,
+  déduit et VERROUILLÉ sur `show.project` avec (mismatch → 400) ;
+  `show_title`/`departure_show`/`arrival_show` → null sans spectacle ;
+  l'isolation lieux/techniciens/matériel se valide contre `project`.
+- `transport_detach` : sans candidat de réancrage la tournée devient « sans
+  spectacle » (nouvelle catégorie `detachees` / `transports_detached` dans
+  `deletion_impact`) au lieu d'être supprimée ; la suppression (< 2 arrêts
+  restants) est explicite (SET_NULL ne cascade plus). PIÈGE corrigé au
+  passage : la suppression de PROJET comptait sur la cascade show→transport
+  pour lever la protection `TransportStop.venue` — elle purge maintenant
+  les tournées AVANT les spectacles (`ProjectViewSet.destroy`).
+- Autogen : une tournée sans spectacle ne compte jamais comme couverture ;
+  les propositions naissent toujours d'un spectacle (inchangé).
+
+**Frontend** :
+- TransportsView : champ renommé « Spectacle desservi (arrivée) » (demande
+  explicite de Samuel — on indique clairement que le spectacle sélectionné
+  est celui de l'arrivée), liste FILTRÉE sur les spectacles du lieu
+  d'arrivée choisi (entrepôt ou rien → liste complète), option
+  « — Aucun spectacle — » (sentinelle `NO_SHOW` → `show: null` +
+  `project` toujours envoyé). Changer l'arrivée invalide un spectacle
+  devenu incohérent (le champ se vide). Groupes/filtres « Par spectacle » :
+  clé nulle → « Aucun spectacle ».
+- TransportDetailView : le chargement passe par `transport.project` (plus
+  de GET /shows/{id} qui plantait sans spectacle), breadcrumb « Tournée
+  sans spectacle », champ statique « Aucun spectacle ».
+- SpectacleDetailView : la confirmation de suppression annonce la nouvelle
+  catégorie (« resteront planifiés, sans spectacle rattaché »).
+
+À suivre (chantiers 2 et 3 déjà cadrés avec Samuel) : entité **Camion**
+(fiche réservation/contrat/notes, un camion par défaut par projet, tournée
+assignée à un camion avec conflit d'horaire façon techniciens, une période
+de réservation par camion, km estimé via distances stockées par segment —
+champ distance à ajouter sur TransportStop, l'API Routes la retourne déjà) ;
+**ordre des arrêts optimisé** (bouton « Suggérer un ordre », premier arrêt
+fixe, précédences chargement<déchargement, énumération exacte ≤ 8 arrêts).

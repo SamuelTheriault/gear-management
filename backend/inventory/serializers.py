@@ -121,7 +121,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             'materials': obj.materials.count(),
             'technicians': obj.technicians.count(),
             'shows': obj.shows.count(),
-            'transports': Transport.objects.filter(show__project=obj).count(),
+            'transports': Transport.objects.filter(project=obj).count(),
         }
 
 
@@ -573,20 +573,23 @@ class ShowSerializer(serializers.ModelSerializer):
         `transports` ne compte que les déplacements qui DISPARAÎTRAIENT ;
         `transports_shortened` ceux qui survivraient, amputés de l'arrêt de ce
         lieu et du matériel qui y est manipulé (2026-08-05, voir
-        `transport_detach.py`). Avant cette distinction, la confirmation
-        annonçait la suppression de tournées qui, en réalité, desservent aussi
-        d'autres salles.
+        `transport_detach.py`) ; `transports_detached` (2026-08-06) ceux qui
+        survivraient SANS spectacle (aucun candidat de réancrage — `show`
+        est devenu optionnel, migration 0028). Avant ces distinctions, la
+        confirmation annonçait la suppression de tournées qui, en réalité,
+        desservent aussi d'autres salles.
         """
         from .transport_detach import plan_show_deletion
 
         if _en_liste(self):
             return None
-        supprimes, raccourcis = plan_show_deletion(obj)
+        supprimes, raccourcis, detachees = plan_show_deletion(obj)
         return {
             'materials': obj.show_materials.count(),
             'technicians': obj.show_technicians.count(),
             'transports': len(supprimes),
             'transports_shortened': len(raccourcis),
+            'transports_detached': len(detachees),
         }
 
     def validate(self, attrs):
@@ -1026,9 +1029,13 @@ class TransportSerializer(serializers.ModelSerializer):
     technicians = TransportTechnicianSerializer(
         many=True, source='transport_technicians', required=False,
     )
-    # `show` (« desservi » par ce transport) peut être n'importe quel Show, blocs
-    # compris — `display_title` plutôt que `title` (2026-08-02, voir `Show.display_title`).
-    show_title = serializers.CharField(source='show.display_title', read_only=True)
+    # `show` (« desservi » par ce transport — l'ARRIVÉE de la tournée) peut
+    # être n'importe quel Show, blocs compris — `display_title` plutôt que
+    # `title` (2026-08-02, voir `Show.display_title`). OPTIONNEL depuis le
+    # 2026-08-06 (« Aucun spectacle » — retours d'entrepôt, logistique) :
+    # `show_title` vaut alors None, et `project` (FK directe) porte seul
+    # l'isolation par projet.
+    show_title = serializers.CharField(source='show.display_title', read_only=True, default=None)
     # Lecture : lieux dérivés des premier/dernier arrêts (propriétés du
     # modèle). Écriture : chemin de compat ancien contrat — voir docstring.
     origin_venue = serializers.PrimaryKeyRelatedField(
@@ -1089,8 +1096,12 @@ class TransportSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Transport
+        # `project` : optionnel à l'écriture quand `show` est fourni (déduit
+        # du spectacle et verrouillé sur lui) ; obligatoire pour une tournée
+        # « sans spectacle » — voir validate().
+        extra_kwargs = {'project': {'required': False}}
         fields = [
-            'id', 'show', 'show_title', 'status', 'stops',
+            'id', 'project', 'show', 'show_title', 'status', 'stops',
             'origin_venue', 'origin_venue_name', 'origin_venue_code',
             'destination_venue', 'destination_venue_name', 'destination_venue_code',
             'scheduled_datetime', 'estimated_duration_minutes', 'effective_end',
@@ -1137,7 +1148,7 @@ class TransportSerializer(serializers.ModelSerializer):
         arrets = list(obj.stops.select_related('venue').order_by('order'))
         if not arrets:
             return []
-        window_start, window_end = get_project_window(obj.show.project)
+        window_start, window_end = get_project_window(obj.project)
 
         groupes = []
         deja_vus = set()
@@ -1339,7 +1350,7 @@ class TransportSerializer(serializers.ModelSerializer):
                 estimated = Settings.load().default_transport_duration_minutes
             p['travel'] = estimated
 
-    def _normalized_material_lines(self, material_lines, plan, show):
+    def _normalized_material_lines(self, material_lines, plan, project):
         """Valide et normalise les lignes de matériel en dicts
         `{'material', 'quantity', 'load': index, 'unload': index}`.
 
@@ -1355,7 +1366,7 @@ class TransportSerializer(serializers.ModelSerializer):
         seen = set()
         for line in material_lines:
             material = line['material']
-            if show is not None and not _same_project(show, material):
+            if not _same_project(project, material):
                 raise serializers.ValidationError({
                     'materials': f"Le matériel « {material.name} » appartient à un autre projet que le déplacement.",
                 })
@@ -1404,6 +1415,26 @@ class TransportSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         show = attrs.get('show', getattr(self.instance, 'show', None))
+
+        # Résolution du PROJET (2026-08-06, `show` optionnel — migration
+        # 0028) : avec un spectacle, le projet est LE SIEN (fourni différent
+        # → erreur, absent → déduit) ; sans spectacle, `project` devient
+        # obligatoire — c'est lui qui porte l'isolation par projet.
+        project = attrs.get('project', getattr(self.instance, 'project', None))
+        if show is not None:
+            if project is not None and project.id != show.project_id:
+                raise serializers.ValidationError({
+                    'project': "Doit être le projet du spectacle desservi (ou laisse le champ vide, il est déduit).",
+                })
+            project = show.project
+        if project is None:
+            raise serializers.ValidationError({
+                'project': (
+                    "Une tournée sans spectacle doit indiquer sa production "
+                    "(champ `project`)."
+                ),
+            })
+        attrs['project'] = project
 
         # Durée envoyée par l'ancien contrat (le champ déclaré est en lecture
         # seule — la valeur se lit dans le payload brut). Ignorée si `stops`
@@ -1465,13 +1496,14 @@ class TransportSerializer(serializers.ModelSerializer):
                 'scheduled_datetime': "Obligatoire pour un déplacement confirmé (heure prévue du déplacement).",
             })
 
-        # Isolation par projet (voir Project, models.py) : le spectacle, tous
-        # les lieux d'arrêt et les techniciens/matériel fournis doivent
-        # appartenir au même projet.
+        # Isolation par projet (voir Project, models.py) : tous les lieux
+        # d'arrêt et les techniciens/matériel fournis doivent appartenir au
+        # même projet que la tournée — comparés à `project` (FK directe),
+        # plus au spectacle, qui peut être absent (2026-08-06).
         for p in plan:
-            if not _same_project(show, p['venue']):
+            if not _same_project(project, p['venue']):
                 raise serializers.ValidationError(
-                    "Le spectacle et les lieux d'un déplacement doivent tous appartenir au même projet."
+                    "Les lieux d'un déplacement doivent tous appartenir au même projet que la tournée."
                 )
 
         # Techniciens affectés (écriture imbriquée, plusieurs possibles depuis
@@ -1482,7 +1514,7 @@ class TransportSerializer(serializers.ModelSerializer):
             seen_technician_ids = set()
             for line in technician_lines:
                 technician = line['technician']
-                if show is not None and not _same_project(show, technician):
+                if not _same_project(project, technician):
                     raise serializers.ValidationError({
                         'technicians': (
                             f"Le technicien « {technician.name} » appartient à un autre "
@@ -1508,7 +1540,7 @@ class TransportSerializer(serializers.ModelSerializer):
         # overridable par `force`).
         material_lines = attrs.pop('transport_materials', None)
         if material_lines is not None:
-            attrs['_material_lines'] = self._normalized_material_lines(material_lines, plan, show)
+            attrs['_material_lines'] = self._normalized_material_lines(material_lines, plan, project)
         elif self.instance is not None and stops_dirty:
             # La séquence change sans que les lignes soient refournies : les
             # lignes existantes doivent encore pointer des arrêts valides —

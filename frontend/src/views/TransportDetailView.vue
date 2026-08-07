@@ -368,11 +368,14 @@ async function loadTransport() {
   editing.value = false
   try {
     transport.value = await api.get(`/transports/${id}/`)
-    const show = await api.get(`/shows/${transport.value.show}/`)
+    // `project` est porté par la tournée elle-même depuis la migration 0028
+    // (`show` est devenu optionnel — plus de détour par la fiche spectacle,
+    // qui plantait sur une tournée « sans spectacle »).
+    const projectId = transport.value.project
     const [venuesData, techniciansData, materialsData] = await Promise.all([
-      api.get('/venues/', { project: show.project }),
-      api.get('/technicians/', { project: show.project }),
-      api.get('/materials/', { project: show.project }),
+      api.get('/venues/', { project: projectId }),
+      api.get('/technicians/', { project: projectId }),
+      api.get('/materials/', { project: projectId }),
     ])
     venues.value = Array.isArray(venuesData) ? venuesData : (venuesData.results ?? [])
     technicians.value = Array.isArray(techniciansData) ? techniciansData : (techniciansData.results ?? [])
@@ -924,7 +927,7 @@ const {
     </div>
 
     <div v-else-if="transport && form" class="page">
-      <div class="breadcrumb"><RouterLink to="/transports">Transports</RouterLink> / {{ transport.show_title }}</div>
+      <div class="breadcrumb"><RouterLink to="/transports">Transports</RouterLink> / {{ transport.show_title ?? 'Tournée sans spectacle' }}</div>
 
       <div class="header">
         <div class="header__title-row">
@@ -1162,8 +1165,8 @@ const {
         </div>
 
         <div class="field">
-          <div class="field__label">Spectacle</div>
-          <div class="field__static">{{ transport.show_title }}</div>
+          <div class="field__label">Spectacle desservi (arrivée)</div>
+          <div class="field__static">{{ transport.show_title ?? 'Aucun spectacle' }}</div>
         </div>
 
         <!-- Séquence d'arrêts (tournées 2026-08-04) : l'ordre est la position

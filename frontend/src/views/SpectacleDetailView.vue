@@ -893,6 +893,12 @@ async function onTechnicienAssigned(payload) {
                 {{ deletionImpact.transports_shortened }} déplacement(s) perdront
                 leur arrêt à ce lieu, sans être supprimés
               </li>
+              <!-- Sans candidat de réancrage, la tournée survit « sans
+                   spectacle » (2026-08-06, Transport.show optionnel). -->
+              <li v-if="deletionImpact.transports_detached > 0">
+                {{ deletionImpact.transports_detached }} déplacement(s) resteront
+                planifiés, sans spectacle rattaché
+              </li>
             </ul>
           </template>
           <div v-if="deleteError" class="fiche-error">{{ deleteError }}</div>
@@ -920,7 +926,7 @@ async function onTechnicienAssigned(payload) {
           </p>
           <template v-if="phaseImpact">
             <p
-              v-if="phaseImpact.materials || phaseImpact.technicians || phaseImpact.transports || phaseImpact.transports_shortened"
+              v-if="phaseImpact.materials || phaseImpact.technicians || phaseImpact.transports || phaseImpact.transports_shortened || phaseImpact.transports_detached"
               class="fiche-confirm__text"
             >
               Conséquences :
@@ -938,6 +944,10 @@ async function onTechnicienAssigned(payload) {
               <li v-if="phaseImpact.transports_shortened > 0">
                 {{ phaseImpact.transports_shortened }} déplacement(s) perdront
                 leur arrêt à ce lieu, sans être supprimés
+              </li>
+              <li v-if="phaseImpact.transports_detached > 0">
+                {{ phaseImpact.transports_detached }} déplacement(s) resteront
+                planifiés, sans spectacle rattaché
               </li>
             </ul>
           </template>

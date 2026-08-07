@@ -22,17 +22,20 @@ Règle appliquée par `detach_show_from_transports()` :
    arrêt ENCORE DESSERVI, hors de la famille du spectacle supprimé — le plus
    proche dans le temps de l'heure de départ (voir `_reancrage`, qui explique
    pourquoi ces deux exclusions comptent). Ce champ borne les horaires du
-   déplacement (voir `validate_transport_window`) et n'est pas nullable :
-   sans candidat, la tournée n'a plus de raison d'être.
-4. La tournée est supprimée dans deux cas seulement : moins de deux arrêts
-   restants (un trajet a besoin d'un départ et d'une arrivée), ou aucun
-   spectacle à réancrer.
+   déplacement (voir `validate_transport_window`) ; sans candidat, la
+   tournée devient « sans spectacle » (aucune borne) — 2026-08-06.
+4. La tournée est supprimée dans UN cas seulement : moins de deux arrêts
+   restants (un trajet a besoin d'un départ et d'une arrivée).
 
-**Choix par défaut, à revoir avec Samuel si besoin** : le réancrage est
-automatique et silencieux. Les deux autres options écartées étaient de rendre
-`Transport.show` nullable (migration + tout le code qui suppose un spectacle)
-et de demander le nouveau rattachement dans la fenêtre de confirmation (une
-suppression devient un formulaire).
+**Révisé le 2026-08-06 (décision de Samuel, migration 0028)** :
+`Transport.show` est devenu NULLABLE (option « — Aucun spectacle — » au
+formulaire de création). Le réancrage automatique reste le premier choix —
+une tournée qui dessert encore un spectacle doit le référencer — mais son
+échec ne condamne plus la tournée : elle devient « sans spectacle »
+(`show=None`), catégorie `detachees` du retour. La suppression ne reste que
+pour une séquence devenue invalide (< 2 arrêts restants) — et elle est
+maintenant EXPLICITE : `Transport.show` étant en SET_NULL, la cascade ne
+l'emporte plus.
 
 Appelé depuis `ShowViewSet.perform_destroy` — donc sur la suppression
 explicite d'un spectacle, pas sur une cascade de suppression de projet, où
@@ -70,7 +73,7 @@ def _reancrage(transport, show, arrets_restants):
         return None
     candidats = list(
         Show.objects
-        .filter(venue_id__in=lieux, project_id=transport.show.project_id)
+        .filter(venue_id__in=lieux, project_id=transport.project_id)
         .exclude(id__in=show.family_ids)
     )
     if not candidats:
@@ -84,38 +87,45 @@ def _reancrage(transport, show, arrets_restants):
 def plan_show_deletion(show):
     """Ce qu'il adviendrait des tournées si `show` était supprimé.
 
-    Retourne `(supprimes, raccourcis)` — deux listes d'ids de `Transport`.
-    Sert à annoncer l'effet réel dans la fenêtre de confirmation (voir
-    `ShowSerializer.deletion_impact`), sans rien modifier.
+    Retourne `(supprimes, raccourcis, detachees)` — trois listes d'ids de
+    `Transport` : celles qui disparaîtraient (< 2 arrêts restants), celles
+    qui survivraient amputées de l'arrêt et réancrées sur un autre
+    spectacle, et celles qui survivraient SANS spectacle (aucun candidat de
+    réancrage — 2026-08-06). Sert à annoncer l'effet réel dans la fenêtre de
+    confirmation (voir `ShowSerializer.deletion_impact`), sans rien modifier.
     """
-    supprimes, raccourcis = [], []
+    supprimes, raccourcis, detachees = [], [], []
     for transport in show.transports.prefetch_related('stops').all():
         restants = [stop for stop in transport.stops.all() if stop.venue_id != show.venue_id]
-        if len(restants) < 2 or _reancrage(transport, show, restants) is None:
+        if len(restants) < 2:
             supprimes.append(transport.id)
+        elif _reancrage(transport, show, restants) is None:
+            detachees.append(transport.id)
         else:
             raccourcis.append(transport.id)
-    return supprimes, raccourcis
+    return supprimes, raccourcis, detachees
 
 
 def detach_show_from_transports(show):
     """Retire `show` de ses tournées — voir la note de module.
 
-    À appeler AVANT la suppression du spectacle : les tournées conservées sont
-    réancrées sur un autre spectacle, ce qui les soustrait à la cascade.
-    Retourne `(supprimes, raccourcis)`, les mêmes listes d'ids que
-    `plan_show_deletion`.
+    À appeler AVANT la suppression du spectacle. Retourne
+    `(supprimes, raccourcis, detachees)`, les mêmes listes d'ids que
+    `plan_show_deletion`. Depuis que `Transport.show` est en SET_NULL
+    (2026-08-06), la suppression d'une tournée invalide (< 2 arrêts
+    restants) est EXPLICITE — la cascade ne l'emporte plus.
     """
-    supprimes, raccourcis = [], []
+    supprimes, raccourcis, detachees = [], [], []
     for transport in list(show.transports.prefetch_related('stops').all()):
         a_retirer = [stop for stop in transport.stops.all() if stop.venue_id == show.venue_id]
         restants = [stop for stop in transport.stops.all() if stop.venue_id != show.venue_id]
 
-        nouvelle_ancre = _reancrage(transport, show, restants) if len(restants) >= 2 else None
-        if nouvelle_ancre is None:
-            # Laissé à la cascade : la tournée n'a plus ni séquence valable ni
-            # spectacle à desservir.
+        if len(restants) < 2:
+            # Plus de séquence valable (un trajet a besoin d'un départ et
+            # d'une arrivée) : la tournée disparaît — explicitement, SET_NULL
+            # ne cascade pas.
             supprimes.append(transport.id)
+            transport.delete()
             continue
 
         # Le matériel chargé/déchargé à ces arrêts part avec eux (CASCADE sur
@@ -130,6 +140,15 @@ def detach_show_from_transports(show):
                 stop.travel_minutes_from_previous = duree
                 stop.save(update_fields=['order', 'travel_minutes_from_previous'])
 
-        Transport.objects.filter(id=transport.id).update(show=nouvelle_ancre)
-        raccourcis.append(transport.id)
-    return supprimes, raccourcis
+        nouvelle_ancre = _reancrage(transport, show, restants)
+        if nouvelle_ancre is None:
+            # Aucun spectacle à desservir sur les arrêts restants : la
+            # tournée survit « sans spectacle » (décision de Samuel,
+            # 2026-08-06) — plus de bornes d'horaire, mais le travail
+            # logistique planifié n'est pas perdu.
+            Transport.objects.filter(id=transport.id).update(show=None)
+            detachees.append(transport.id)
+        else:
+            Transport.objects.filter(id=transport.id).update(show=nouvelle_ancre)
+            raccourcis.append(transport.id)
+    return supprimes, raccourcis, detachees
