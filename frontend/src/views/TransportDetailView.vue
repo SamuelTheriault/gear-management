@@ -240,6 +240,8 @@ function startEdit() {
   formInitial.value = JSON.stringify(form.value)
   saveError.value = null
   conflictDetail.value = null
+  suggestion.value = null
+  suggestionError.value = null
   editing.value = true
 }
 
@@ -248,6 +250,8 @@ function cancelEdit() {
   formInitial.value = null
   saveError.value = null
   conflictDetail.value = null
+  suggestion.value = null
+  suggestionError.value = null
   editing.value = false
 }
 
@@ -535,6 +539,123 @@ function moveStop(index, delta) {
     else if (m.unload === target) m.unload = index
   })
   fixupLines()
+}
+
+// --- Suggestion d'ordre optimal (chantier 3, 2026-08-07, demande de Samuel) ---
+// `POST /transports/order-suggestion/` est STATELESS : il reçoit la séquence
+// EN COURS D'ÉDITION (lieux + portions de matériel) et retourne l'ordre qui
+// minimise le temps de route (premier arrêt fixe, chargements avant
+// déchargements — voir transport_ordering.py). Rien n'est écrit : c'est
+// « Appliquer » qui réordonne le FORMULAIRE, et l'enregistrement normal qui
+// persiste — l'utilisateur garde la main entre les deux.
+
+const suggesting = ref(false)
+const suggestion = ref(null)
+const suggestionError = ref(null)
+
+// ≥ 3 arrêts (un aller simple n'a qu'un ordre) et tous les lieux choisis —
+// même seuil que le backend, pour griser le bouton plutôt que récolter un 400.
+const canSuggest = computed(() =>
+  !!form.value
+  && form.value.stops.length >= 3
+  && form.value.stops.every((s) => s.venue),
+)
+
+async function requestSuggestion() {
+  suggestionError.value = null
+  suggestion.value = null
+  suggesting.value = true
+  try {
+    suggestion.value = await api.post('/transports/order-suggestion/', {
+      project: transport.value.project,
+      stops: form.value.stops.map((s) => s.venue),
+      materials: form.value.materials.map((m) => ({ load: m.load, unload: m.unload })),
+    })
+  } catch (e) {
+    suggestionError.value =
+      e.data?.detail ??
+      e.data?.stops?.[0] ??
+      e.data?.materials?.[0] ??
+      'Impossible de calculer une suggestion.'
+  } finally {
+    suggesting.value = false
+  }
+}
+
+// Trajet suggéré en toutes lettres — les index de `order` sont des positions
+// ACTUELLES du formulaire, donc résolubles tant que la séquence n'a pas bougé
+// (le watcher ci-dessous invalide la suggestion dès qu'elle bouge).
+const suggestionLabel = computed(() => {
+  if (!suggestion.value || !form.value) return ''
+  return suggestion.value.order
+    .map((i) => stopVenueName(form.value.stops[i]?.venue))
+    .join(' → ')
+})
+
+function fmtKm(meters) {
+  return `${(meters / 1000).toLocaleString('fr-CA', { maximumFractionDigits: 1 })} km`
+}
+
+function applySuggestion() {
+  const sug = suggestion.value
+  if (!sug || sug.already_optimal) return
+  const oldStops = form.value.stops
+  // Nouvel ordre + durées des segments de la MATRICE de la suggestion : le
+  // réordonnancement change tous les couples de lieux, les anciennes durées
+  // (dont les manuelles) ne décrivent plus rien — mêmes valeurs que ce que
+  // le serveur estimerait, mais déjà visibles dans le formulaire.
+  form.value.stops = sug.order.map((originalIndex, i) => ({
+    venue: oldStops[originalIndex].venue,
+    travel: i === 0 ? 0 : (sug.segments[i].minutes ?? ''),
+  }))
+  // Les lignes de matériel suivent leurs arrêts : nouvelle position d'un
+  // arrêt = index de son ancienne position dans `order`.
+  form.value.materials.forEach((m) => {
+    m.load = sug.order.indexOf(m.load)
+    m.unload = sug.order.indexOf(m.unload)
+  })
+  fixupLines()
+  suggestion.value = null
+}
+
+function dismissSuggestion() {
+  suggestion.value = null
+  suggestionError.value = null
+}
+
+// Toute retouche de la séquence (lieu changé, arrêt ajouté/retiré/déplacé —
+// y compris par « Appliquer » lui-même) périme la suggestion affichée : ses
+// index et ses totaux décrivent une séquence qui n'existe plus.
+watch(
+  () => form.value?.stops.map((s) => s.venue).join('|'),
+  () => { suggestion.value = null },
+)
+
+// --- Réestimation des distances (chantier 3, 2026-08-07) ---
+// Les tournées d'avant la migration 0029 n'ont aucune distance stockée : le
+// km estimé du camion affiche « au moins » sans moyen de compléter. Ce
+// bouton (mode lecture) appelle `POST /transports/{id}/refresh-distances/`,
+// qui réestime les DISTANCES segment par segment — durées intactes, une
+// durée ajustée à la main n'est jamais écrasée.
+
+const refreshingDistances = ref(false)
+const refreshResult = ref(null)
+const refreshError = ref(null)
+
+async function refreshDistances() {
+  refreshingDistances.value = true
+  refreshError.value = null
+  refreshResult.value = null
+  try {
+    const data = await api.post(`/transports/${transport.value.id}/refresh-distances/`, {})
+    transport.value = data.transport
+    form.value = buildForm(transport.value)
+    refreshResult.value = { refreshed: data.refreshed, unavailable: data.unavailable }
+  } catch (e) {
+    refreshError.value = e.data?.detail ?? 'Impossible de réestimer les distances.'
+  } finally {
+    refreshingDistances.value = false
+  }
 }
 
 // Options des sélecteurs de portion d'une ligne de matériel : chaque arrêt,
@@ -1021,7 +1142,25 @@ const {
              dans une carte séparée : c'est la même information, mais rattachée
              à l'arrêt qui la concerne. -->
         <div class="card">
-          <div class="card-title" style="margin-bottom: 14px">Séquence du transport</div>
+          <div class="card-title-row">
+            <div class="card-title">Séquence du transport</div>
+            <!-- Réestimation des distances (chantier 3, 2026-08-07) : remplit
+                 les segments sans distance (tournées d'avant la migration
+                 0029, durées manuelles) — les durées ne bougent pas. -->
+            <button
+              type="button"
+              class="fiche-btn"
+              :disabled="refreshingDistances"
+              @click="refreshDistances"
+            >
+              {{ refreshingDistances ? 'Réestimation…' : 'Réestimer les distances' }}
+            </button>
+          </div>
+          <div v-if="refreshError" class="conflict-note">{{ refreshError }}</div>
+          <div v-else-if="refreshResult" class="fiche-hint">
+            {{ refreshResult.refreshed }} segment(s) réestimé(s)<template v-if="refreshResult.unavailable">,
+            {{ refreshResult.unavailable }} sans distance (lieu sans GPS ou clé Google Routes absente)</template>.
+          </div>
           <div class="stop-list">
             <div v-for="(s, i) in decoratedStops" :key="s.id" class="stop-row">
               <div class="stop-row__num">{{ i + 1 }}</div>
@@ -1031,6 +1170,7 @@ const {
                   <template v-if="i === 0">Départ<template v-if="s.arrival_datetime"> · {{ fmtTime(s.arrival_datetime) }}</template></template>
                   <template v-else>
                     + {{ s.travel_minutes_from_previous }} min
+                    <template v-if="s.travel_distance_meters"> · {{ fmtKm(s.travel_distance_meters) }}</template>
                     <template v-if="s.arrival_datetime"> · arrivée {{ fmtTime(s.arrival_datetime) }}</template>
                   </template>
                 </div>
@@ -1243,6 +1383,43 @@ const {
             </div>
           </div>
           <div class="material-add" @click="addStop">+ Ajouter un arrêt</div>
+
+          <!-- Suggestion d'ordre optimal (chantier 3, 2026-08-07) : visible
+               dès 3 arrêts. Rien n'est écrit tant qu'on n'applique pas — et
+               même appliqué, il faut encore Enregistrer. -->
+          <div v-if="form.stops.length >= 3" class="suggest">
+            <button
+              type="button"
+              class="fiche-btn"
+              :disabled="!canSuggest || suggesting"
+              @click="requestSuggestion"
+            >
+              {{ suggesting ? 'Calcul en cours…' : 'Suggérer un ordre optimal' }}
+            </button>
+            <div v-if="suggestionError" class="conflict-note">{{ suggestionError }}</div>
+            <div v-else-if="suggestion && suggestion.already_optimal" class="suggest__banner suggest__banner--ok">
+              <div class="suggest__text">
+                L'ordre actuel est déjà le plus rapide
+                ({{ suggestion.current_minutes }} min<template v-if="suggestion.current_meters"> · {{ fmtKm(suggestion.current_meters) }}</template>).
+              </div>
+              <button type="button" class="fiche-btn" @click="dismissSuggestion">OK</button>
+            </div>
+            <div v-else-if="suggestion" class="suggest__banner">
+              <div class="suggest__text">
+                <div class="suggest__route">{{ suggestionLabel }}</div>
+                <div class="suggest__gain">
+                  {{ suggestion.total_minutes }} min au lieu de {{ suggestion.current_minutes }} min
+                  <template v-if="suggestion.total_meters"> · {{ fmtKm(suggestion.total_meters) }} au lieu de {{ fmtKm(suggestion.current_meters) }}</template>
+                </div>
+              </div>
+              <div class="suggest__actions">
+                <button type="button" class="fiche-btn fiche-btn--primary" @click="applySuggestion">
+                  Appliquer cet ordre
+                </button>
+                <button type="button" class="fiche-btn" @click="dismissSuggestion">Ignorer</button>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div v-if="transport.departure_show || transport.arrival_show" class="reference-times">
@@ -1517,6 +1694,68 @@ const {
 </template>
 
 <style scoped>
+/* Entête de carte avec action à droite (2026-08-07, bouton « Réestimer les
+   distances » de la séquence) — le `card-title` seul portait la marge. */
+.card-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+/* Suggestion d'ordre optimal (chantier 3, 2026-08-07) : bouton sous
+   l'éditeur de séquence + bandeau avant/après. Teinte transport comme le
+   reste du module ; la variante --ok (déjà optimal) reste neutre. */
+.suggest {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.suggest__banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border-radius: 0 10px 0 10px;
+  background: color-mix(in oklab, var(--transport) 12%, transparent);
+  border: 1px solid color-mix(in oklab, var(--transport) 35%, transparent);
+}
+
+.suggest__banner--ok {
+  background: rgba(var(--fg-rgb), 0.04);
+  border-color: rgba(var(--fg-rgb), 0.12);
+}
+
+.suggest__text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font: 500 12.5px system-ui;
+  color: rgba(var(--fg-rgb), 0.78);
+}
+
+.suggest__route {
+  font: 600 13px var(--font-mono);
+  color: rgb(var(--fg-rgb));
+}
+
+.suggest__gain {
+  color: var(--transport);
+  font-weight: 600;
+}
+
+.suggest__actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
 .page {
   display: flex;
   flex-direction: column;

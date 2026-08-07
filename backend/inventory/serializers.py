@@ -1456,9 +1456,18 @@ class TransportSerializer(serializers.ModelSerializer):
                 and current_stops[i].venue_id == p['venue'].id
             )
             if p['travel'] is not None:
-                # Durée explicite : pas d'appel Routes. La distance n'est
-                # fiable que si le couple de lieux n'a pas changé.
-                p['distance'] = current_stops[i].travel_distance_meters if pair_unchanged else p.get('distance')
+                # Durée explicite : on la respecte (pause dîner, détour
+                # prévu…). La distance, elle, ne dépend que des lieux : couple
+                # inchangé → on garde celle en base ; couple changé sans
+                # distance connue → un appel Routes remplit la distance SEULE
+                # (les minutes de l'utilisateur restent intactes) — corrigé le
+                # 2026-08-07 (chantier 3) : avant, ce cas laissait la distance
+                # à NULL et trouait le km estimé du camion.
+                if pair_unchanged:
+                    p['distance'] = current_stops[i].travel_distance_meters
+                elif p.get('distance') is None:
+                    estimated = estimate_travel(plan[i - 1]['venue'], p['venue'])
+                    p['distance'] = estimated['meters'] if estimated else None
                 continue
             if pair_unchanged:
                 p['travel'] = current_stops[i].travel_minutes_from_previous

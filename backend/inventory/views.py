@@ -75,6 +75,8 @@ from .portability import (
     export_project_data,
     import_project_data,
 )
+from .maps import estimate_travel
+from .transport_ordering import OrderingUnavailable, suggest_stop_order
 from .transport_coherence import (
     get_material_journey,
     get_material_schedule,
@@ -1499,6 +1501,126 @@ class TransportViewSet(ProjectMembershipQuerysetMixin, viewsets.ModelViewSet):
                 }
                 for row in rows
             ],
+        })
+
+    @action(detail=False, methods=['post'], url_path='order-suggestion')
+    def order_suggestion(self, request):
+        """Suggestion d'ordre optimal des arrêts — chantier 3 (2026-08-07).
+
+        STATELESS : reçoit la séquence EN COURS D'ÉDITION (pas forcément
+        enregistrée) et retourne l'ordre qui minimise le temps de route —
+        c'est le frontend qui applique la suggestion au formulaire, et
+        l'enregistrement normal qui persiste. Voir `transport_ordering.py`
+        pour la méthode (énumération exacte, premier arrêt fixe, précédences
+        chargement→déchargement).
+
+        Corps : `{'project': <id>, 'stops': [<venue_id>, ...],
+        'materials': [{'load': <index>, 'unload': <index>}, ...]}` — les
+        index de matériel sont des POSITIONS dans `stops` (0-indexées),
+        mêmes conventions que les lignes de la fiche.
+
+        Réponse : le dict de `suggest_stop_order` tel quel (`order`,
+        `segments`, totaux avant/après, `already_optimal`). 400 avec un
+        message affichable si la matrice de trajets est inconstructible
+        (clé Google Routes absente, lieu sans GPS…) ou si la séquence est
+        invalide. Accessible en rôle viewer : la suggestion ne modifie rien
+        (`_resolve_csv_project` porte le contrôle d'accès — action
+        `detail=False`, donc hors `has_object_permission`, même mécanique
+        que les exports CSV).
+        """
+        project = _resolve_csv_project(request, request.data.get('project'), required_edit=False)
+        if project is None:
+            return Response({'project': "Le projet est requis."}, status=status.HTTP_400_BAD_REQUEST)
+
+        stops_raw = request.data.get('stops')
+        if not isinstance(stops_raw, list):
+            return Response({'stops': "Liste d'identifiants de lieux attendue."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            venue_ids = [int(v) for v in stops_raw]
+        except (TypeError, ValueError):
+            return Response({'stops': "Liste d'identifiants de lieux attendue."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if len(venue_ids) < 3:
+            return Response(
+                {'stops': "Il faut au moins 3 arrêts pour réordonner — un aller simple n'a qu'un seul ordre."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        venues_by_id = {v.id: v for v in Venue.objects.filter(project=project, id__in=set(venue_ids))}
+        missing = sorted({vid for vid in venue_ids if vid not in venues_by_id})
+        if missing:
+            return Response(
+                {'stops': f"Lieu(x) introuvable(s) dans ce projet : {', '.join(str(m) for m in missing)}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        venues = [venues_by_id[vid] for vid in venue_ids]
+
+        precedence_pairs = []
+        for line in (request.data.get('materials') or []):
+            try:
+                load = int(line.get('load'))
+                unload = int(line.get('unload'))
+            except (TypeError, ValueError, AttributeError):
+                return Response(
+                    {'materials': "Chaque ligne doit fournir `load` et `unload` (positions 0-indexées)."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not (0 <= load < len(venue_ids)) or not (0 <= unload < len(venue_ids)) or load >= unload:
+                return Response(
+                    {'materials': (
+                        f"Portion invalide ({load} → {unload}) : positions 0 à {len(venue_ids) - 1}, "
+                        "chargement avant déchargement."
+                    )},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            precedence_pairs.append((load, unload))
+
+        try:
+            suggestion = suggest_stop_order(venues, precedence_pairs)
+        except OrderingUnavailable as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(suggestion)
+
+    @action(detail=True, methods=['post'], url_path='refresh-distances')
+    def refresh_distances(self, request, pk=None):
+        """Réestime les DISTANCES des segments de cette tournée, durées
+        intactes — chantier 3 (2026-08-07).
+
+        Raison d'être : les tournées d'avant la migration 0029 n'ont aucune
+        distance stockée (pas de rétro-remplissage), et une durée saisie à la
+        main sur un couple de lieux changé laissait la distance à NULL
+        (corrigé dans `_resolve_travel_times` le même jour, mais les données
+        existantes restent trouées) — le km estimé du camion
+        (`Truck.estimated_distance`) affichait « au moins » sans que rien ne
+        permette de compléter. Ce bouton appelle Google Routes segment par
+        segment et ne touche QUE `travel_distance_meters` : une durée ajustée
+        à la main (pause dîner, détour prévu) n'est jamais écrasée.
+
+        Réponse : `{'transport': <fiche sérialisée>, 'refreshed': <n>,
+        'unavailable': <n>}` — `unavailable` compte les segments toujours
+        sans distance (clé absente, lieu sans GPS, appel en échec) ; le
+        frontend l'affiche tel quel. POST = rôle editor requis (via
+        `has_object_permission`).
+        """
+        transport = self.get_object()
+        stops = transport.ordered_stops
+        refreshed = 0
+        unavailable = 0
+        for previous, stop in zip(stops, stops[1:]):
+            estimation = estimate_travel(previous.venue, stop.venue)
+            meters = estimation['meters'] if estimation else None
+            if meters is None:
+                unavailable += 1
+                continue
+            refreshed += 1
+            if stop.travel_distance_meters != meters:
+                stop.travel_distance_meters = meters
+                stop.save(update_fields=['travel_distance_meters'])
+        serializer = self.get_serializer(transport)
+        return Response({
+            'transport': serializer.data,
+            'refreshed': refreshed,
+            'unavailable': unavailable,
         })
 
 
