@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import AppShell from '../components/AppShell.vue'
+import AdresseAutocomplete from '../components/AdresseAutocomplete.vue'
 import { api } from '../api/client'
 import { useActiveProject } from '../composables/useActiveProject'
 import { VENUE_PALETTE } from '../constants/venuePalette'
@@ -271,7 +272,8 @@ async function addVenue() {
           </label>
           <label class="add-form__field add-form__field--wide">
             <span class="add-form__label">Adresse</span>
-            <input v-model="form.address" class="add-form__input" />
+            <!-- Suggestions Google Places pendant la saisie (2026-08-07). -->
+            <AdresseAutocomplete v-model="form.address" input-class="add-form__input" />
           </label>
           <label class="add-form__field">
             <span class="add-form__label">Contact sur place</span>

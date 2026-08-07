@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
+import AdresseAutocomplete from '../components/AdresseAutocomplete.vue'
 import LeaveEditPrompt from '../components/LeaveEditPrompt.vue'
 import { api } from '../api/client'
 import { useFicheEdition } from '../composables/useFicheEdition'
@@ -344,7 +345,12 @@ const mapSrc = computed(() => {
 
           <label class="fiche-field fiche-field--wide">
             <span class="fiche-label">Adresse</span>
-            <input v-model="draft.address" class="fiche-input" :class="{ 'fiche-input--error': fieldErrors.address }" />
+            <!-- Suggestions Google Places pendant la saisie (2026-08-07) —
+                 voir AdresseAutocomplete.vue. -->
+            <AdresseAutocomplete
+              v-model="draft.address"
+              :input-class="['fiche-input', { 'fiche-input--error': fieldErrors.address }]"
+            />
             <span v-if="fieldErrors.address" class="fiche-error">{{ fieldErrors.address }}</span>
           </label>
 
