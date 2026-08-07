@@ -96,3 +96,21 @@ def creer_categories_par_defaut(sender, instance, created, **kwargs):
         MaterialCategory.objects.get_or_create(
             project=instance, name=name, defaults={'color': color},
         )
+
+
+@receiver(post_save, sender=Project)
+def creer_camion_par_defaut(sender, instance, created, **kwargs):
+    """Dote chaque nouveau projet d'un camion par défaut (« Camion »).
+
+    Décision de Samuel (2026-08-06, chantier Camion) : il y a toujours au
+    moins un camion par production — chaque tournée doit être assignée à un
+    camion (`Transport.truck`, non nullable), et le défaut à la création
+    d'une tournée est le premier camion du projet. Même pattern idempotent
+    que les catégories ci-dessus (la duplication de projet recopie les
+    camions du projet source — même nom, `get_or_create` évite le doublon).
+    Les projets existants ont reçu le leur via la migration `0029`.
+    """
+    if not created:
+        return
+    from .models import Truck
+    Truck.objects.get_or_create(project=instance, name='Camion')

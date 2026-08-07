@@ -44,6 +44,7 @@ from .models import (
     TransportMaterial,
     TransportStop,
     TransportTechnician,
+    Truck,
     Venue,
 )
 from .transport_autogen import regenerate_project_proposals
@@ -74,6 +75,15 @@ def _creer_transport(**kwargs):
     origin = kwargs.pop('origin_venue')
     destination = kwargs.pop('destination_venue')
     duration = kwargs.pop('estimated_duration_minutes', 60)
+    # FK projet directe obligatoire depuis la migration 0028 (show optionnel) :
+    # déduite du spectacle desservi, ou du lieu de départ pour une éventuelle
+    # tournée sans spectacle.
+    if 'project' not in kwargs:
+        show = kwargs.get('show')
+        kwargs['project'] = show.project if show is not None else origin.project
+    # Camion obligatoire depuis la migration 0029 : défaut = celui du projet
+    # (créé par le signal `creer_camion_par_defaut`).
+    kwargs.setdefault('truck', kwargs['project'].trucks.order_by('id').first())
     transport = Transport.objects.create(**kwargs)
     TransportStop.objects.create(transport=transport, venue=origin, order=0)
     TransportStop.objects.create(
@@ -1431,7 +1441,9 @@ class ProjectScopingTests(TestCase):
         protégées à la fois (Show→Venue, TransportStop→Venue via une
         tournée, Material→MaterialCategory)."""
         entrepot = Venue.objects.create(project=self.project_a, name="Entrepôt A", is_storage=True)
-        transport = Transport.objects.create(show=self.show_a, scheduled_datetime=_dt(10))
+        transport = Transport.objects.create(
+            project=self.show_a.project,
+            truck=self.show_a.project.trucks.order_by('id').first(), show=self.show_a, scheduled_datetime=_dt(10))
         TransportStop.objects.create(transport=transport, venue=entrepot, order=0, travel_minutes_from_previous=0)
         TransportStop.objects.create(transport=transport, venue=self.venue_a, order=1, travel_minutes_from_previous=30)
 
@@ -1695,6 +1707,7 @@ class ProjectDuplicationTests(TestCase):
         # doit donc les recopier aussi (ici les 9 catégories par défaut).
         self.assertEqual(response.data['copied'], {
             'venues': 2, 'materials': 3, 'technicians': 1, 'material_categories': 9,
+            'trucks': 0,
         })
 
     def test_no_assignments_are_copied(self):
@@ -4513,7 +4526,9 @@ class TourneeMultiArretsCoherenceTests(TestCase):
         """Entrepôt → salle A → salle B, 30 + 45 min ; les moniteurs (entreposés
         à la salle A) montent à l'arrêt 1 et descendent à l'arrêt 2."""
         transport = Transport.objects.create(
-            show=self.show_b, status=Transport.STATUS_CONFIRMED,
+project=self.show_b.project,
+truck=self.show_b.project.trucks.order_by('id').first(),
+show=self.show_b, status=Transport.STATUS_CONFIRMED,
             scheduled_datetime=scheduled or _dt(8),
         )
         s0 = TransportStop.objects.create(transport=transport, venue=self.entrepot, order=0)
@@ -4573,7 +4588,9 @@ class TourneeMultiArretsCoherenceTests(TestCase):
             venue=self.entrepot,
         )
         transport = Transport.objects.create(
-            show=self.show_b, status=Transport.STATUS_CONFIRMED, scheduled_datetime=_dt(8),
+project=self.show_b.project,
+truck=self.show_b.project.trucks.order_by('id').first(),
+show=self.show_b, status=Transport.STATUS_CONFIRMED, scheduled_datetime=_dt(8),
         )
         s0 = TransportStop.objects.create(transport=transport, venue=self.entrepot, order=0)
         s1 = TransportStop.objects.create(
@@ -4632,7 +4649,9 @@ class TransportTouchedShowsAPITests(TestCase):
 
     def _tournee(self, lieux):
         transport = Transport.objects.create(
-            show=self.vertiges, scheduled_datetime=_dt(10), status='confirmed',
+project=self.vertiges.project,
+truck=self.vertiges.project.trucks.order_by('id').first(),
+show=self.vertiges, scheduled_datetime=_dt(10), status='confirmed',
         )
         for i, lieu in enumerate(lieux):
             TransportStop.objects.create(
@@ -4831,8 +4850,12 @@ class ShowDeletionDetachesTransportsTests(TestCase):
         )
 
     def _tournee(self, lieux, show=None):
+        ancre = show or self.vertiges
         transport = Transport.objects.create(
-            show=show or self.vertiges, scheduled_datetime=_dt(10), status='confirmed',
+            project=ancre.project,
+            truck=ancre.project.trucks.order_by('id').first(),
+            show=ancre,
+            scheduled_datetime=_dt(10), status='confirmed',
         )
         arrets = []
         for i, lieu in enumerate(lieux):
@@ -4876,15 +4899,26 @@ class ShowDeletionDetachesTransportsTests(TestCase):
         self.client.delete(f'/api/shows/{self.vertiges.id}/')
         self.assertFalse(Transport.objects.filter(id=transport.id).exists())
 
-    def test_a_tour_without_another_show_to_anchor_is_deleted(self):
+    def test_a_tour_without_another_show_to_anchor_becomes_showless(self):
+        """Révisé le 2026-08-06 (migration 0028, `show` optionnel) : sans
+        candidat de réancrage, la tournée SURVIT « sans spectacle » au lieu
+        d'être supprimée — le travail logistique planifié n'est pas perdu."""
         # Trois arrêts, mais les deux restants sont des entrepôts : plus rien
-        # à desservir, et `Transport.show` n'est pas nullable.
+        # à desservir.
         autre_entrepot = Venue.objects.create(
             project=self.project, name="Entrepôt 2", is_storage=True,
         )
         transport, _ = self._tournee([self.entrepot, self.chapelle, autre_entrepot])
         self.client.delete(f'/api/shows/{self.vertiges.id}/')
-        self.assertFalse(Transport.objects.filter(id=transport.id).exists())
+        transport.refresh_from_db()
+        self.assertIsNone(transport.show_id)
+        self.assertEqual(transport.project_id, self.project.id)
+        # L'arrêt de la Chapelle (lieu du spectacle supprimé) est bien parti,
+        # la séquence restante est renumérotée.
+        self.assertEqual(
+            [stop.venue_id for stop in transport.ordered_stops],
+            [self.entrepot.id, autre_entrepot.id],
+        )
 
     def test_a_round_trip_drops_every_stop_at_that_venue(self):
         # Entrepôt → Chapelle → Prospero → Chapelle : les DEUX passages à la
@@ -5173,7 +5207,9 @@ class ShowDeletionReanchoringTests(TestCase):
 
     def _tournee(self, lieux):
         transport = Transport.objects.create(
-            show=self.vertiges, scheduled_datetime=_dt(10), status='confirmed',
+project=self.vertiges.project,
+truck=self.vertiges.project.trucks.order_by('id').first(),
+show=self.vertiges, scheduled_datetime=_dt(10), status='confirmed',
         )
         for i, lieu in enumerate(lieux):
             TransportStop.objects.create(
@@ -5380,3 +5416,272 @@ class VenueOrderingEdgeCasesTests(TestCase):
         # sinon on basculerait tous les projets en ordre de création.
         Venue.objects.create(project=self.project, name="Ailleurs")
         self.assertEqual(self._noms(), ["Ailleurs", "Chapelle", "Entrepôt"])
+
+
+class TourneeSansSpectacleAPITests(TestCase):
+    """Tournée « sans spectacle » (décision de Samuel du 2026-08-06, migration
+    0028) : `Transport.show` optionnel, FK `project` directe obligatoire.
+
+    Couvre la création API avec et sans spectacle, la validation du projet,
+    l'absence de bornes d'horaire, et l'isolation par projet qui ne passe
+    plus par le spectacle.
+    """
+
+    def setUp(self):
+        self.project = Project.objects.create(name="Projet sans spectacle")
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.salle = Venue.objects.create(project=self.project, name="Salle")
+        self.show = Show.objects.create(
+            project=self.project, title="Mirage", venue=self.salle, event_type="performance",
+            start_datetime=_dt(19), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+
+    def _payload(self, **overrides):
+        payload = {
+            'project': self.project.id,
+            'scheduled_datetime': _dt(8).isoformat(),
+            'stops': [
+                {'venue': self.salle.id},
+                {'venue': self.entrepot.id, 'travel_minutes_from_previous': 30},
+            ],
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_create_without_show_requires_project(self):
+        payload = self._payload()
+        payload.pop('project')
+        response = self.client.post('/api/transports/', payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('project', response.data)
+
+    def test_create_without_show_succeeds_with_project(self):
+        response = self.client.post('/api/transports/', self._payload(), format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertIsNone(response.data['show'])
+        self.assertIsNone(response.data['show_title'])
+        self.assertEqual(response.data['project'], self.project.id)
+        # Sans spectacle : aucune borne départ/arrivée déduite.
+        self.assertIsNone(response.data['departure_show'])
+        self.assertIsNone(response.data['arrival_show'])
+
+    def test_project_is_locked_to_the_show_when_given(self):
+        autre = Project.objects.create(name="Autre projet")
+        response = self.client.post('/api/transports/', self._payload(
+            show=self.show.id, project=autre.id,
+        ), format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('project', response.data)
+
+    def test_project_is_deduced_from_the_show(self):
+        payload = self._payload(show=self.show.id, stops=[
+            {'venue': self.entrepot.id},
+            {'venue': self.salle.id, 'travel_minutes_from_previous': 30},
+        ])
+        payload.pop('project')
+        response = self.client.post('/api/transports/', payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data['project'], self.project.id)
+
+    def test_stops_must_belong_to_the_tour_project(self):
+        autre = Project.objects.create(name="Autre projet")
+        lieu_ailleurs = Venue.objects.create(project=autre, name="Ailleurs")
+        response = self.client.post('/api/transports/', self._payload(stops=[
+            {'venue': self.salle.id},
+            {'venue': lieu_ailleurs.id, 'travel_minutes_from_previous': 30},
+        ]), format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_project_filter_includes_showless_tours(self):
+        self.client.post('/api/transports/', self._payload(), format='json')
+        response = self.client.get(f'/api/transports/?project={self.project.id}')
+        data = response.data if isinstance(response.data, list) else response.data.get('results', [])
+        self.assertEqual(len(data), 1)
+
+    def test_show_can_be_cleared_on_update(self):
+        creation = self.client.post('/api/transports/', self._payload(
+            show=self.show.id, stops=[
+                {'venue': self.entrepot.id},
+                {'venue': self.salle.id, 'travel_minutes_from_previous': 30},
+            ],
+        ), format='json')
+        response = self.client.patch(f"/api/transports/{creation.data['id']}/", {
+            'show': None,
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertIsNone(response.data['show'])
+        self.assertEqual(response.data['project'], self.project.id)
+
+
+class CamionTests(TestCase):
+    """Entité Camion (chantier 2 des travaux transport, 2026-08-06 — décisions
+    de Samuel) : camion par défaut par projet, tournée assignée à un camion
+    avec conflit d'horaire façon techniciens, avertissement hors réservation,
+    km estimé depuis les distances Google Routes, gardes de suppression.
+    """
+
+    def setUp(self):
+        self.project = Project.objects.create(name="Projet camion")
+        self.client = APIClient()
+        self.django_user = DjangoUser.objects.create_superuser('admin', 'admin@example.com', 'pw')
+        self.client.force_authenticate(user=self.django_user)
+
+        self.entrepot = Venue.objects.create(project=self.project, name="Entrepôt", is_storage=True)
+        self.salle = Venue.objects.create(project=self.project, name="Salle")
+        self.show = Show.objects.create(
+            project=self.project, title="Fugue", venue=self.salle, event_type="performance",
+            start_datetime=_dt(19), end_datetime=_dt(22),
+            buffer_before_minutes=0, buffer_after_minutes=0,
+        )
+
+    def _creer_tournee(self, **overrides):
+        payload = {
+            'show': self.show.id,
+            'origin_venue': self.entrepot.id,
+            'destination_venue': self.salle.id,
+            'scheduled_datetime': _dt(8).isoformat(),
+            'estimated_duration_minutes': 60,
+        }
+        payload.update(overrides)
+        return self.client.post('/api/transports/', payload, format='json')
+
+    def test_a_default_truck_is_created_with_the_project(self):
+        camions = self.project.trucks.all()
+        self.assertEqual(camions.count(), 1)
+        self.assertEqual(camions.first().name, 'Camion')
+
+    def test_a_new_tour_gets_the_project_truck_by_default(self):
+        response = self._creer_tournee()
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        camion = self.project.trucks.first()
+        self.assertEqual(response.data['truck'], camion.id)
+        self.assertEqual(response.data['truck_name'], 'Camion')
+
+    def test_a_truck_from_another_project_is_rejected(self):
+        autre = Project.objects.create(name="Autre")
+        response = self._creer_tournee(truck=autre.trucks.first().id)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('truck', response.data)
+
+    def test_overlapping_tours_on_the_same_truck_are_blocked_then_forced(self):
+        self._creer_tournee()
+        # Même camion, fenêtre qui chevauche (8h-9h vs 8h30-9h30) → 400 + conflicts.
+        response = self._creer_tournee(
+            scheduled_datetime=(_dt(8) + timedelta(minutes=30)).isoformat(),
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('conflicts', response.data)
+        self.assertEqual(response.data['conflicts'][0]['type'], 'truck_transport')
+        # `force` passe outre, comme les techniciens.
+        response = self._creer_tournee(
+            scheduled_datetime=(_dt(8) + timedelta(minutes=30)).isoformat(), force=True,
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+    def test_a_second_truck_avoids_the_conflict(self):
+        self._creer_tournee()
+        fourgon = Truck.objects.create(project=self.project, name="Fourgon")
+        response = self._creer_tournee(
+            scheduled_datetime=(_dt(8) + timedelta(minutes=30)).isoformat(), truck=fourgon.id,
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data['truck'], fourgon.id)
+
+    def test_reservation_warning_outside_the_period(self):
+        camion = self.project.trucks.first()
+        camion.reservation_start = _dt(8).date()
+        camion.reservation_end = _dt(8).date()
+        camion.save()
+        # Dans la période : pas d'avertissement.
+        response = self._creer_tournee()
+        self.assertIsNone(response.data['truck_reservation_warning'])
+        # La veille de la réservation : avertissement, mais création acceptée
+        # (non bloquant — décision de Samuel).
+        response = self._creer_tournee(
+            scheduled_datetime=(_dt(8) - timedelta(days=1)).isoformat(), force=True,
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertIsNotNone(response.data['truck_reservation_warning'])
+
+    def test_estimated_km_sums_confirmed_tours_only(self):
+        camion = self.project.trucks.first()
+        # Tournée confirmée avec distance connue (12,3 km).
+        t1 = Transport.objects.create(
+            project=self.project, truck=camion, show=self.show,
+            status='confirmed', scheduled_datetime=_dt(8),
+        )
+        TransportStop.objects.create(transport=t1, venue=self.entrepot, order=0)
+        TransportStop.objects.create(
+            transport=t1, venue=self.salle, order=1,
+            travel_minutes_from_previous=30, travel_distance_meters=12300,
+        )
+        # Proposition non confirmée : ne compte pas.
+        t2 = Transport.objects.create(
+            project=self.project, truck=camion, show=self.show,
+            status='to_approve', scheduled_datetime=None,
+        )
+        TransportStop.objects.create(transport=t2, venue=self.entrepot, order=0)
+        TransportStop.objects.create(
+            transport=t2, venue=self.salle, order=1,
+            travel_minutes_from_previous=30, travel_distance_meters=99000,
+        )
+        response = self.client.get(f'/api/trucks/{camion.id}/')
+        self.assertEqual(response.data['estimated_km'], 12.3)
+        self.assertFalse(response.data['km_is_partial'])
+
+    def test_estimated_km_flags_missing_distances(self):
+        camion = self.project.trucks.first()
+        t1 = Transport.objects.create(
+            project=self.project, truck=camion, show=self.show,
+            status='confirmed', scheduled_datetime=_dt(8),
+        )
+        TransportStop.objects.create(transport=t1, venue=self.entrepot, order=0)
+        TransportStop.objects.create(
+            transport=t1, venue=self.salle, order=1,
+            travel_minutes_from_previous=30, travel_distance_meters=None,
+        )
+        response = self.client.get(f'/api/trucks/{camion.id}/')
+        self.assertEqual(response.data['estimated_km'], 0)
+        self.assertTrue(response.data['km_is_partial'])
+
+    def test_used_truck_cannot_be_deleted(self):
+        self._creer_tournee()
+        camion = self.project.trucks.first()
+        response = self.client.delete(f'/api/trucks/{camion.id}/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('tournée', response.data['detail'])
+
+    def test_last_truck_cannot_be_deleted(self):
+        camion = self.project.trucks.first()
+        response = self.client.delete(f'/api/trucks/{camion.id}/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('dernier camion', response.data['detail'])
+
+    def test_spare_truck_can_be_deleted(self):
+        fourgon = Truck.objects.create(project=self.project, name="Fourgon")
+        response = self.client.delete(f'/api/trucks/{fourgon.id}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_truck_filter_on_transports(self):
+        self._creer_tournee()
+        fourgon = Truck.objects.create(project=self.project, name="Fourgon")
+        self._creer_tournee(
+            scheduled_datetime=(_dt(14)).isoformat(), truck=fourgon.id,
+        )
+        response = self.client.get(f'/api/transports/?truck={fourgon.id}')
+        data = response.data if isinstance(response.data, list) else response.data.get('results', [])
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]['truck'], fourgon.id)
+
+    def test_reservation_dates_must_be_ordered(self):
+        camion = self.project.trucks.first()
+        response = self.client.patch(f'/api/trucks/{camion.id}/', {
+            'reservation_start': '2026-09-10', 'reservation_end': '2026-09-01',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('reservation_end', response.data)

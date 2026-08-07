@@ -137,7 +137,8 @@ def get_material_transports(material, window_start, window_end):
         resultats.append({
             'transport_id': transport.id,
             'show_id': transport.show_id,
-            'show_title': transport.show.display_title,
+            # Tournée « sans spectacle » possible depuis le 2026-08-06.
+            'show_title': transport.show.display_title if transport.show_id else None,
             'origin_venue_id': event['origin_id'],
             'origin_venue_name': event['origin_venue'].name,
             'destination_venue_id': event['destination_id'],
@@ -248,7 +249,7 @@ def get_project_horizon(project):
 
     dernier_transport = (
         Transport.objects
-        .filter(show__project=project, scheduled_datetime__isnull=False)
+        .filter(project=project, scheduled_datetime__isnull=False)
         .order_by('-scheduled_datetime')
         .first()
     )
@@ -493,7 +494,8 @@ def _serialize_origin_issue(material, event, available):
         'transport_id': transport.id,
         'scheduled_datetime': transport.scheduled_datetime,
         'show_id': transport.show_id,
-        'show_title': transport.show.display_title,
+        # Tournée « sans spectacle » possible depuis le 2026-08-06.
+        'show_title': transport.show.display_title if transport.show_id else None,
         'material_id': material.id,
         'material_name': material.name,
         'origin_venue_id': event['origin_id'],
@@ -573,7 +575,7 @@ def get_project_window(project):
             premiers.append(premier_show.effective_start)
         premier_transport = (
             Transport.objects
-            .filter(show__project=project, scheduled_datetime__isnull=False)
+            .filter(project=project, scheduled_datetime__isnull=False)
             .order_by('scheduled_datetime')
             .first()
         )

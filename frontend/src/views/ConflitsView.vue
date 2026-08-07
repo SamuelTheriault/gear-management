@@ -27,7 +27,7 @@ const { activeProjectId } = useActiveProject()
 
 const loading = ref(false)
 const loadError = ref(null)
-const report = ref({ venue_conflicts: [], material_conflicts: [], technician_conflicts: [] })
+const report = ref({ venue_conflicts: [], material_conflicts: [], technician_conflicts: [], truck_conflicts: [] })
 
 const dateTimeFmt = new Intl.DateTimeFormat('fr-CA', {
   weekday: 'short',
@@ -55,13 +55,14 @@ const totalCount = computed(
   () =>
     (report.value.venue_conflicts?.length ?? 0) +
     (report.value.material_conflicts?.length ?? 0) +
-    (report.value.technician_conflicts?.length ?? 0),
+    (report.value.technician_conflicts?.length ?? 0) +
+    (report.value.truck_conflicts?.length ?? 0),
 )
 
 // --- Fenêtre temporelle générique (show OU transport) pour un côté de conflit ---
 
 function sideWindow(side) {
-  if (side.type === 'transport') {
+  if (side.type === 'transport' || side.type === 'truck_transport') {
     const start = new Date(side.scheduled_datetime)
     const end = new Date(start.getTime() + (side.estimated_duration_minutes ?? 0) * 60000)
     return { start, end }
@@ -81,6 +82,10 @@ function sideContext(side) {
     // `transport_type` a disparu du modèle (tournées multi-arrêts,
     // 2026-08-04) — le contexte utile ici est la personne engagée.
     return `Tournée · ${side.technician_name ?? '—'}`
+  }
+  if (side.type === 'truck_transport') {
+    // Conflit de camion (2026-08-06) : le trajet identifie la tournée.
+    return side.route
   }
   return side.technician_name // show_technician
 }
@@ -107,6 +112,8 @@ const groups = computed(() => [
   { key: 'venue', label: 'Conflits de lieu', items: report.value.venue_conflicts ?? [] },
   { key: 'material', label: 'Conflits de matériel', items: report.value.material_conflicts ?? [] },
   { key: 'technician', label: 'Conflits de technicien', items: report.value.technician_conflicts ?? [] },
+  // Camions (2026-08-06) : deux tournées du même camion qui se chevauchent.
+  { key: 'truck', label: 'Conflits de camion', items: report.value.truck_conflicts ?? [] },
 ])
 </script>
 
@@ -139,9 +146,12 @@ const groups = computed(() => [
                     <div class="conflict__title">
                       {{ group.key === 'venue' ? `Conflit de lieu — ${pair.a.venue_name}`
                         : group.key === 'material' ? `Conflit de matériel — ${pair.a.material_name}`
+                        : group.key === 'truck' ? `Conflit de camion — ${pair.truck_name}`
                         : `Conflit de technicien — ${pair.a.technician_name ?? pair.b.technician_name}` }}
                     </div>
-                    <div class="conflict__subtitle">{{ pair.a.show_title }} ⇄ {{ pair.b.show_title }}</div>
+                    <div class="conflict__subtitle">
+                      {{ (pair.a.show_title ?? pair.a.route) }} ⇄ {{ (pair.b.show_title ?? pair.b.route) }}
+                    </div>
                   </div>
                 </div>
 
@@ -150,7 +160,12 @@ const groups = computed(() => [
                     <div class="side__title">{{ side.show_title }}</div>
                     <div class="side__context">{{ sideContext(side) }}</div>
                     <div class="side__time">{{ fmtWindow(side) }}</div>
-                    <RouterLink :to="`/spectacles/${side.show_id}`" class="side__link">Voir le spectacle →</RouterLink>
+                    <RouterLink
+                      v-if="side.type === 'truck_transport'"
+                      :to="`/transports/${side.transport_id}`"
+                      class="side__link"
+                    >Voir la tournée →</RouterLink>
+                    <RouterLink v-else :to="`/spectacles/${side.show_id}`" class="side__link">Voir le spectacle →</RouterLink>
                   </div>
                 </div>
 

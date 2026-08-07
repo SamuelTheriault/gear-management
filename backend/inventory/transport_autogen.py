@@ -40,12 +40,12 @@ import threading
 
 from django.db import transaction
 
-from .models import Material, ShowMaterial, Transport, TransportMaterial, TransportStop
+from .models import Material, ShowMaterial, Transport, TransportMaterial, TransportStop, Truck
 
 try:  # estimation optionnelle de durée (dégradation silencieuse — voir maps.py)
-    from .maps import estimate_travel_minutes
+    from .maps import estimate_travel
 except Exception:  # pragma: no cover - maps importe toujours, garde de robustesse
-    def estimate_travel_minutes(origin, destination):
+    def estimate_travel(origin, destination):
         """Repli si `maps` est indisponible — pas d'estimation."""
         return None
 
@@ -190,13 +190,15 @@ def _build_confirmed_cover(project):
     lines = (
         TransportMaterial.objects.filter(
             transport__status=Transport.STATUS_CONFIRMED,
-            transport__show__project=project,
+            transport__project=project,
         )
         .select_related('transport', 'transport__show', 'unload_stop')
     )
     for line in lines:
         transport = line.transport
-        if line.unload_stop.venue_id == transport.show.venue_id:
+        # Une tournée « sans spectacle » (2026-08-06) ne couvre aucune
+        # livraison au sens de l'autogen — rien à ajouter.
+        if transport.show_id is not None and line.unload_stop.venue_id == transport.show.venue_id:
             cover.add((transport.show_id, line.material_id))
     return cover
 
@@ -232,7 +234,7 @@ def regenerate_project_proposals(project):
             # tournées (2026-08-04) — d'où le prefetch des arrêts.
             existing = {}
             existing_qs = (
-                Transport.objects.filter(status=Transport.STATUS_TO_APPROVE, show__project=project)
+                Transport.objects.filter(status=Transport.STATUS_TO_APPROVE, project=project)
                 .select_related('show')
                 .prefetch_related('stops')
             )
@@ -258,12 +260,20 @@ def regenerate_project_proposals(project):
                 origin_id = group['origin_id']
                 transport = existing.get(key)
                 if transport is None:
-                    duration = estimate_travel_minutes_by_id(origin_id, show.venue_id)
-                    if duration is None:
+                    estimation = estimate_travel_by_id(origin_id, show.venue_id)
+                    if estimation is None:
                         from .models import Settings
                         duration = Settings.load().default_transport_duration_minutes
+                        distance = None
+                    else:
+                        duration = estimation['minutes']
+                        distance = estimation['meters']
                     transport = Transport.objects.create(
+                        project=show.project,
                         show=show,
+                        # Camion par défaut du projet (2026-08-06) — il en
+                        # existe toujours un (signal + migration 0029).
+                        truck=Truck.objects.filter(project=show.project).order_by('id').first(),
                         status=Transport.STATUS_TO_APPROVE,
                         scheduled_datetime=None,
                     )
@@ -274,6 +284,7 @@ def regenerate_project_proposals(project):
                     TransportStop.objects.create(
                         transport=transport, venue_id=show.venue_id, order=1,
                         travel_minutes_from_previous=duration,
+                        travel_distance_meters=distance,
                     )
                     counts['created'] += 1
                 else:
@@ -287,16 +298,18 @@ def regenerate_project_proposals(project):
         _state.active = False
 
 
-def estimate_travel_minutes_by_id(origin_venue_id, destination_venue_id):
-    """Estime la durée de trajet entre deux lieux (par id) via `maps`, ou None
-    si non estimable (coordonnées manquantes, clé absente, erreur réseau)."""
+def estimate_travel_by_id(origin_venue_id, destination_venue_id):
+    """Estime durée ET distance de trajet entre deux lieux (par id) via
+    `maps.estimate_travel`, ou None si non estimable (coordonnées manquantes,
+    clé absente, erreur réseau). La distance alimente
+    `TransportStop.travel_distance_meters` (km du camion, 2026-08-06)."""
     from .models import Venue
     try:
         origin = Venue.objects.get(id=origin_venue_id)
         destination = Venue.objects.get(id=destination_venue_id)
     except Venue.DoesNotExist:
         return None
-    return estimate_travel_minutes(origin, destination)
+    return estimate_travel(origin, destination)
 
 
 def _sync_transport_lines(transport, desired_lines):

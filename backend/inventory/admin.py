@@ -27,6 +27,7 @@ from .models import (
     ShowTechnician,
     Technician,
     Transport,
+    Truck,
     TransportStop,
     TransportTechnician,
     User,
@@ -166,6 +167,16 @@ class TransportTechnicianInline(admin.TabularInline):
     model = TransportTechnician
     extra = 0
     autocomplete_fields = ('technician',)
+
+
+@admin.register(Truck)
+class TruckAdmin(admin.ModelAdmin):
+    """Admin pour les camions de production (chantier Camion, 2026-08-06)."""
+
+    list_display = ('name', 'project', 'reservation_start', 'reservation_end', 'reservation_number')
+    list_filter = ('project',)
+    search_fields = ('name', 'reservation_number', 'contract_number', 'notes')
+    autocomplete_fields = ('project',)
 
 
 class TransportStopInline(admin.TabularInline):

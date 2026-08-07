@@ -17,6 +17,7 @@ router.register(r'shows', views.ShowViewSet)
 router.register(r'show-materials', views.ShowMaterialViewSet)
 router.register(r'technicians', views.TechnicianViewSet)
 router.register(r'show-technicians', views.ShowTechnicianViewSet)
+router.register(r'trucks', views.TruckViewSet)
 router.register(r'transports', views.TransportViewSet)
 
 urlpatterns = router.urls + [

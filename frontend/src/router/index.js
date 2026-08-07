@@ -17,6 +17,8 @@ import LieuxView from '../views/LieuxView.vue'
 import LieuDetailView from '../views/LieuDetailView.vue'
 import TechniciensView from '../views/TechniciensView.vue'
 import TechnicienDetailView from '../views/TechnicienDetailView.vue'
+import CamionsView from '../views/CamionsView.vue'
+import CamionDetailView from '../views/CamionDetailView.vue'
 import TransportsView from '../views/TransportsView.vue'
 import TransportDetailView from '../views/TransportDetailView.vue'
 import ConflitsView from '../views/ConflitsView.vue'
@@ -36,6 +38,8 @@ const routes = [
   { path: '/lieux/:id', name: 'lieu-detail', component: LieuDetailView },
   { path: '/techniciens', name: 'techniciens', component: TechniciensView },
   { path: '/techniciens/:id', name: 'technicien-detail', component: TechnicienDetailView },
+  { path: '/camions', name: 'camions', component: CamionsView },
+  { path: '/camions/:id', name: 'camion-detail', component: CamionDetailView },
   { path: '/transports', name: 'transports', component: TransportsView },
   { path: '/transports/:id', name: 'transport-detail', component: TransportDetailView },
   // Parcours : rattachés au Tableau de bord dans la sidebar depuis le
