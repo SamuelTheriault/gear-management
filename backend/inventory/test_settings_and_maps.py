@@ -592,3 +592,60 @@ class GeocodingTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
         self.assertEqual(response.data['latitude'], '46.810000')
         mock_geocode.assert_called_once()
+
+
+class AddressAutocompleteTests(TestCase):
+    """Suggestions d'adresses (2026-08-07, demande de Samuel) :
+    `maps.autocomplete_address` + l'action `GET /api/venues/
+    address-autocomplete/` qui la relaie."""
+
+    def setUp(self):
+        self.user = DjangoUser.objects.create_superuser('addr', 'addr@test.com', 'testpass123')
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_returns_empty_without_api_key(self):
+        from .maps import autocomplete_address
+        self.assertEqual(autocomplete_address("175 Sainte-Catherine"), [])
+
+    @override_settings(GOOGLE_MAPS_API_KEY='fake-key')
+    def test_returns_empty_for_short_queries(self):
+        from .maps import autocomplete_address
+        self.assertEqual(autocomplete_address("175"), [])
+
+    @override_settings(GOOGLE_MAPS_API_KEY='fake-key')
+    @patch('inventory.maps.requests.post')
+    def test_parses_suggestions(self, mock_post):
+        from .maps import autocomplete_address
+        mock_response = MagicMock()
+        mock_response.json.return_value = {'suggestions': [
+            {'placePrediction': {'text': {'text': "175 Rue Sainte-Catherine O, Montréal, QC"}}},
+            {'placePrediction': {'text': {'text': "175 Rue Sainte-Catherine E, Montréal, QC"}}},
+            {'queryPrediction': {'text': {'text': "sans placePrediction — ignorée"}}},
+        ]}
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+        self.assertEqual(autocomplete_address("175 Sainte-Catherine"), [
+            "175 Rue Sainte-Catherine O, Montréal, QC",
+            "175 Rue Sainte-Catherine E, Montréal, QC",
+        ])
+
+    @override_settings(GOOGLE_MAPS_API_KEY='fake-key')
+    @patch('inventory.maps.requests.post')
+    def test_returns_empty_on_request_failure(self, mock_post):
+        from .maps import autocomplete_address
+        mock_post.side_effect = Exception("network error")
+        self.assertEqual(autocomplete_address("175 Sainte-Catherine"), [])
+
+    @patch('inventory.views.autocomplete_address')
+    def test_endpoint_relays_the_suggestions(self, mock_autocomplete):
+        mock_autocomplete.return_value = ["1 Rue de l'Église, Marsoui, QC"]
+        response = self.client.get('/api/venues/address-autocomplete/', {'q': "1 rue de l'égli"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, {'suggestions': ["1 Rue de l'Église, Marsoui, QC"]})
+        mock_autocomplete.assert_called_once_with("1 rue de l'égli")
+
+    def test_endpoint_requires_authentication(self):
+        anonyme = APIClient()
+        response = anonyme.get('/api/venues/address-autocomplete/', {'q': "175 Sainte-Catherine"})
+        self.assertIn(response.status_code, (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN))

@@ -3417,3 +3417,29 @@ passer que WARNING+), et le seul chemin d'échec du géocodage sans warning
 Prochain épisode : Samuel resauve une fiche Lieu avec adresse + reclique
 « Réestimer les distances », et les logs Railway diront enfin qui ment —
 la base, le géocodage, ou Google.
+
+## 2026-08-07 (soir, fin) — Autocomplétion d'adresses (feat/autocomplete-adresse)
+
+Pendant l'activation des API Google (l'instrumentation a tranché : le
+géocodage échouait en `REQUEST_DENIED` — Geocoding API pas activée sur la
+clé, message d'erreur Google explicite dans les logs, enfin), Samuel a
+demandé les suggestions d'adresses en menu déroulant pendant la saisie.
+
+- `maps.autocomplete_address(query)` : Places Autocomplete (New), ≤ 5
+  adresses formatées, `languageCode=fr-CA`, `locationBias` cercle 50 km sur
+  Montréal (biaise sans exclure — les tournées hors Québec sortent quand
+  même). `[]` si clé absente/saisie < 4 caractères/échec — dégradation
+  invisible, le champ reste un simple champ texte.
+- `GET /api/venues/address-autocomplete/?q=…` : relais côté serveur, LA CLÉ
+  NE QUITTE JAMAIS LE BACKEND (pas de SDK JS Google ni de clé publique
+  restreinte par référent — même principe que Routes/Geocoding).
+- `AdresseAutocomplete.vue` (nouveau composant) : débounce 300 ms, seuil
+  4 caractères, jeton anti-course, `mousedown.prevent` pour passer avant le
+  blur, Échap ferme, `inputClass` transmet les classes du champ hôte
+  (`fiche-input` / `add-form__input` + variantes d'erreur). Branché sur la
+  fiche Lieu (édition) ET le formulaire de création de LieuxView.
+- 3e API à activer sur la clé Google Cloud : « Places API (New) » (avec
+  Routes et Geocoding). Si la clé porte des restrictions d'API, l'y ajouter
+  aussi.
+
+Suite : 509 tests (6 ajoutés), flake8, build Vue OK. Aucune migration.

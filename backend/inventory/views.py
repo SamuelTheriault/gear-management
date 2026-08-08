@@ -78,7 +78,7 @@ from .portability import (
     export_project_data,
     import_project_data,
 )
-from .maps import estimate_travel
+from .maps import autocomplete_address, estimate_travel
 from .transport_ordering import OrderingUnavailable, suggest_stop_order
 from .transport_coherence import (
     get_material_journey,
@@ -797,6 +797,21 @@ class VenueViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin, viewset
 
     queryset = Venue.objects.select_related('project').all()
     serializer_class = VenueSerializer
+
+    @action(detail=False, methods=['get'], url_path='address-autocomplete')
+    def address_autocomplete(self, request):
+        """Suggestions d'adresses pendant la saisie (2026-08-07, demande de
+        Samuel) — relaie `?q=<saisie partielle>` vers Places Autocomplete
+        (New) côté serveur, la clé Google ne quitte jamais le backend.
+
+        Réponse : `{'suggestions': [<adresse formatée>, ...]}` (≤ 5, vide si
+        saisie < 4 caractères, clé absente ou API non activée — le champ
+        adresse reste alors un simple champ texte, aucune erreur). Le
+        débounce est côté client (voir `AdresseAutocomplete.vue`) ; pas de
+        projet requis, une recherche d'adresse n'est pas une donnée de
+        production (accès : utilisateur authentifié, comme toute l'API).
+        """
+        return Response({'suggestions': autocomplete_address(request.query_params.get('q', ''))})
 
     @action(detail=False, methods=['post'])
     def reorder(self, request):
