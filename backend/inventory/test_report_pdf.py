@@ -54,6 +54,9 @@ except (ImportError, OSError):  # pragma: no cover
 @unittest.skipUnless(WEASYPRINT_DISPO, "WeasyPrint indisponible — voir les paquets système")
 @override_settings(PUBLIC_BASE_URL='https://regi.example.app')
 class RenduPdfTests(_Fixture):
+    """Rendu WeasyPrint des quatre feuilles : géométrie de page, polices
+    embarquées, lisibilité du QR et répétition du pied."""
+
     def setUp(self):
         super().setUp()
         ShowTechnician.objects.create(show=self.show, technician=self.technicien)

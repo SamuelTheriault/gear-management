@@ -4,22 +4,35 @@ Tableau de bord manuel. À mettre à jour à chaque étape franchie ou décision
 prise. Complète `recapitulatif_projet.md` (contenu fonctionnel) sans le
 dupliquer — ce fichier ne suit que **l'avancement**, pas le scope.
 
-Dernière mise à jour : 2026-08-06 (soir) — lot 21 commité, mergé
-(PR #27) et déployé avec ses correctifs de relecture ; points non bloquants
-de la relecture mergés (PR #28) et déployés dans la foulée (Railway SUCCESS
-20 h 52). Le suivi de l'étape 20 (`3311b20`) a été mergé par la PR #26.
-Prochain chantier : travaux sur le module transport (session du 2026-08-06
-soir).
+Dernière mise à jour : 2026-08-08 — étape 31 (chantier documentation
+utilisateur lancé : liste des écrans + commande `seed_demo` livrée, à
+exécuter par Samuel). Mise à jour précédente, 2026-08-07 : étape 26
+(corrections transport géocodage/menu/formulaire) confirmée mergée (PR #31)
+et déployée, plus trois correctifs supplémentaires du même jour sur la saga
+géocodage : bug de la fiche Lieu (PR #32), diagnostic actionnable avec liens
+vers les fiches Lieu exactes (PR #33), et instrumentation par logs Railway
+(PR #34) — la cause du symptôme signalé par Samuel reste **non résolue**,
+en attente de son prochain essai avec les nouveaux logs. Railway montre en
+plus une **5e PR déjà mergée et déployée** (`feat/autocomplete-adresse`,
+#35, suggestions d'adresses Google Places) que ce bac à sable ne voit pas
+encore dans son clone local — voir « Points de vigilance ».
 
 ## Statut global
 
 Backend et frontend sont en ligne sur le même service Railway (Dockerfile,
-WhiteNoise sert le build Vue — étape 13), à jour avec `main` GitHub
-(`a28bc20`, merge PR #28, déploiement Railway SUCCESS du 2026-08-06
-20 h 52), migrations `0001`→`0027` appliquées, dépendances `nh3` (pip) et
-TipTap (npm) installées au build. OAuth Google testé en vrai navigateur et
-fonctionnel (étape 7). ⚠️ Le `main` LOCAL (`9deb704`) est en retard d'un
-merge sur GitHub — `git pull` avant de partir une nouvelle branche.
+WhiteNoise sert le build Vue — étape 13). Le `main` de CE clone
+(`769cc79`, merge PR #34) est à jour avec les migrations `0001`→`0029`
+appliquées (`Truck` compris, étape 24) et 503 tests locaux (`tests.py` +
+6 fichiers `test_*.py`), dépendances `nh3` (pip) confirmée dans
+`requirements.txt` et TipTap (npm) installées au build. OAuth Google testé
+en vrai navigateur et fonctionnel (étape 7). ⚠️ **Le `main` GitHub a
+avancé au-delà de ce que voit ce clone** : le dernier déploiement Railway
+SUCCESS (2026-08-07 15 h 31 UTC) correspond à la PR #35
+(`feat/autocomplete-adresse`, commit `51a8f87`), un merge que ce bac à
+sable n'a pas — `git fetch`/`pull` a échoué ici (« Host key verification
+failed »). Un `git pull` depuis le poste de Samuel est nécessaire avant
+toute nouvelle branche, et une session suivante devra rattraper le contenu
+de la PR #35 dans la doc.
 
 **⚠️ Incident opérationnel du 2026-08-04, résolu sans perte de données :**
 deux sessions Cowork ont travaillé sur le même dossier `gear-management` en
@@ -54,7 +67,7 @@ modèle backend) : voir « Points de vigilance ».
 | 5 | Déploiement Railway fonctionnel (Django + Gunicorn + WhiteNoise) | ✅ Fait | 2026-07-18 |
 | 6 | Superutilisateur Django créé | ✅ Fait | 2026-07-18 |
 | 7 | Projet Google Cloud OAuth (config + intégration Django) | ✅ Fait, testé en vrai navigateur — corrigé un bug de schéma http/https derrière le proxy Railway (`SECURE_PROXY_SSL_HEADER`) et géré la liaison de compte (email partagé avec le superutilisateur Django existant, flux « connect » d'allauth) | 2026-08-03 |
-| 8 | Modèles Django + migrations | ✅ Fait — migrations `0001`→`0026` | 2026-07-17 |
+| 8 | Modèles Django + migrations | ✅ Fait — migrations `0001`→`0029` (dans ce clone ; `0030`+ possible côté GitHub, voir Statut global) | 2026-07-17 |
 | 9 | API DRF + logique de conflits | ✅ Fait | 2026-07-17 |
 | 9bis | Entreposage, transports, réglages, calcul de trajet (Google Routes API) | ✅ Fait, mergé (PR #2) | 2026-07-18 |
 | 9ter | Couleur par département, quantité de matériel, `is_active`, isolation par projet (`Project`) + duplication | ✅ Fait, mergé (PR #3, #4, #5) | 2026-07-19 |
@@ -83,32 +96,82 @@ modèle backend) : voir « Points de vigilance ».
 | 23 | Travaux transport, chantier 1 : `Transport.project` direct + spectacle desservi OPTIONNEL (migration `0028`, « — Aucun spectacle — »), formulaire clarifié (« Spectacle desservi (arrivée) », liste filtrée par lieu d'arrivée), `transport_detach` révisé (détachement au lieu de suppression), correctif suppression de projet | ✅ Mergée dans `main` (PR #29) et déployée — migration `0028` appliquée en prod (vérifié dans les logs Railway) | 2026-08-07 |
 | 24 | Travaux transport, chantier 2 : entité **Camion** (table `trucks`, camion par défaut par projet, migration `0029`), tournée assignée à un camion (conflit d'horaire bloquant + force, 4e groupe de l'écran Conflits), période de réservation (avertissement non bloquant), km estimé via distances Google Routes par segment, écrans Camions + fiche | ✅ Mergée dans `main` (PR #29) et déployée — migration `0029` appliquée en prod | 2026-08-07 |
 | 25 | Travaux transport, chantier 3 : **suggestion d'ordre optimal des arrêts** (`transport_ordering.py` — énumération exacte, premier arrêt fixe, précédences chargement→déchargement, `POST /transports/order-suggestion/` stateless + bouton « Suggérer un ordre optimal » avec bandeau avant/après et remap des lignes de matériel), bouton « Réestimer les distances » (`POST /transports/{id}/refresh-distances/`, distances seules, durées intactes — comble les tournées pré-`0029`), correctif serializer (durée manuelle sur couple changé → distance quand même estimée) | ✅ Mergée dans `main` (PR #29) et déployée — aucune migration nouvelle. `GOOGLE_MAPS_API_KEY` confirmée dans les Variables Railway | 2026-08-07 |
-| 26 | Passe de corrections transport : **géocodage automatique des adresses de lieux** (Google Geocoding — à l'enregistrement d'une fiche Lieu + filet au vol dans `estimate_travel`, les lieux existants se complètent à la première estimation), diagnostic actionnable de « Réestimer les distances » (nomme les lieux sans GPS / clé absente), menu **Camions en sous-menu de Transports** (Tournées/Camions), formulaire de création piloté par le spectacle desservi (lieu d'arrivée auto-sélectionné + heure de départ calée pour arriver juste avant le début effectif, via `POST /transports/estimate-travel/`) | 🔶 Prêt sur `fix/corrections-transport-2026-08-07` (500 tests + flake8, Playwright OK) — PR à ouvrir/merger, aucune migration. ⚠️ Étape manuelle : activer « Geocoding API » sur la clé Google Cloud | 2026-08-07 |
+| 26 | Passe de corrections transport : **géocodage automatique des adresses de lieux** (Google Geocoding — à l'enregistrement d'une fiche Lieu + filet au vol dans `estimate_travel`, les lieux existants se complètent à la première estimation), diagnostic actionnable de « Réestimer les distances » (nomme les lieux sans GPS / clé absente), menu **Camions en sous-menu de Transports** (Tournées/Camions), formulaire de création piloté par le spectacle desservi (lieu d'arrivée auto-sélectionné + heure de départ calée pour arriver juste avant le début effectif, via `POST /transports/estimate-travel/`) | ✅ Mergée dans `main` (PR #31, `07d172a`) et déployée | 2026-08-07 |
+| 27 | Correctif géocodage : `VenueSerializer.validate` jugeait `'latitude' in attrs` toujours vrai (la fiche Lieu renvoie tout son formulaire à chaque PATCH) — le géocodage à l'enregistrement ne se déclenchait donc jamais depuis l'écran recommandé. Corrigé pour juger sur un **changement de valeur** | ✅ Mergée dans `main` (PR #32, `4b7f042`) et déployée | 2026-08-07 |
+| 28 | Diagnostic « quels lieux exactement ? » : `refresh-distances` distingue `venues_missing_everything` (ni adresse ni GPS) de `venues_geocoding_failed` (adresse présente, géocodage en échec), le message de la fiche tournée pointe vers la fiche Lieu exacte de chaque lieu problématique, noms d'arrêts cliquables en lecture | ✅ Mergée dans `main` (PR #33, `d53644f`) et déployée | 2026-08-07 |
+| 29 | Instrumentation du géocodage : config `LOGGING` explicite (logger `inventory` en INFO sur stdout — sans elle rien ne sortait en prod, seul WARNING+ passait), traces dans `geocode_address`/`_ensure_coordinates`/`refresh_distances`/`VenueSerializer.validate` | ✅ Mergée dans `main` (PR #34, `6396c3a`) et déployée. **Symptôme de Samuel toujours non expliqué** — prochain essai à faire côté Samuel pour lire les logs Railway | 2026-08-07 |
+| 30 | *(constatée via l'historique de déploiement Railway, pas encore visible dans ce clone)* Suggestions d'adresses Google Places dans les champs adresse (`feat/autocomplete-adresse`) | 🔶 Mergée sur GitHub (PR #35, `51a8f87`) et **déployée** (Railway SUCCESS 2026-08-07 15 h 31 UTC, après un premier échec sur le même commit) — contenu non vérifié dans ce bac à sable, `git pull` requis pour rattraper | 2026-08-07 |
+| 31 | **Chantier documentation utilisateur, phase 1** : liste ordonnée des 23 écrans établie + commande `manage.py seed_demo` (projet « Projet Démo » complet : 5 lieux Montréal avec GPS, 6 techniciens, 16 matériels dont kit vidéo et location, 6 événements aux titres de pièces de théâtre + 7 blocs montage/répétition/démontage, 2 camions, 2 tournées confirmées dont une multi-arrêts, ~5 propositions auto « à approuver », et des conflits VOLONTAIRES autour de « L'Avare » pour l'écran Conflits). **Toute la production tient sur 3 jours (J0–J+2, demande de Samuel du 2026-08-08 : timelines denses pour les captures)**. Réexécutable (dates relatives au jour même) — validée par exécution réelle sur une base de test (conflits vérifiés : seuls les voulus restent) | 🔶 Fichiers livrés (`inventory/management/commands/seed_demo.py`) — **Samuel doit lancer `python manage.py seed_demo` localement**, puis commit/push depuis son poste (pas de Git depuis le bac à sable) | 2026-08-08 |
+| 32 | **Sorties de rapports imprimables** (chantier 2026-08-08) : liens publics signés (`ReportShare`, migration `0030`, jeton de 128 bits, un partage par cible réutilisé, révocation explicite), page publique `/p/<token>` exemptée de la garde du routeur, endpoint `AllowAny` unique + throttle + `robots.txt`, assemblage des données partagé écran/papier (`reports.py`), rendu PDF WeasyPrint A4 des **quatre** feuilles (transport, spectacle, parcours technicien, horaire de la journée en paysage) portées depuis les maquettes Claude Design, QR segno vectoriel de 25 mm en pied de CHAQUE page | ✅ Commitée sur `feat/sorties-rapports` (`f5f544f`), fusionnée avec `main` (PR #35 rattrapée) — **550 tests OK** en local (8 tests PDF sautés faute de Pango sur macOS). PR à ouvrir, `PUBLIC_BASE_URL` à ajouter sur Railway | 2026-08-08 |
 
 ## Prochaine action concrète
 
-**Merger la passe de corrections** (`fix/corrections-transport-2026-08-07`,
-prêt : 500 tests + flake8, aucune migration). Côté Samuel : activer
-« Geocoding API » sur la clé Google Cloud (même clé que Routes, même tier
-gratuit) — sans elle le géocodage automatique des adresses ne peut pas
-fonctionner ; et mettre la clé dans `backend/.env` local pour tester en
-local. Rattraper aussi la doc de référence sur le lot 21 (voir Points de
-vigilance).
+**Ouvrir la PR du chantier « sorties de rapports »** depuis
+`feat/sorties-rapports`, puis ajouter la variable `PUBLIC_BASE_URL`
+(`https://gear-management-production.up.railway.app`) dans Railway AVANT de
+déployer : sans elle, l'URL encodée dans un QR est déduite de la requête
+courante — correct tant qu'un PDF sort d'un cycle requête/réponse, faux dès
+qu'une tâche planifiée s'en mêle. Un QR faux imprimé en quarante exemplaires
+ne se rattrape pas. Vérifier après déploiement que la migration `0030` est
+bien appliquée (logs Railway).
+
+**Chantier 3, pas commencé — le bouton « Imprimer ».** Toute la plomberie
+existe (`POST /api/report-shares/` émet le lien, `GET
+/api/public/reports/<token>/pdf/` sert le PDF) mais AUCUN écran ne l'appelle :
+en l'état, la fonctionnalité n'est atteignable qu'à la main via l'API. À
+faire : le bouton sur la fiche tournée / fiche spectacle / parcours
+technicien / horaire du jour, et un écran de gestion des liens émis dans
+Réglages (lister, voir le nombre de consultations, révoquer).
+
+**Chantier documentation utilisateur (étape 31)** : Samuel doit lancer
+`python manage.py seed_demo` localement, puis commiter/pousser depuis son
+poste — les fichiers sont livrés mais jamais exécutés ni versionnés.
+
+**Saga géocodage toujours ouverte** : Samuel doit resauvegarder une fiche
+Lieu avec adresse puis recliquer « Réestimer les distances », et consulter
+les logs Railway (`inventory`, niveau INFO, PR #34). Ne pas proposer de
+nouveau correctif avant d'avoir lu ces logs.
+
 
 ## Points de vigilance
 
-- **🟡 Doc de référence en retard sur le lot 21** : `transport_detach`
-  (comportement de suppression), notes riches (`clean_notes`/nh3),
-  `touched_shows` et `Venue.display_order` (ce dernier est déjà dans le
-  `schema.md` non commité) sont absents d'`architecture.md`/
-  `recapitulatif_projet.md` — à rattraper dans une session interactive,
-  comme pour les étapes 14-17.
-- **`main` local en retard d'un merge sur GitHub** (vérifié le 2026-08-06
-  soir via l'API Railway : dernier déploiement = `a28bc20`, merge PR #28,
-  alors que le `main` local pointe `9deb704`) : `git pull` depuis le poste
-  de Samuel avant toute nouvelle branche. Règle générale : ne jamais
-  supposer le `main` local à jour depuis le bac à sable (fetch souvent
-  indisponible — « Host key verification failed »).
+- **🔴 Saga géocodage non résolue après 3 correctifs (PR #31, #32, #33)** :
+  Samuel rapporte à répétition que ses lieux ont bien adresse et
+  coordonnées, mais le backend voit toujours `lat=None` au moment de
+  réestimer les distances, et les logs Railway ne montraient jusqu'ici
+  aucun appel Google (même pas un échec) — signe que la config `LOGGING`
+  elle-même était en cause (seul WARNING+ sortait en prod). La PR #34
+  ajoute l'instrumentation nécessaire pour trancher entre trois
+  hypothèses : la base (coordonnées jamais sauvegardées), le géocodage
+  (appel non tenté) ou Google (appel refusé/sans résultat). **Ne pas
+  supposer que c'est réglé tant que Samuel n'a pas confirmé après relecture
+  des logs.**
+- **🟡 Doc de référence en retard sur le lot 21, sur tout le chantier
+  transport (étapes 23-29) ET sur les sorties de rapports (étape 31)** :
+  `ReportShare` et sa migration `0030` ne figurent nulle part dans
+  `schema.md`, pas plus que les vues publiques dans `architecture.md` ou
+  `security.md` — or c'est la SEULE porte de l'API sans authentification,
+  elle mérite sa section dans `security.md` avant qu'on l'oublie. Et pour
+  le reste : `transport_detach` (comportement de
+  suppression), notes riches (`clean_notes`/nh3), `touched_shows`,
+  `Venue.display_order`, l'entité `Truck`/conflits de camion, le module
+  `transport_ordering.py` (suggestion d'ordre optimal), et tout le
+  géocodage automatique sont absents d'`architecture.md`/
+  `recapitulatif_projet.md`/`schema.md` — à rattraper dans une session
+  interactive, comme pour les étapes 14-17 (étape 18).
+- **`main` local en retard d'un merge sur GitHub** — vérifié le
+  2026-08-07 via l'API Railway : le dernier déploiement SUCCESS
+  (15 h 31 UTC) correspond au commit `51a8f87` (merge PR #35,
+  `feat/autocomplete-adresse`), absent de ce clone qui pointe `769cc79`
+  (merge PR #34). `git pull` depuis le poste de Samuel avant toute
+  nouvelle branche. Règle générale : ne jamais supposer le `main` local à
+  jour depuis le bac à sable — `git fetch`/`pull` y échoue systématiquement
+  (« Host key verification failed »), seul l'historique de déploiement
+  Railway permet de vérifier objectivement ce qui est réellement en ligne.
+- **Fichier non suivi `restart-dev.sh`** (racine du repo, script de
+  confort pour relancer backend+frontend en local) : présent dans l'arbre
+  de travail de ce clone mais jamais committé — à vérifier avec Samuel si
+  c'est voulu (utilitaire perso à garder hors dépôt) ou à ajouter au repo.
 - **Un seul chantier de code à la fois dans ce dossier** — voir l'incident
   du 2026-08-04 en « Statut global ». Deux sessions Cowork simultanées sur
   le même dossier peuvent se marcher dessus (branche qui change seule,

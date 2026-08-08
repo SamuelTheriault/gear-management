@@ -186,6 +186,8 @@ class TokenDurabilityTests(_Fixture):
 
 
 class ResolutionTests(_Fixture):
+    """`resolve_share` : les quatre façons dont un jeton peut ne plus répondre."""
+
     def test_jeton_inconnu(self):
         self.assertIsNone(resolve_share('jeton-qui-nexiste-pas'))
 
@@ -216,6 +218,9 @@ class ResolutionTests(_Fixture):
 
 
 class PublicEndpointTests(_Fixture):
+    """L'endpoint public lui-même : ce qu'il sert, ce qu'il refuse, ce qu'il
+    ne laisse pas deviner."""
+
     def _url(self, share):
         return f'/api/public/reports/{share.token}/'
 
@@ -360,6 +365,8 @@ class ProjectIsolationTests(_Fixture):
 
 
 class CascadeTests(_Fixture):
+    """Ce qu'il advient d'un lien quand sa cible disparaît."""
+
     def test_supprimer_la_tournee_supprime_le_partage(self):
         """Un QR déjà imprimé doit répondre 404, pas pointer vers un objet
         recréé plus tard avec le même identifiant."""
@@ -373,6 +380,10 @@ class CascadeTests(_Fixture):
 
 
 class TransportPayloadTests(_Fixture):
+    """Contenu de la feuille de tournée — le manifeste éclaté par arrêt et
+    les heures dérivées, les deux endroits où une erreur se verrait sur le
+    quai plutôt qu'à l'écran."""
+
     def test_manifeste_eclate_par_arret(self):
         contenu = APIClient().get(
             f'/api/public/reports/{self._make().token}/',
@@ -415,6 +426,9 @@ class TransportPayloadTests(_Fixture):
 
 
 class QrTests(TestCase):
+    """Le code QR lui-même. Deux propriétés qui ont réellement lâché pendant
+    le portage des maquettes, d'où ces tests de non-régression."""
+
     def test_svg_dimensionne_en_mm_avec_viewbox(self):
         """Sans `viewBox`, WeasyPrint ignore la largeur CSS et sort un QR de
         ~9 mm, illisible. Vérifié dans le bac à sable le 2026-08-08 — ce test
@@ -434,6 +448,8 @@ class QrTests(TestCase):
 
 
 class ShareTokenTests(TestCase):
+    """Entropie et unicité du jeton — le seul secret qui protège la feuille."""
+
     def test_jetons_uniques_et_assez_longs(self):
         from .models import generate_share_token
         jetons = {generate_share_token() for _ in range(500)}
