@@ -526,3 +526,34 @@ class AutresRapportsTests(_Fixture):
         rapport = APIClient().get(f'/api/public/reports/{share.token}/').data['report']
         self.assertEqual(rapport['lanes'], [])
         self.assertEqual(rapport['item_count'], 0)
+
+
+class SerializerApercuTests(_Fixture):
+    """Ce que l'API renvoie au panneau de partage de l'app."""
+
+    def test_le_partage_expose_url_et_qr_prets_a_afficher(self):
+        """Le panneau ne doit rien avoir à recomposer : il reçoit l'URL
+        publique et le QR déjà rendu, le MÊME que celui du PDF."""
+        reponse = self.client.post('/api/report-shares/', {
+            'project': self.project.id, 'kind': ReportShare.KIND_TRANSPORT,
+            'transport': self.transport.id,
+        }, format='json')
+        self.assertEqual(reponse.status_code, 201)
+        self.assertIn(reponse.data['token'], reponse.data['url'])
+        self.assertIn('<svg', reponse.data['qr'])
+        self.assertIn('width="25mm"', reponse.data['qr'])
+        self.assertEqual(reponse.data['target_label'], str(self.transport))
+
+    def test_le_jeton_n_est_pas_modifiable_par_l_api(self):
+        """`token` est en lecture seule : personne ne choisit son secret."""
+        share, _ = get_or_create_share(
+            project=self.project, kind=ReportShare.KIND_TRANSPORT, target=self.transport,
+        )
+        ancien = share.token
+        reponse = self.client.patch(
+            f'/api/report-shares/{share.id}/', {'token': 'jeton-choisi-a-la-main'},
+            format='json',
+        )
+        self.assertEqual(reponse.status_code, 200)
+        share.refresh_from_db()
+        self.assertEqual(share.token, ancien)

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 
 /**
@@ -53,6 +53,21 @@ function km(metres) {
   if (!metres) return null
   return (metres / 1000).toFixed(1).replace('.', ',')
 }
+
+// Fond clair forcé le temps de cette page. Le thème de l'app (clair ou
+// sombre, voir useTheme) pose son fond sur `body` ; une feuille publique doit
+// rester lisible quel que soit le réglage de la PERSONNE QUI A IMPRIMÉ, et
+// surtout ressembler à la version papier. On restaure au démontage plutôt que
+// de déclarer une règle globale non scopée, qui teindrait toute l'app une fois
+// le bundle chargé.
+let fondPrecedent = ''
+onMounted(() => {
+  fondPrecedent = document.body.style.background
+  document.body.style.background = '#fff'
+})
+onUnmounted(() => {
+  document.body.style.background = fondPrecedent
+})
 
 onMounted(async () => {
   // Appel direct plutôt que via `api/client.js` : ce dernier envoie
@@ -260,6 +275,8 @@ onMounted(async () => {
   max-width: 46rem;
   margin: 0 auto;
   padding: 1.25rem 1rem 4rem;
+  background: #fff;
+  min-height: 100vh;
   color: #0f1216;
   font: 400 16px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
@@ -268,7 +285,7 @@ onMounted(async () => {
 .erreur h1 { font-size: 1.25rem; margin-bottom: 0.5rem; }
 
 .entete { border-bottom: 2px solid #0f1216; padding-bottom: 0.75rem; margin-bottom: 1.25rem; }
-.ligne-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.ligne-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; }
 .badge {
   background: #b0136d; color: #fff; font-size: 0.7rem; font-weight: 700;
   letter-spacing: 0.1em; text-transform: uppercase; padding: 0.3rem 0.55rem;
@@ -303,11 +320,11 @@ h3 {
 
 .arrets { list-style: none; padding: 0; margin: 1.25rem 0 0; }
 .arrets li {
-  display: grid; grid-template-columns: 4.5rem 1fr; gap: 0.75rem;
+  display: grid; grid-template-columns: 5.5rem 1fr; gap: 0.75rem;
   border-top: 1px solid #e2e4e8; padding: 0.9rem 0;
 }
 .arret-heure { display: flex; flex-direction: column; align-items: flex-end; }
-.arret-heure strong { font-size: 1.1rem; font-variant-numeric: tabular-nums; }
+.arret-heure strong { font-size: 1.1rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .arret-heure .discret { font-size: 0.78rem; }
 .arret-corps h2 { margin: 0 0 0.15rem; font-size: 1.05rem; }
 .code {

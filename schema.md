@@ -422,6 +422,45 @@ Table ajoutée le 2026-08-02, quand Samuel a décidé de vendre des abonnements 
 
 ---
 
+## 14. `report_shares`
+
+Table ajoutée le 2026-08-08 avec le chantier des **sorties de rapports imprimables**. Chaque ligne est un lien PUBLIC, en lecture seule, vers UNE feuille — c'est la destination du code QR imprimé en pied de page.
+
+Le besoin : un technicien pigiste ou le directeur technique d'une salle partenaire doit pouvoir scanner et lire la version à jour en deux secondes, sur son téléphone, **sans compte**. Or toute l'API est derrière `IsAuthenticated` + `HasProjectAccess`, et la garde du routeur Vue renvoie vers `/bienvenue` tout compte sans `ProjectMembership` actif. Sans cette table, un QR mènerait à un écran de login puis à un cul-de-sac.
+
+| Champ | Type | Description |
+|---|---|---|
+| id | INT, PK | Identifiant unique |
+| project_id | INT, FK → projects.id (CASCADE) | Production concernée. Redondant avec le projet de la cible pour les trois types qui en ont une, mais indispensable pour `day` (sans FK) et pour lister les liens d'un projet sans quatre jointures |
+| kind | ENUM('transport','show','technician','day') | Type de feuille — détermine laquelle des cibles ci-dessous est renseignée |
+| token | VARCHAR(64), UNIQUE, indexé | **Le secret qui protège la feuille.** 16 octets d'aléa cryptographique (`secrets.token_urlsafe`), soit 22 caractères et 128 bits d'entropie. Non modifiable par l'API. Longueur volontairement modeste : chaque caractère ajoute des modules au code QR, donc réduit la taille de chaque module à surface d'impression constante |
+| transport_id | INT, FK → transports.id (nullable, CASCADE) | Cible si `kind='transport'` |
+| show_id | INT, FK → shows.id (nullable, CASCADE) | Cible si `kind='show'` |
+| technician_id | INT, FK → technicians.id (nullable, CASCADE) | Cible si `kind='technician'` |
+| day | DATE (nullable) | Cible si `kind='day'` — l'horaire de toute la production ce jour-là. Seul type sans FK : sa cible est une date, pas un objet |
+| created_by_id | INT, FK → users.id (nullable, SET_NULL) | Qui a émis le lien. SET_NULL : retirer une personne du projet ne doit pas casser les feuilles déjà imprimées |
+| created_at | DATETIME | Date d'émission |
+| expires_at | DATETIME (nullable) | Expiration optionnelle, vide par défaut — une feuille de tournée doit rester lisible pendant toute la production, et une date mal choisie transforme un QR en cul-de-sac au pire moment |
+| revoked_at | DATETIME (nullable) | Révocation manuelle — coupe l'accès immédiatement, **y compris pour les copies papier déjà distribuées** |
+| last_accessed_at | DATETIME (nullable) | Dernière consultation |
+| access_count | INT (default 0) | Nombre de consultations. Incrémenté via `F()` en base (deux scans simultanés ne se perdent pas, et aucun autre champ n'est réécrit — un `save()` complet risquerait d'écraser une révocation faite entre-temps) |
+
+**Contrainte de cohérence** (`report_share_cible_coherente`) : exactement une cible renseignée, et cohérente avec `kind`. Le serializer valide la même chose en amont pour renvoyer un 400 exploitable plutôt qu'une `IntegrityError` en 500.
+
+**Contraintes d'unicité partielles** (`report_share_unique_actif_*`) : un seul partage **non révoqué** par cible — sur `transport_id`, `show_id`, `technician_id`, et sur le couple `(project_id, day)`. C'est la traduction en base d'une décision structurante : demander deux fois le lien d'une même tournée renvoie le MÊME jeton. Sans ça, réimprimer une feuille émettrait un nouveau jeton et **périmerait silencieusement toutes les copies déjà distribuées sur le terrain** — le QR d'une feuille imprimée en août doit encore fonctionner en octobre. Corollaire assumé : révoquer un lien parce qu'il a fuité invalide aussi toutes les copies papier légitimes. C'est le comportement voulu, et la raison pour laquelle la révocation est une action explicite.
+
+**CASCADE sur les cibles** : supprimer une tournée efface son partage, et le QR déjà imprimé répond 404 plutôt que de pointer vers une fiche fantôme — ou, pire, vers un objet recréé plus tard avec le même identifiant.
+
+**Suppression = révocation** : `DELETE /api/report-shares/{id}/` pose `revoked_at` au lieu d'effacer la ligne. Effacer perdrait `access_count`/`last_accessed_at` — précisément ce qu'on veut consulter après coup si un lien a fuité — et libérerait la contrainte d'unicité, donc permettrait de réémettre un jeton pour la même cible en croyant l'avoir coupée.
+
+**Exposition API** — voir `security.md` section 6 pour le modèle de menace :
+- Interne (session requise) : `GET/POST/DELETE /api/report-shares/?project=<id>`. Le `POST` est **idempotent** (200 au lieu de 201 si un lien actif existe déjà). Le serializer expose aussi `url`, `qr` (SVG du code, rendu par le même code que le PDF) et `target_label`.
+- Public (**sans session**) : `GET /api/public/reports/<token>/` (JSON) et `GET /api/public/reports/<token>/pdf/` (PDF WeasyPrint). Page humaine servie sur `/p/<token>`.
+
+**Ce qui n'est PAS stocké** : le contenu des feuilles. Il est reconstruit à chaque lecture depuis les tables réelles (`inventory/reports.py`) — c'est ce qui rend la promesse « version à jour » vraie plutôt que déclarative.
+
+---
+
 ## Calcul du temps de trajet (Google Routes API)
 
 Décision du 2026-07-18 : `venues.latitude`/`longitude` (section 2) permettent de calculer automatiquement `transports.estimated_duration_minutes` via l'API Google Routes ("Compute Routes", un trajet simple = un lieu de départ, un lieu d'arrivée), plutôt que de saisir cette durée à la main à chaque fois. Voir `inventory/maps.py` et `security.md` pour la gestion de la clé API (`GOOGLE_MAPS_API_KEY`). Si la clé n'est pas configurée, ou si l'appel échoue, le calcul se rabat silencieusement sur `settings.default_transport_duration_minutes` — aucune dépendance dure à ce service externe.
@@ -447,6 +486,9 @@ transports 1───N transport_materials N───1 materials (chaque ligne r
 materials N───1 venues (entreposage = point de départ des timelines de cohérence)
 settings (singleton, COMMUN à tous les projets — lu par shows/transports comme source de leurs valeurs par défaut)
 projects 1───N project_memberships N───1 users (accès par projet, rôle owner/editor/viewer)
+projects 1───N report_shares (CASCADE — liens publics de rapport, un par cible active)
+report_shares N───1 transports / shows / technicians (CASCADE, exactement UNE des trois selon `kind` ; `kind='day'` porte une DATE et aucune FK)
+report_shares N───1 users (created_by, nullable SET_NULL — retirer une personne ne casse pas les feuilles imprimées)
 users 1───N project_memberships (invited_by, nullable — qui a envoyé l'invitation)
 ```
 

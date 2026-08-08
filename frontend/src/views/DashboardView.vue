@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
 import ZoomControls from '../components/ZoomControls.vue'
+import PartagerFicheModal from '../components/PartagerFicheModal.vue'
 import FloatingTooltip from '../components/FloatingTooltip.vue'
 import { api } from '../api/client'
 import { useActiveProject } from '../composables/useActiveProject'
@@ -110,6 +111,13 @@ const router = useRouter()
  */
 
 const { activeProjectId } = useActiveProject()
+
+// Panneau de partage de l'HORAIRE D'UNE JOURNÉE (chantier « sorties de
+// rapports », 2026-08-08). Il est ici et pas sur une fiche parce que cette
+// feuille-là n'a pas d'objet à elle : sa cible est une DATE, choisie dans le
+// panneau lui-même (aujourd'hui par défaut). Le Tableau de bord est le seul
+// écran qui regarde la production jour par jour.
+const partageOuvert = ref(false)
 
 const loading = ref(false)
 const loadError = ref(null)
@@ -943,6 +951,9 @@ const upcoming = computed(() => {
       <div class="dash-header">
         <h1 class="page-title">Tableau de bord</h1>
         <div class="dash-date">{{ today }}</div>
+        <button type="button" class="chip" @click="partageOuvert = true">
+          Partager l'horaire d'une journée
+        </button>
       </div>
 
       <!-- Filtres de page (2026-08-02, demande de Samuel : les lieux sortent
@@ -1133,6 +1144,13 @@ const upcoming = computed(() => {
       </div>
     </div>
     <FloatingTooltip :tooltip="tooltip" />
+    <PartagerFicheModal
+      v-if="partageOuvert && activeProjectId"
+      kind="day"
+      :project-id="activeProjectId"
+      label="Horaire de la journée — toute la production"
+      @close="partageOuvert = false"
+    />
   </AppShell>
 </template>
 

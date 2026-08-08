@@ -103,6 +103,9 @@ modèle backend) : voir « Points de vigilance ».
 | 30 | *(constatée via l'historique de déploiement Railway, pas encore visible dans ce clone)* Suggestions d'adresses Google Places dans les champs adresse (`feat/autocomplete-adresse`) | 🔶 Mergée sur GitHub (PR #35, `51a8f87`) et **déployée** (Railway SUCCESS 2026-08-07 15 h 31 UTC, après un premier échec sur le même commit) — contenu non vérifié dans ce bac à sable, `git pull` requis pour rattraper | 2026-08-07 |
 | 31 | **Chantier documentation utilisateur, phase 1** : liste ordonnée des 23 écrans établie + commande `manage.py seed_demo` (projet « Projet Démo » complet : 5 lieux Montréal avec GPS, 6 techniciens, 16 matériels dont kit vidéo et location, 6 événements aux titres de pièces de théâtre + 7 blocs montage/répétition/démontage, 2 camions, 2 tournées confirmées dont une multi-arrêts, ~5 propositions auto « à approuver », et des conflits VOLONTAIRES autour de « L'Avare » pour l'écran Conflits). **Toute la production tient sur 3 jours (J0–J+2, demande de Samuel du 2026-08-08 : timelines denses pour les captures)**. Réexécutable (dates relatives au jour même) — validée par exécution réelle sur une base de test (conflits vérifiés : seuls les voulus restent) | 🔶 Fichiers livrés (`inventory/management/commands/seed_demo.py`) — **Samuel doit lancer `python manage.py seed_demo` localement**, puis commit/push depuis son poste (pas de Git depuis le bac à sable) | 2026-08-08 |
 | 32 | **Sorties de rapports imprimables** (chantier 2026-08-08) : liens publics signés (`ReportShare`, migration `0030`, jeton de 128 bits, un partage par cible réutilisé, révocation explicite), page publique `/p/<token>` exemptée de la garde du routeur, endpoint `AllowAny` unique + throttle + `robots.txt`, assemblage des données partagé écran/papier (`reports.py`), rendu PDF WeasyPrint A4 des **quatre** feuilles (transport, spectacle, parcours technicien, horaire de la journée en paysage) portées depuis les maquettes Claude Design, QR segno vectoriel de 25 mm en pied de CHAQUE page | ✅ Commitée sur `feat/sorties-rapports` (`f5f544f`), fusionnée avec `main` (PR #35 rattrapée) — **550 tests OK** en local (8 tests PDF sautés faute de Pango sur macOS). PR à ouvrir, `PUBLIC_BASE_URL` à ajouter sur Railway | 2026-08-08 |
+| 33 | **Bouton « Partager / Imprimer »** (chantier 3) : composant partagé `PartagerFicheModal.vue` — cherche d'abord un lien actif existant, ne publie rien à l'ouverture, affiche le QR *rendu par le serveur* (même code que le PDF, champ `qr` du serializer), l'adresse copiable, le compteur de consultations, le PDF et la révocation en deux temps. Branché sur fiche tournée, fiche spectacle, fiche technicien, et sur le Tableau de bord pour l'horaire d'une journée (la date se choisit dans le panneau, cette feuille n'ayant pas d'objet à elle). Correctif `ReportShareSerializer.validate` : un PATCH partiel (ex. `expires_at` seul) tombait en 400 | ✅ Écrit dans le dépôt — **546 tests OK**, lint à zéro violation, build Vue vert, et les deux écrans vérifiés en captures réelles (navigateur piloté, données de démo) | 2026-08-08 |
+| 34 | **Écran de gestion des liens dans Réglages** : section « Liens de partage » listant les liens actifs du projet actif (type, cible, adresse, nombre de consultations, dernier accès) avec PDF / copier / révoquer par ligne, plus les liens RÉVOQUÉS repliés — gardés volontairement, ils sont la trace de ce qui a circulé et de combien il a été consulté | ✅ Écrit dans le dépôt — build Vue vert, section vérifiée en capture réelle (3 liens actifs, 1 révoqué) | 2026-08-08 |
+| 35 | **Documentation de référence du chantier rapports** : `schema.md` § 14 (table `report_shares`, contraintes d'unicité partielles et le raisonnement derrière), `security.md` § 6 (modèle de menace du lien public énoncé franchement, 8 garde-fous, ce que ça implique au quotidien, règles pour toute vue ajoutée à `public_views.py`), `architecture.md` § 4octies + workflow 11 (carte des modules, écarts imposés par WeasyPrint) | ✅ Écrite dans le dépôt — identifiants cités vérifiés un à un contre le code | 2026-08-08 |
 
 ## Prochaine action concrète
 
@@ -115,13 +118,11 @@ qu'une tâche planifiée s'en mêle. Un QR faux imprimé en quarante exemplaires
 ne se rattrape pas. Vérifier après déploiement que la migration `0030` est
 bien appliquée (logs Railway).
 
-**Chantier 3, pas commencé — le bouton « Imprimer ».** Toute la plomberie
-existe (`POST /api/report-shares/` émet le lien, `GET
-/api/public/reports/<token>/pdf/` sert le PDF) mais AUCUN écran ne l'appelle :
-en l'état, la fonctionnalité n'est atteignable qu'à la main via l'API. À
-faire : le bouton sur la fiche tournée / fiche spectacle / parcours
-technicien / horaire du jour, et un écran de gestion des liens émis dans
-Réglages (lister, voir le nombre de consultations, révoquer).
+**Le chantier « sorties de rapports » est complet** (étapes 32-34) : liens
+publics signés, PDF des quatre feuilles, bouton par fiche, écran de gestion.
+Sa documentation de référence est à jour (étape 35). **Reste à ouvrir la PR
+et à déployer** — avec `PUBLIC_BASE_URL` dans les variables Railway AVANT le
+déploiement.
 
 **Chantier documentation utilisateur (étape 31)** : Samuel doit lancer
 `python manage.py seed_demo` localement, puis commiter/pousser depuis son
@@ -146,19 +147,15 @@ nouveau correctif avant d'avoir lu ces logs.
   (appel non tenté) ou Google (appel refusé/sans résultat). **Ne pas
   supposer que c'est réglé tant que Samuel n'a pas confirmé après relecture
   des logs.**
-- **🟡 Doc de référence en retard sur le lot 21, sur tout le chantier
-  transport (étapes 23-29) ET sur les sorties de rapports (étape 31)** :
-  `ReportShare` et sa migration `0030` ne figurent nulle part dans
-  `schema.md`, pas plus que les vues publiques dans `architecture.md` ou
-  `security.md` — or c'est la SEULE porte de l'API sans authentification,
-  elle mérite sa section dans `security.md` avant qu'on l'oublie. Et pour
-  le reste : `transport_detach` (comportement de
-  suppression), notes riches (`clean_notes`/nh3), `touched_shows`,
-  `Venue.display_order`, l'entité `Truck`/conflits de camion, le module
-  `transport_ordering.py` (suggestion d'ordre optimal), et tout le
+- **🟡 Doc de référence en retard sur le lot 21 et sur le chantier transport
+  (étapes 23-29)** : `transport_detach` (comportement de suppression), notes
+  riches (`clean_notes`/nh3), `touched_shows`, `Venue.display_order`, l'entité
+  `Truck`/conflits de camion, le module `transport_ordering.py` et tout le
   géocodage automatique sont absents d'`architecture.md`/
   `recapitulatif_projet.md`/`schema.md` — à rattraper dans une session
-  interactive, comme pour les étapes 14-17 (étape 18).
+  interactive, comme pour les étapes 14-17 (étape 18). **Les sorties de
+  rapports (étapes 32-34) sont documentées** (étape 35) : `schema.md` § 14,
+  `security.md` § 6, `architecture.md` § 4octies + workflow 11.
 - **`main` local en retard d'un merge sur GitHub** — vérifié le
   2026-08-07 via l'API Railway : le dernier déploiement SUCCESS
   (15 h 31 UTC) correspond au commit `51a8f87` (merge PR #35,
