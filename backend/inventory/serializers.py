@@ -1994,13 +1994,14 @@ class ReportShareSerializer(serializers.ModelSerializer):
     """
 
     url = serializers.SerializerMethodField()
+    qr = serializers.SerializerMethodField()
     is_active = serializers.BooleanField(read_only=True)
     target_label = serializers.SerializerMethodField()
 
     class Meta:
         model = ReportShare
         fields = [
-            'id', 'project', 'kind', 'token', 'url', 'is_active', 'target_label',
+            'id', 'project', 'kind', 'token', 'url', 'qr', 'is_active', 'target_label',
             'transport', 'show', 'technician', 'day',
             'created_by', 'created_at', 'expires_at', 'revoked_at',
             'last_accessed_at', 'access_count',
@@ -2020,6 +2021,19 @@ class ReportShareSerializer(serializers.ModelSerializer):
             # depuis un shell) : on renvoie le chemin relatif plutôt que de
             # faire échouer toute la réponse.
             return obj.path
+
+    def get_qr(self, obj):
+        """Code QR du lien, en SVG inline prêt à injecter dans la page.
+
+        Rendu côté serveur plutôt que par une bibliothèque JS : c'est
+        EXACTEMENT le même appel que celui qui grave le code sur le PDF
+        (`report_shares.qr_svg`), donc l'aperçu à l'écran ne peut pas
+        différer de ce qui sera imprimé. Une seconde implémentation en
+        JavaScript serait une deuxième vérité à maintenir, et le premier
+        écart passerait inaperçu jusqu'au quai.
+        """
+        from .report_shares import qr_svg
+        return qr_svg(self.get_url(obj))
 
     def get_target_label(self, obj):
         """Libellé lisible de la cible, pour la liste des liens émis côté
@@ -2064,6 +2078,16 @@ class ReportShareSerializer(serializers.ModelSerializer):
             champ for champ in self._CIBLES.values()
             if attrs.get(champ) is not None
         ]
+
+        # Mise à jour PARTIELLE qui ne touche ni le type ni la cible (ex. un
+        # PATCH sur `expires_at` seul) : il n'y a rien à vérifier ici, et
+        # exiger la cible ferait échouer en 400 une requête parfaitement
+        # valide. Trouvé le 2026-08-08 en testant qu'un PATCH ne peut pas
+        # réécrire le jeton — c'est le 400 qui a sauté, pas la protection.
+        touche_la_cible = 'kind' in attrs or any(c in attrs for c in self._CIBLES.values())
+        if self.instance is not None and not touche_la_cible:
+            return attrs
+
         if fournis != [attendu]:
             raise serializers.ValidationError({
                 attendu: (

@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
 import LeaveEditPrompt from '../components/LeaveEditPrompt.vue'
 import { api } from '../api/client'
+import PartagerFicheModal from '../components/PartagerFicheModal.vue'
 import { useFicheEdition } from '../composables/useFicheEdition'
 import { useSuppressionFiche } from '../composables/useSuppressionFiche'
 
@@ -33,6 +34,10 @@ import { useSuppressionFiche } from '../composables/useSuppressionFiche'
  */
 
 const route = useRoute()
+
+// Panneau de partage (chantier « sorties de rapports », 2026-08-08) —
+// voir components/PartagerFicheModal.vue.
+const partageOuvert = ref(false)
 
 const technician = ref(null)
 const showAssignments = ref([])
@@ -186,6 +191,9 @@ const decoratedTransports = computed(() =>
           <div class="header__role">{{ technician.specialty || '—' }}</div>
         </div>
         <div class="fiche-actions">
+          <button v-if="!editing" type="button" class="fiche-btn" @click="partageOuvert = true">
+            Partager / Imprimer
+          </button>
           <button v-if="!editing" type="button" class="fiche-btn" @click="startEdit">
             Modifier la fiche
           </button>
@@ -348,8 +356,16 @@ const decoratedTransports = computed(() =>
       @stay="stayOnPage"
       @save="saveAndLeave"
     />
+    <PartagerFicheModal
+      v-if="partageOuvert && technician"
+      kind="technician"
+      :project-id="technician.project"
+      :target-id="technician.id"
+      :label="technician.name"
+      @close="partageOuvert = false"
+    />
   </AppShell>
-</template>
+  </template>
 
 <style scoped>
 .page {

@@ -6,6 +6,7 @@ import LeaveEditPrompt from '../components/LeaveEditPrompt.vue'
 import AssignerMaterielModal from '../components/AssignerMaterielModal.vue'
 import AssignerTechnicienModal from '../components/AssignerTechnicienModal.vue'
 import { api } from '../api/client'
+import PartagerFicheModal from '../components/PartagerFicheModal.vue'
 import { useFicheEdition } from '../composables/useFicheEdition'
 import { useSuppressionFiche } from '../composables/useSuppressionFiche'
 import { useEscapeKey } from '../composables/useEscapeKey'
@@ -26,6 +27,10 @@ import { EVENT_TYPE_META } from '../constants/eventTypeMeta'
 
 const route = useRoute()
 const router = useRouter()
+
+// Panneau de partage (chantier « sorties de rapports », 2026-08-08) —
+// voir components/PartagerFicheModal.vue.
+const partageOuvert = ref(false)
 
 const show = ref(null)
 // Fiche du parent quand on est SUR un bloc (montage/répétition/démontage) —
@@ -658,6 +663,9 @@ async function onTechnicienAssigned(payload) {
           <div class="header__meta">{{ show.venue_name }} · {{ dateTimeFmt.format(new Date(show.start_datetime)) }}</div>
         </div>
         <div class="fiche-actions">
+          <button v-if="!editing" type="button" class="fiche-btn" @click="partageOuvert = true">
+            Partager / Imprimer
+          </button>
           <button v-if="!editing" type="button" class="fiche-btn" @click="startEdit()">
             Modifier la fiche
           </button>
@@ -1203,8 +1211,16 @@ async function onTechnicienAssigned(payload) {
       @stay="stayOnPage"
       @save="saveAndLeave"
     />
+    <PartagerFicheModal
+      v-if="partageOuvert && show"
+      kind="show"
+      :project-id="show.project"
+      :target-id="show.id"
+      :label="show.display_title || show.title"
+      @close="partageOuvert = false"
+    />
   </AppShell>
-</template>
+  </template>
 
 <style scoped>
 .page {

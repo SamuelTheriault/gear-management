@@ -282,6 +282,22 @@ Complément aux CSV ci-dessus : `backend/inventory/portability.py` couvre TOUTES
 - **Opération atomique** : en cas d'erreur (référence brisée, format inconnu, version non prise en charge), rien n'est créé. `PortabilityError` couvre les deux cas (fichier structurellement invalide, référence introuvable) et remonte en 400 avec un message explicite, jamais en 500.
 - **`_grant_owner_membership`** (même mécanisme que `POST /api/projects/` et `duplicate`, section 3bis) donne à l'appelant un accès `owner` actif sur le projet nouvellement importé — sans quoi personne n'y aurait accès juste après l'import.
 
+## 4octies. Sorties de rapports imprimables et liens publics (décision du 2026-08-08)
+
+Chantier demandé par Samuel : imprimer des feuilles pour les techniciens et les salles partenaires, avec un **code QR** en pied de page qui renvoie vers la version numérique à jour. Le QR n'est pas le vrai chantier — la page publique derrière lui l'est.
+
+**Le blocage résolu** : toute l'API est derrière `IsAuthenticated` + `HasProjectAccess`, et la garde du routeur Vue renvoie vers `/bienvenue` tout compte sans `ProjectMembership` actif. Un QR pointant vers l'app aurait mené un technicien pigiste à un écran de login puis à un cul-de-sac. D'où `ReportShare` (voir `schema.md` section 14) et un jeu de vues publiques étroit (voir `security.md` section 6, qui détaille le modèle de menace — **à lire avant de toucher à `public_views.py`**).
+
+**Quatre feuilles**, portées depuis les maquettes Claude Design de `frontend/design/Maquette pour impression` : fiche de transport, fiche spectacle, parcours technicien, et horaire de la journée (seule en paysage).
+
+- **`backend/inventory/reports.py`** — assemblage des données, un `build_*` par type. **Source unique de l'écran ET du papier** : la page publique Vue et le PDF WeasyPrint consomment le même dictionnaire. Sans ça, les deux versions divergeraient — exactement le défaut que le QR est censé corriger. Les feuilles n'affichent délibérément PAS les conflits de `conflicts.py` : un conflit est un problème de planification qui appartient à Samuel, l'afficher à une salle publierait un doute qu'elle ne peut pas résoudre.
+- **`backend/inventory/report_shares.py`** — émission et résolution des jetons, et génération du QR (`segno`, Python pur). Le QR est rendu **côté serveur** et pour l'écran et pour le PDF : une bibliothèque QR en JavaScript serait une deuxième vérité à maintenir, et le premier écart entre l'aperçu et le papier passerait inaperçu jusqu'au quai. Les maquettes appelaient `api.qrserver.com` — écarté, cela transmettrait l'URL privée de partage à un tiers à chaque rendu.
+- **`backend/inventory/report_pdf.py` + `templates/reports/*.html`** — rendu WeasyPrint A4. L'import de `weasyprint` est **différé à l'intérieur de `render_pdf`** : il charge Pango et HarfBuzz, et un paquet système manquant ferait échouer tout démarrage de Django (y compris `manage.py check` en CI) au lieu de la seule requête qui demande un PDF. Le Dockerfile installe `libpango-1.0-0`, `libpangoft2-1.0-0`, `libharfbuzz-subset0`. JetBrains Mono est embarquée dans `inventory/fonts/` (4 graisses) plutôt que chargée depuis Google Fonts — sinon chaque rendu part sur le réseau.
+- **`backend/inventory/public_views.py`** — `GET /api/public/reports/<token>/` (JSON) et `.../pdf/`. Les seules vues DRF en `AllowAny` de tout le projet.
+- **Frontend** : `views/PublicReportView.vue` (route `/p/:token`, **exemptée de la garde d'authentification** du routeur), `components/PartagerFicheModal.vue` (panneau « Partager / Imprimer » branché sur les fiches tournée / spectacle / technicien et sur le Tableau de bord pour la journée), et une section « Liens de partage » dans `ReglagesView.vue` pour la vue d'ensemble.
+
+**Écarts imposés par WeasyPrint** — mesurés dans un bac à sable le 2026-08-08, ne pas les « corriger » vers la maquette sans revérifier : `writing-mode: vertical-rl` n'est pas supporté (la légende du QR est passée à l'horizontale) ; la sortie SVG de segno n'a pas de `viewBox`, donc aucune largeur CSS ne s'applique tant qu'on ne l'injecte pas ; les boîtes de marge `@top-center`/`@bottom-center` exigent `width: 100%` sous peine de se centrer sur leur contenu ; et les maquettes calculent un `transform: scale()` en JavaScript pour tenir sur une page, ce que WeasyPrint ne peut pas exécuter — on laisse donc couler sur plusieurs pages, avec en-tête et pied **répétés** (le QR se trouve ainsi sur chaque page, une feuille désagrafée reste scannable).
+
 ## 5. Workflows principaux
 
 ### Workflow 1 — Créer une fiche spectacle
@@ -339,6 +355,14 @@ Complément aux CSV ci-dessus : `backend/inventory/portability.py` couvre TOUTES
 1. `GET /api/projects/{id}/export/` télécharge un JSON complet et réimportable (ou `?format=xml` pour une version lecture seule) — toutes les tables du projet, assignations et déplacements compris.
 2. `POST /api/projects/import/` avec ce fichier crée un **nouveau** projet (jamais n'écrase un projet existant) — utile pour archiver hors de l'app, migrer vers une autre instance, ou restaurer un état antérieur sous un nouveau nom.
 3. Contrairement à `duplicate` (Workflow 8), qui démarre une nouvelle édition avec un calendrier vierge, l'export/import vise la fidélité complète — c'est la bonne opération pour une sauvegarde, pas pour préparer la prochaine édition d'un mandat.
+
+### Workflow 11 — Imprimer une feuille et la partager, décision du 2026-08-08
+
+1. Depuis la fiche tournée (ou spectacle, ou technicien), bouton « Partager / Imprimer ». Pour l'horaire d'une journée, le bouton est sur le Tableau de bord et la date se choisit dans le panneau.
+2. Le panneau cherche d'abord un lien actif existant — **il ne publie rien juste parce qu'on l'a ouvert**. S'il n'y en a pas, il explique ce qu'un lien implique avant de proposer de le créer.
+3. « Ouvrir le PDF » produit la feuille A4, code QR compris. « Copier l'adresse » sert à l'envoyer par courriel sans imprimer.
+4. La personne qui reçoit la feuille scanne le code et tombe sur `/p/<token>` : la même feuille, à jour, sans compte, avec la date de lecture bien en vue pour la comparer à la date imprimée en pied de page.
+5. Réimprimer plus tard donne le **même** code QR — les copies déjà distribuées restent valides. Pour couper l'accès, « Révoquer » dans le panneau ou dans Réglages → Liens de partage : cela invalide aussi les copies papier, d'où la confirmation explicite.
 
 ## 6. Explicitement hors scope (validé avec Samuel)
 

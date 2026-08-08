@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
 import ColorField from '../components/ColorField.vue'
@@ -182,6 +182,102 @@ async function loadSettings() {
 }
 
 onMounted(loadSettings)
+
+// --- Liens de partage publics (chantier « sorties de rapports », 2026-08-08) ---
+//
+// Vue d'ENSEMBLE, complémentaire du panneau `PartagerFicheModal` : celui-ci
+// gère le lien d'UNE fiche, depuis cette fiche. Ici on répond à la question
+// que ce panneau ne peut pas poser — « qu'est-ce qui est en ligne, au juste,
+// sur cette production ? ». C'est le seul écran où un lien oublié se voit.
+//
+// Les liens révoqués restent affichés sur demande : c'est la trace de ce qui
+// a circulé, avec son compteur de consultations. Les effacer ferait perdre
+// exactement l'information qu'on veut consulter après coup si un lien a fuité.
+
+const RUBANS_PARTAGE = {
+  transport: 'Fiche de transport',
+  show: 'Fiche spectacle',
+  technician: 'Parcours technicien',
+  day: 'Horaire de la journée',
+}
+
+const shares = ref([])
+const sharesLoading = ref(false)
+const sharesError = ref(null)
+const showRevoked = ref(false)
+const revokingId = ref(null)
+const copiedId = ref(null)
+
+const activeShares = computed(() => shares.value.filter((s) => s.is_active))
+const revokedShares = computed(() => shares.value.filter((s) => !s.is_active))
+
+async function loadShares() {
+  if (!activeProjectId.value) {
+    shares.value = []
+    return
+  }
+  sharesLoading.value = true
+  sharesError.value = null
+  try {
+    shares.value = await api.get('/report-shares/', { project: activeProjectId.value })
+  } catch {
+    sharesError.value = "Impossible de charger les liens de partage."
+  } finally {
+    sharesLoading.value = false
+  }
+}
+
+async function revokeShare(share) {
+  revokingId.value = share.id
+  sharesError.value = null
+  try {
+    await api.delete(`/report-shares/${share.id}/`)
+    await loadShares()
+  } catch {
+    sharesError.value = "La révocation a échoué."
+  } finally {
+    revokingId.value = null
+  }
+}
+
+async function copyShare(share) {
+  try {
+    await navigator.clipboard.writeText(share.url)
+    copiedId.value = share.id
+    setTimeout(() => { copiedId.value = null }, 2000)
+  } catch {
+    sharesError.value = "Copie impossible — sélectionne l'adresse à la main."
+  }
+}
+
+// Le backend renvoie la date d'un partage « journée » en ISO (2026-08-08) :
+// lisible par une machine, pas par Samuel. On la remet en français ici plutôt
+// que côté API, où l'ISO reste le bon format d'échange.
+function shareTarget(share) {
+  if (share.kind === 'day' && share.day) {
+    return new Date(`${share.day}T12:00:00`).toLocaleDateString('fr-CA', {
+      weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+    })
+  }
+  return share.target_label || '—'
+}
+
+const revokedLabel = computed(() => {
+  const n = revokedShares.value.length
+  const verbe = showRevoked.value ? 'Masquer' : 'Afficher'
+  return n > 1 ? `${verbe} les ${n} liens révoqués` : `${verbe} le lien révoqué`
+})
+
+function shareDate(valeur) {
+  if (!valeur) return 'jamais'
+  return new Date(valeur).toLocaleDateString('fr-CA', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+// Rechargé quand le projet actif change : cet écran reste ouvert pendant
+// qu'on bascule d'une production à l'autre depuis la barre latérale.
+watch(activeProjectId, loadShares)
+onMounted(loadShares)
+
 
 async function save() {
   saveError.value = null
@@ -684,6 +780,78 @@ async function confirmCsvImport(mode) {
           </div>
         </div>
 
+
+        <!-- Liens de partage publics (2026-08-08) : la vue d'ensemble que le
+             panneau par fiche ne peut pas donner. Voir components/
+             PartagerFicheModal.vue et backend/inventory/public_views.py. -->
+        <section class="section">
+          <div class="section-title">Liens de partage</div>
+          <div class="hint-text">
+            Chaque lien ouvre UNE feuille en lecture seule, sans compte, à une
+            adresse secrète — c'est ce que les codes QR imprimés font ouvrir.
+            Révoquer un lien coupe aussi les copies papier déjà distribuées.
+          </div>
+
+          <div class="card">
+            <div v-if="sharesLoading" class="row-empty">Chargement…</div>
+            <div v-else-if="!activeProjectId" class="row-empty">
+              Sélectionne un projet pour voir ses liens.
+            </div>
+            <div v-else-if="!activeShares.length" class="row-empty">
+              Aucun lien actif. Ils se créent depuis le bouton « Partager / Imprimer »
+              d'une fiche tournée, spectacle ou technicien, et depuis le Tableau de
+              bord pour l'horaire d'une journée.
+            </div>
+            <div v-else>
+              <div v-for="s in activeShares" :key="s.id" class="share-row">
+                <div class="share-row__main">
+                  <div class="share-row__kind">{{ RUBANS_PARTAGE[s.kind] || s.kind }}</div>
+                  <div class="share-row__target">{{ shareTarget(s) }}</div>
+                  <code class="share-row__url">{{ s.url }}</code>
+                </div>
+                <div class="share-row__meta">
+                  {{ s.access_count }} consultation<span v-if="s.access_count > 1">s</span><br>
+                  <span class="share-row__date">dernière : {{ shareDate(s.last_accessed_at) }}</span>
+                </div>
+                <div class="share-row__actions">
+                  <a class="btn btn--small" :href="`/api/public/reports/${s.token}/pdf/`" target="_blank" rel="noopener">PDF</a>
+                  <button type="button" class="btn btn--small" @click="copyShare(s)">
+                    {{ copiedId === s.id ? 'Copié' : 'Copier' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn--small btn--danger"
+                    :disabled="revokingId === s.id"
+                    @click="revokeShare(s)"
+                  >
+                    {{ revokingId === s.id ? '…' : 'Révoquer' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="revokedShares.length" class="share-revoked">
+            <button type="button" class="link-button" @click="showRevoked = !showRevoked">
+              {{ revokedLabel }}
+            </button>
+            <div v-if="showRevoked" class="card project-list--archived">
+              <div v-for="s in revokedShares" :key="s.id" class="share-row share-row--revoked">
+                <div class="share-row__main">
+                  <div class="share-row__kind">{{ RUBANS_PARTAGE[s.kind] || s.kind }}</div>
+                  <div class="share-row__target">{{ shareTarget(s) }}</div>
+                </div>
+                <div class="share-row__meta">
+                  {{ s.access_count }} consultation<span v-if="s.access_count > 1">s</span><br>
+                  <span class="share-row__date">révoqué le {{ shareDate(s.revoked_at) }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="sharesError" class="hint-text hint-text--error">{{ sharesError }}</div>
+        </section>
+
         <section class="section">
           <div class="section-title">Fenêtres effectives</div>
           <div class="card">
@@ -1159,4 +1327,51 @@ async function confirmCsvImport(mode) {
   font: 500 11.5px system-ui;
   color: oklch(0.78 0.16 35);
 }
+
+/* Liens de partage (2026-08-08) — une ligne par lien, l'adresse en évidence
+   parce que c'est elle qu'on copie pour l'envoyer par courriel. */
+.share-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  border-bottom: 1px solid rgba(var(--fg-rgb), 0.08);
+}
+.share-row:last-child { border-bottom: none; }
+.share-row--revoked { opacity: 0.55; }
+.share-row__main { flex: 1 1 260px; min-width: 0; }
+.share-row__kind {
+  font: 700 10.5px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: rgba(var(--fg-rgb), 0.5);
+}
+.share-row__target { font: 600 13.5px system-ui; margin: 2px 0 4px; }
+.share-row__url {
+  font: 400 11px var(--font-mono);
+  color: rgba(var(--fg-rgb), 0.55);
+  word-break: break-all;
+}
+.share-row__meta {
+  flex: 0 0 auto;
+  font: 500 12px system-ui;
+  color: rgba(var(--fg-rgb), 0.6);
+  text-align: right;
+  line-height: 1.5;
+}
+.share-row__date { font-size: 11px; color: rgba(var(--fg-rgb), 0.45); }
+.share-row__actions { flex: 0 0 auto; display: flex; gap: 6px; align-items: center; }
+.btn--danger { color: oklch(0.68 0.17 25); }
+.share-revoked { margin-top: 4px; }
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: 500 12px system-ui;
+  color: rgba(var(--fg-rgb), 0.6);
+  text-decoration: underline;
+}
+.hint-text--error { color: oklch(0.68 0.17 25); }
 </style>

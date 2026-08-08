@@ -3,6 +3,7 @@ import { ref, computed, watch, defineAsyncComponent } from 'vue'
 import { useRoute } from 'vue-router'
 import AppShell from '../components/AppShell.vue'
 import { api } from '../api/client'
+import PartagerFicheModal from '../components/PartagerFicheModal.vue'
 import { useSuppressionFiche } from '../composables/useSuppressionFiche'
 import { useEscapeKey } from '../composables/useEscapeKey'
 import { useLeaveGuard } from '../composables/useLeaveGuard'
@@ -145,6 +146,10 @@ import { normalizeText } from '../utils/text'
  */
 
 const route = useRoute()
+
+// Panneau de partage (chantier « sorties de rapports », 2026-08-08) —
+// voir components/PartagerFicheModal.vue.
+const partageOuvert = ref(false)
 
 const transport = ref(null)
 const venues = ref([])
@@ -1080,6 +1085,9 @@ const {
           </div>
         </div>
         <div class="fiche-actions">
+          <button v-if="!editing" type="button" class="fiche-btn" @click="partageOuvert = true">
+            Partager / Imprimer
+          </button>
           <button v-if="!editing" type="button" class="fiche-btn" @click="startEdit">
             Modifier la fiche
           </button>
@@ -1740,8 +1748,16 @@ const {
       @stay="stayOnPage"
       @save="saveAndLeave"
     />
+    <PartagerFicheModal
+      v-if="partageOuvert && transport"
+      kind="transport"
+      :project-id="transport.project"
+      :target-id="transport.id"
+      :label="`Tournée — ${routeLabel}`"
+      @close="partageOuvert = false"
+    />
   </AppShell>
-</template>
+  </template>
 
 <style scoped>
 /* Entête de carte avec action à droite (2026-08-07, bouton « Réestimer les
