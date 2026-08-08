@@ -1,0 +1,68 @@
+{% extends "reports/base.html" %}{% load reports_extras %}
+{# Fiche spectacle — port de « Fiche spectacle.dc.html ». Destinée d'abord au
+   directeur technique de la salle : ce qui arrive, quand, avec qui. #}
+
+{% block styles %}
+.ligne { display:grid; grid-template-columns:26mm 1fr auto; gap:3mm; align-items:baseline;
+         padding:1.2mm 0; border-top:0.5pt solid rgba(15,18,22,0.1); }
+.ligne .quand { font-family:'JetBrains Mono', monospace; font-weight:500; white-space:nowrap; }
+.materiel { display:grid; grid-template-columns:repeat(2, 1fr); gap:0 6mm; }
+.materiel p { font-size:8.5pt; line-height:1.55; break-inside:avoid; }
+{% endblock %}
+
+{% block contenu %}
+<div class="resume">
+  <span>Début <b>{{ r.start_datetime|heure }}</b></span>
+  <span class="discret">Fin <b style="color:#0f1216">{{ r.end_datetime|heure }}</b></span>
+  <span class="discret">{{ r.venue.name }}</span>
+  {% if r.venue.contact_info %}<span class="discret">{{ r.venue.contact_info }}</span>{% endif %}
+</div>
+
+{% if r.blocks %}
+<div class="section-titre">Montages, démontages et répétitions</div>
+{% for b in r.blocks %}
+<div class="ligne keep">
+  <span class="quand">{{ b.start_datetime|heure }} – {{ b.end_datetime|heure }}</span>
+  <span>{{ b.event_type_display }}{% if b.title %} <span class="discret">{{ b.title }}</span>{% endif %}</span>
+  <span class="discret">{{ b.venue.name }}</span>
+</div>
+{% endfor %}
+{% endif %}
+
+{% if r.transports %}
+<div class="section-titre">Transports</div>
+{% for t in r.transports %}
+<div class="ligne keep">
+  <span class="quand">{{ t.scheduled_datetime|heure }}</span>
+  <span>{{ t.from }} → {{ t.to }}</span>
+  <span class="discret">{% if t.status == 'to_approve' %}à approuver{% endif %}</span>
+</div>
+{% endfor %}
+{% endif %}
+
+{% if r.team %}
+<div class="section-titre">Équipe — {{ r.team|length }}</div>
+{% for p in r.team %}
+<div class="ligne keep">
+  <span class="quand"><span class="case"></span></span>
+  <span>{{ p.name }}</span>
+  <span class="discret">{{ p.specialty }}</span>
+</div>
+{% endfor %}
+{% endif %}
+
+{% if r.materials %}
+<div class="section-titre">Matériel — {{ r.materials|length }} lignes</div>
+<div class="materiel">
+{% for m in r.materials %}
+  <p><span class="case"></span><span class="qte">{{ m.quantity }}</span>{{ m.material }}{% if m.is_rental %} <span class="discret">— location{% if m.rental_vendor %} {{ m.rental_vendor }}{% endif %}</span>{% endif %}</p>
+{% endfor %}
+</div>
+{% endif %}
+
+<div class="notes keep">
+  <div class="etiquette">Notes</div>
+  {% if r.notes %}<p style="margin-top:1mm">{{ r.notes }}</p>{% endif %}
+  <div class="note-cadre"></div>
+</div>
+{% endblock %}

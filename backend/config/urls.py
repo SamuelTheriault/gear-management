@@ -17,7 +17,7 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import include, path, re_path
 
-from inventory.frontend_views import spa_index
+from inventory.frontend_views import robots_txt, spa_index
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -34,6 +34,11 @@ urlpatterns = [
     # session Django établie (utilisateur courant, logout) — voir
     # config/settings.py pour le détail du flux.
     path('api/auth/', include('dj_rest_auth.urls')),
+    # Interdit l'indexation des pages publiques de rapport (`/p/<token>`) —
+    # une feuille de tournée porte des adresses de quai et des noms de
+    # contacts, elle n'a rien à faire dans un moteur de recherche. Doit être
+    # déclarée AVANT le catch-all SPA, qui répondrait sinon `index.html`.
+    path('robots.txt', robots_txt, name='robots-txt'),
     # Catch-all SPA (déploiement "option B", voir CLAUDE.md et
     # inventory/frontend_views.py) — DOIT rester en dernier : toute route
     # non capturée par les motifs ci-dessus tombe ici et reçoit le
@@ -41,5 +46,5 @@ urlpatterns = [
     # prendre le relais côté client. `static/` est exclu par défense en
     # profondeur (WhiteNoiseMiddleware intercepte déjà ces requêtes plus tôt
     # dans la pile, avant même la résolution d'URL).
-    re_path(r'^(?!api/|admin/|accounts/|static/).*$', spa_index, name='spa-index'),
+    re_path(r'^(?!api/|admin/|accounts/|static/|robots\.txt).*$', spa_index, name='spa-index'),
 ]

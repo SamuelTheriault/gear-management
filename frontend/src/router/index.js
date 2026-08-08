@@ -24,6 +24,7 @@ import TransportDetailView from '../views/TransportDetailView.vue'
 import ConflitsView from '../views/ConflitsView.vue'
 import CoherenceEmplacementsView from '../views/CoherenceEmplacementsView.vue'
 import ProjetDetailView from '../views/ProjetDetailView.vue'
+import PublicReportView from '../views/PublicReportView.vue'
 
 const routes = [
   { path: '/', name: 'dashboard', component: DashboardView },
@@ -59,6 +60,13 @@ const routes = [
   // Onboarding (2026-08-04) : voir garde ci-dessous — atteinte uniquement
   // par redirection quand le compte connecté n'a encore aucun projet actif.
   { path: '/bienvenue', name: 'onboarding', component: OnboardingView },
+  // Page PUBLIQUE d'une sortie de rapport (2026-08-08) — destination du code
+  // QR imprimé en pied de feuille. SEULE route de l'app exemptée de la garde
+  // ci-dessous : la personne qui scanne (technicien pigiste, DT d'une salle
+  // partenaire) n'a pas de compte, et c'est précisément l'intérêt. Le jeton
+  // dans l'URL tient lieu d'authentification — voir PublicReportView.vue et
+  // backend/inventory/public_views.py pour le modèle de menace.
+  { path: '/p/:token', name: 'rapport-public', component: PublicReportView },
   // Départements retiré le 2026-07-29 (modèle Department abandonné, voir
   // CLAUDE.md / recapitulatif_projet.md).
 ]
@@ -105,7 +113,11 @@ export const router = createRouter({
 // pouvoir aller y inviter/gérer des comptes sans être bloqué par l'écran
 // d'onboarding.
 router.beforeEach(async (to) => {
-  if (to.path === '/login') return true
+  // Exemption /p/:token (2026-08-08) : page publique de rapport. Placée AVANT
+  // `checkAuth()` pour qu'aucun GET /api/auth/user/ ne parte — un appel
+  // authentifié depuis une page publique n'a pas de sens, et le 403 attendu
+  // polluerait la console de la personne qui vient de scanner le code.
+  if (to.path === '/login' || to.path.startsWith('/p/')) return true
   const { currentUser, checkAuth } = useAuth()
   await checkAuth()
   if (!currentUser.value) {

@@ -54,6 +54,7 @@ from .models import (
     MaterialCategory,
     Project,
     ProjectMembership,
+    ReportShare,
     Settings,
     Show,
     ShowMaterial,
@@ -1980,3 +1981,103 @@ class SettingsSerializer(serializers.ModelSerializer):
         if ordre is not None:
             instance.event_type_order = ','.join(ordre)
         return super().update(instance, validated_data)
+
+
+class ReportShareSerializer(serializers.ModelSerializer):
+    """Lien public d'une sortie de rapport — voir `ReportShare` (models.py).
+
+    Le jeton et l'URL sont en lecture seule : on ne choisit pas son secret,
+    et on ne le modifie pas non plus (voir la décision « un partage par cible,
+    réutilisé » dans le docstring du modèle). Émettre un lien se fait par
+    `POST` sur le ViewSet, qui délègue à `report_shares.get_or_create_share`
+    et renvoie le partage existant s'il y en a déjà un actif.
+    """
+
+    url = serializers.SerializerMethodField()
+    is_active = serializers.BooleanField(read_only=True)
+    target_label = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ReportShare
+        fields = [
+            'id', 'project', 'kind', 'token', 'url', 'is_active', 'target_label',
+            'transport', 'show', 'technician', 'day',
+            'created_by', 'created_at', 'expires_at', 'revoked_at',
+            'last_accessed_at', 'access_count',
+        ]
+        read_only_fields = [
+            'token', 'created_by', 'created_at', 'revoked_at',
+            'last_accessed_at', 'access_count',
+        ]
+
+    def get_url(self, obj):
+        from .report_shares import build_share_url
+        request = self.context.get('request')
+        try:
+            return build_share_url(obj, request)
+        except ValueError:
+            # PUBLIC_BASE_URL absente ET pas de requête (ex. sérialisation
+            # depuis un shell) : on renvoie le chemin relatif plutôt que de
+            # faire échouer toute la réponse.
+            return obj.path
+
+    def get_target_label(self, obj):
+        """Libellé lisible de la cible, pour la liste des liens émis côté
+        réglages — sans quoi l'écran n'afficherait que des identifiants."""
+        if obj.kind == ReportShare.KIND_TRANSPORT and obj.transport_id:
+            return str(obj.transport)
+        if obj.kind == ReportShare.KIND_SHOW and obj.show_id:
+            return obj.show.display_title
+        if obj.kind == ReportShare.KIND_TECHNICIAN and obj.technician_id:
+            return obj.technician.name
+        if obj.kind == ReportShare.KIND_DAY and obj.day:
+            return obj.day.isoformat()
+        return ''
+
+    #: Champ cible attendu, et relation à remonter pour vérifier le projet.
+    _CIBLES = {
+        ReportShare.KIND_TRANSPORT: 'transport',
+        ReportShare.KIND_SHOW: 'show',
+        ReportShare.KIND_TECHNICIAN: 'technician',
+        ReportShare.KIND_DAY: 'day',
+    }
+
+    def validate(self, attrs):
+        """Une seule cible, cohérente avec `kind`, et dans le bon projet.
+
+        La contrainte de base (`report_share_cible_coherente`) dit la même
+        chose, mais elle remonterait en `IntegrityError` — donc en 500. On
+        valide ici pour renvoyer une 400 exploitable.
+
+        La vérification du projet est le vrai enjeu de sécurité : sans elle,
+        un membre du projet A pourrait émettre un lien PUBLIC vers une
+        tournée du projet B en postant simplement `{project: A, transport:
+        <id de B>}`. `HasProjectAccess` ne l'attraperait pas — il ne
+        contrôle que le champ `project` du corps de requête.
+        """
+        kind = attrs.get('kind') or getattr(self.instance, 'kind', None)
+        if kind not in self._CIBLES:
+            raise serializers.ValidationError({'kind': "Type de rapport inconnu."})
+
+        attendu = self._CIBLES[kind]
+        fournis = [
+            champ for champ in self._CIBLES.values()
+            if attrs.get(champ) is not None
+        ]
+        if fournis != [attendu]:
+            raise serializers.ValidationError({
+                attendu: (
+                    f"Un partage de type « {dict(ReportShare.KIND_CHOICES)[kind]} » "
+                    f"doit renseigner `{attendu}`, et lui seul."
+                ),
+            })
+
+        project = attrs.get('project') or getattr(self.instance, 'project', None)
+        cible = attrs.get(attendu)
+        if attendu != 'day' and project is not None:
+            cible_project_id = getattr(cible, 'project_id', None)
+            if cible_project_id != project.id:
+                raise serializers.ValidationError({
+                    attendu: "Cette cible n'appartient pas au projet indiqué.",
+                })
+        return attrs

@@ -23,6 +23,17 @@ RUN npm run build
 FROM python:3.12-slim AS backend
 WORKDIR /app/backend
 
+# Bibliothèques système exigées par WeasyPrint (rendu PDF des sorties de
+# rapport, 2026-08-08). Les trois seules nécessaires pour l'installation par
+# roue — voir la doc WeasyPrint 69, « First Steps ». Sans elles, l'import de
+# `weasyprint` lève un OSError opaque ; `inventory/report_pdf.py` diffère cet
+# import pour que le service démarre quand même, mais la route PDF répondrait
+# alors 503 en boucle.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 

@@ -1,0 +1,43 @@
+{% extends "reports/base.html" %}{% load reports_extras %}
+{# Horaire de la journée — port de « Horaire de la journee.dc.html », le seul
+   en PAYSAGE. Groupé par LIEU et non par heure : c'est ce qui le rend lisible
+   quand deux salles tournent en parallèle. #}
+
+{% block format_page %}A4 landscape{% endblock %}
+
+{% block styles %}
+.couloir { margin-bottom:4mm; break-inside:avoid; }
+.couloir-titre { display:flex; align-items:baseline; gap:3mm; padding-bottom:1mm;
+                 border-bottom:0.75pt solid #0f1216; margin-bottom:1mm; }
+.couloir-titre h2 { font-size:10.5pt; font-weight:600; white-space:nowrap; }
+/* 36 mm sur la colonne horaire, pas 26 : « 20 h 00 – 22 h 00 » en JetBrains
+   Mono mesure ~34 mm et débordait sur la colonne suivante — les deux textes
+   se chevauchaient à l'impression (constaté au rendu du 2026-08-08). Une
+   police à chasse fixe ne pardonne pas une colonne trop juste. */
+.item { display:grid; grid-template-columns:36mm 1fr 55mm; gap:4mm; align-items:baseline;
+        padding:1.3mm 0; border-top:0.5pt solid rgba(15,18,22,0.1); }
+.item .quand { font-family:'JetBrains Mono', monospace; font-weight:500; white-space:nowrap; }
+.item .quoi { font-weight:500; }
+.item .qui { font-size:8pt; color:rgba(15,18,22,0.7); }
+{% endblock %}
+
+{% block contenu %}
+{% for lane in r.lanes %}
+<div class="couloir">
+  <div class="couloir-titre">
+    <h2>{% if lane.venue %}{{ lane.venue.name }}{% else %}Sans lieu{% endif %}</h2>
+    {% if lane.venue.code %}<span class="code-lieu mono discret">{{ lane.venue.code }}</span>{% endif %}
+    {% if lane.venue.address %}<span class="discret" style="font-size:8pt">{{ lane.venue.address }}</span>{% endif %}
+  </div>
+  {% for item in lane.items %}
+  <div class="item">
+    <span class="quand">{{ item.start|heure }} – {{ item.end|heure }}</span>
+    <span class="quoi">{% if item.type == 'transport' %}<span class="discret">Tournée</span> {% else %}<span class="discret">{{ item.event_type_display }}</span> {% endif %}{{ item.title }}{% if item.truck %} <span class="discret">· {{ item.truck }}</span>{% endif %}</span>
+    <span class="qui">{% for p in item.team %}{{ p.name }}{% if not forloop.last %}, {% endif %}{% empty %}—{% endfor %}</span>
+  </div>
+  {% endfor %}
+</div>
+{% empty %}
+<p class="discret">Rien de planifié ce jour-là.</p>
+{% endfor %}
+{% endblock %}

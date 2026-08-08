@@ -3,3 +3,11 @@
 # Outils de développement uniquement (lint) — pas installés en production.
 flake8==7.3.0
 flake8-docstrings==1.7.0
+
+# Vérification des PDF produits (inventory/test_report_pdf.py) — un PDF ne
+# casse pas bruyamment, il sort simplement avec un QR illisible ou une page
+# vide, d'où ces outils de mesure. Jamais installés en production.
+pypdf==3.17.4           # géométrie de page et polices embarquées
+pypdfium2==5.7.1        # rastérisation à 300 dpi
+opencv-python-headless==4.13.0.92  # relecture du code QR sur la page rendue
+numpy==2.4.4
