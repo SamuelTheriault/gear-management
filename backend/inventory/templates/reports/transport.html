@@ -1,0 +1,90 @@
+{% extends "reports/base.html" %}{% load reports_extras %}
+{#
+  Fiche de transport — port de « Fiche de transport.dc.html » (Claude Design).
+
+  Le manifeste reste ÉCLATÉ PAR ARRÊT, comme dans la maquette : c'est la seule
+  lecture utile sur un quai. La personne qui décharge veut savoir ce qui sort
+  ici, pas ce que contient le camion en tout.
+#}
+
+{% block styles %}
+.arret { display:grid; grid-template-columns:18mm 5mm 1fr; column-gap:3mm; align-items:stretch; }
+.arret-heure { text-align:right; padding-top:2.5mm; }
+.arret-heure b { font-family:'JetBrains Mono', monospace; font-size:12pt; display:block; }
+.arret-heure span { font-family:'JetBrains Mono', monospace; font-size:7.5pt; color:rgba(15,18,22,0.64); }
+.fil { display:flex; flex-direction:column; align-items:center; }
+.pastille { width:3.4mm; height:3.4mm; margin-top:3.4mm; flex:0 0 auto;
+            border-radius:0 1.2mm 0 1.2mm; background:oklch(0.55 0.21 340 / 0.45); }
+.pastille.bout { background:oklch(0.55 0.21 340); }
+.trait-vertical { flex:1; width:0.6mm; background:rgba(15,18,22,0.14); }
+.arret-corps { padding:2mm 0 3.5mm; min-width:0; }
+.arret-titre { font-size:11pt; font-weight:600; white-space:nowrap; }
+.code-lieu { font-family:'JetBrains Mono', monospace; font-size:7pt; color:rgba(15,18,22,0.66);
+             border:0.5pt solid rgba(15,18,22,0.2); padding:0.6mm 1.4mm;
+             border-radius:0 1.5mm 0 1.5mm; margin-left:2mm; white-space:nowrap; }
+.adresse { font-size:8pt; color:rgba(15,18,22,0.74); margin-top:0.5mm; }
+.manifeste { border:0.75pt solid rgba(15,18,22,0.14); border-radius:0 3mm 0 3mm;
+             padding:1.8mm 2.5mm; margin-top:1.5mm; }
+.manifeste h3 { font-family:'JetBrains Mono', monospace; font-weight:700; font-size:6.5pt;
+                letter-spacing:0.1em; text-transform:uppercase; margin-bottom:0.8mm; }
+.charger h3 { color:oklch(0.52 0.13 165); }
+.decharger h3 { color:oklch(0.5 0.13 255); }
+.manifeste p { font-size:8.5pt; line-height:1.5; }
+.note-arret { font-size:8pt; font-style:italic; color:rgba(15,18,22,0.66); margin-top:1mm; }
+{% endblock %}
+
+{% block contenu %}
+<div class="resume">
+  <span>Départ <b>{{ r.scheduled_datetime|heure }}</b></span>
+  <span class="discret">Arrivée <b style="color:#0f1216">{{ r.ends_at|heure }}</b></span>
+  <span class="discret">{{ r.total_duration_minutes|duree }}</span>
+  <span class="discret">{{ r.stops|length }} arrêts</span>
+  <span class="discret">{{ r.item_count }} items</span>
+  {% if r.distance_meters %}<span class="discret">{% if r.distance_is_partial %}au moins {% endif %}{{ r.distance_meters|km }} km</span>{% endif %}
+  {% if r.truck %}<span class="discret">{{ r.truck }}</span>{% endif %}
+</div>
+
+{% if r.team %}
+<div class="equipe">
+  <span class="etiquette">Équipe</span>
+  {% for p in r.team %}<span>{{ p.name }}{% if p.specialty %} <span class="discret">({{ p.specialty }})</span>{% endif %}</span>{% endfor %}
+</div>
+{% endif %}
+
+{% for a in r.stops %}
+<div class="arret keep">
+  <div class="arret-heure">
+    <b>{{ a.arrival_at|heure }}</b>
+    <span>{% if a.is_first %}départ{% else %}{{ a.travel_minutes_from_previous }} min{% endif %}</span>
+  </div>
+  <div class="fil">
+    <span class="pastille{% if a.is_first or a.is_last %} bout{% endif %}"></span>
+    {% if not a.is_last %}<span class="trait-vertical"></span>{% endif %}
+  </div>
+  <div class="arret-corps">
+    <div><span class="arret-titre">{{ a.venue.name }}</span>{% if a.venue.code %}<span class="code-lieu">{{ a.venue.code }}</span>{% endif %}</div>
+    {% if a.venue.address %}<div class="adresse">{{ a.venue.address }}{% if a.venue.contact_info %} · {{ a.venue.contact_info }}{% endif %}</div>{% endif %}
+
+    {% if a.load %}
+    <div class="manifeste charger">
+      <h3>Charger</h3>
+      {% for l in a.load %}<p><span class="case"></span><span class="qte">{{ l.quantity }}</span>{{ l.material }}{% if l.to %} <span class="discret">→ {{ l.to }}</span>{% endif %}</p>{% endfor %}
+    </div>
+    {% endif %}
+
+    {% if a.unload %}
+    <div class="manifeste decharger">
+      <h3>Décharger</h3>
+      {% for l in a.unload %}<p><span class="case"></span><span class="qte">{{ l.quantity }}</span>{{ l.material }}</p>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endfor %}
+
+<div class="notes keep">
+  <div class="etiquette">Notes</div>
+  {% if r.notes %}<p style="margin-top:1mm">{{ r.notes }}</p>{% endif %}
+  <div class="note-cadre"></div>
+</div>
+{% endblock %}

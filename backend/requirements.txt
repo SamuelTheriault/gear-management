@@ -19,3 +19,13 @@ dj-rest-auth==7.2.0
 requests==2.34.2
 PyJWT==2.13.0
 cryptography==49.0.0
+# Génération des codes QR imprimés sur les sorties de rapport (2026-08-08).
+# Python pur, zéro dépendance, sortie SVG vectorielle — voir
+# inventory/report_shares.qr_svg pour les raisons de ne pas passer par un
+# service tiers comme api.qrserver.com.
+segno==1.6.6
+# Rendu PDF des sorties de rapport (2026-08-08). Exige trois paquets système
+# dans l'image — libpango-1.0-0, libpangoft2-1.0-0, libharfbuzz-subset0 —
+# ajoutés au Dockerfile. L'import est différé dans inventory/report_pdf.py
+# pour qu'un paquet manquant n'empêche pas Django de démarrer.
+weasyprint==69.0

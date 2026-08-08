@@ -38,3 +38,23 @@ def spa_index(request):
             status=501,
         )
     return HttpResponse(html)
+
+
+def robots_txt(request):
+    """`robots.txt` — interdit l'indexation des pages publiques de rapport.
+
+    Ajouté avec les liens publics (2026-08-08). Le catch-all SPA répondrait
+    sinon `index.html` sur `/robots.txt`, ce qu'un robot interprète comme
+    « pas de règles », donc « tout est indexable ». Or `/p/<token>` sert des
+    feuilles de tournée avec adresses de quai et coordonnées de contacts.
+
+    Ceci ne PROTÈGE rien — un robot malveillant ignore ce fichier, et de
+    toute façon la liste des jetons n'est nulle part. C'est une mesure
+    d'hygiène contre l'indexation accidentelle par un moteur qui suivrait un
+    lien collé dans un courriel ou un canal public. La vraie protection reste
+    l'entropie du jeton et l'en-tête `X-Robots-Tag` (voir public_views.py).
+    """
+    return HttpResponse(
+        'User-agent: *\nDisallow: /p/\nDisallow: /api/\n',
+        content_type='text/plain; charset=utf-8',
+    )

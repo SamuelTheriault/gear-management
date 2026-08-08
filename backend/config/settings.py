@@ -202,7 +202,25 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
+    # Limites de débit — voir inventory/public_views.py. Seule la portée
+    # 'public-report' est définie : le reste de l'API exige une session, où
+    # le contrôle d'accès par projet fait déjà le travail. Le taux est
+    # généreux à dessein — toute une équipe derrière le wifi d'une salle
+    # partage une seule IP publique, et une limite serrée les bloquerait
+    # tous parce qu'un technicien a rechargé trois fois.
+    'DEFAULT_THROTTLE_RATES': {
+        'public-report': env('PUBLIC_REPORT_THROTTLE', default='120/hour'),
+    },
 }
+
+# Origine publique utilisée pour construire les URL encodées dans les codes
+# QR imprimés (voir inventory/report_shares.build_share_url). À renseigner en
+# production : sans elle, l'URL est déduite de la requête courante, ce qui
+# suffit tant qu'un PDF est toujours produit dans un cycle requête/réponse —
+# mais donnerait « http://testserver/... » depuis une commande de gestion ou
+# une tâche planifiée. Un QR faux imprimé en quarante exemplaires ne se
+# rattrape pas.
+PUBLIC_BASE_URL = env('PUBLIC_BASE_URL', default='')
 
 # --- Google OAuth 2.0 (django-allauth + dj-rest-auth) ---
 # Flux "classique" côté serveur : le frontend redirige le navigateur vers

@@ -24,9 +24,12 @@ la session Django authentifiée (voir inventory/signals.py pour le
 provisioning automatique).
 """
 
+import secrets
+
 from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
+from django.utils import timezone
 
 
 class User(models.Model):
@@ -1462,3 +1465,220 @@ class TransportMaterial(models.Model):
 
     def __str__(self):
         return f"{self.material} × {self.quantity} → {self.transport}"
+
+
+# ---------------------------------------------------------------------------
+# Partage public en lecture seule (2026-08-08, chantier « sorties de rapports »)
+# ---------------------------------------------------------------------------
+
+
+def generate_share_token():
+    """Jeton d'URL d'un `ReportShare` — 16 octets d'aléa cryptographique, soit
+    22 caractères URL-safe et 128 bits d'entropie.
+
+    C'est LE secret qui protège la fiche : il n'y a pas de mot de passe
+    derrière. 128 bits rend l'énumération sans objet (comparer aux ~2^128
+    essais nécessaires), et `secrets` — pas `random` — garantit un générateur
+    non prédictible même en connaissant des jetons déjà émis.
+
+    Longueur volontairement modeste : le jeton finit encodé dans un code QR
+    imprimé, et chaque caractère ajoute des modules donc réduit la taille de
+    chaque module à surface constante. 22 caractères tiennent dans un QR de
+    version raisonnable, lisible à 25 mm même photocopié.
+    """
+    return secrets.token_urlsafe(16)
+
+
+class ReportShare(models.Model):
+    """Lien public, en lecture seule, vers UNE sortie de rapport imprimable.
+
+    Ajouté le 2026-08-08 avec le chantier des sorties de rapports. Le besoin
+    vient du code QR imprimé en pied de feuille : un technicien pigiste ou le
+    directeur technique d'une salle partenaire doit pouvoir scanner et lire la
+    version à jour en deux secondes, sur son téléphone, sans compte. Or toute
+    l'API est derrière `IsAuthenticated` + `HasProjectAccess`, et la garde du
+    routeur Vue renvoie vers `/bienvenue` tout compte sans `ProjectMembership`
+    actif : sans ce modèle, un QR mènerait à un écran de login puis à un
+    cul-de-sac.
+
+    **Le jeton EST l'authentification** (voir `generate_share_token`). Qui
+    détient l'URL lit la fiche. C'est un choix assumé, pas un oubli — le
+    scénario réel est une feuille papier qui circule sur un quai de
+    déchargement, et exiger un mot de passe la rendrait inutilisable. Trois
+    garde-fous compensent :
+
+    1. **Portée d'un seul objet.** Un partage pointe UNE tournée, UN
+       spectacle, UN technicien ou UNE journée — jamais le projet entier.
+       Un lien qui fuite expose une feuille, pas la production.
+    2. **Révocable et expirable.** `revoked_at` coupe l'accès immédiatement ;
+       `expires_at` (optionnel) le fait expirer tout seul.
+    3. **Lecture seule et non indexable.** Les vues publiques (voir
+       `public_views.py`) n'exposent aucune écriture et envoient
+       `X-Robots-Tag: noindex`.
+
+    **Un partage par cible, réutilisé** (décision structurante) : demander
+    deux fois le lien d'une même tournée renvoie le MÊME jeton, tant qu'il
+    n'est pas révoqué — d'où les contraintes d'unicité partielles ci-dessous.
+    Sans ça, réimprimer une feuille émettrait un nouveau jeton et périmerait
+    silencieusement toutes les copies déjà distribuées sur le terrain. C'est
+    exactement ce qu'il ne faut pas : le QR d'une feuille imprimée en août
+    doit encore fonctionner en octobre. Corollaire assumé : révoquer un lien
+    parce qu'il a fuité invalide aussi toutes les copies papier légitimes —
+    c'est le comportement voulu, et la raison pour laquelle la révocation est
+    une action explicite et non automatique.
+
+    **Suppression de la cible** : chaque FK est en CASCADE. Supprimer une
+    tournée efface son partage, et le QR déjà imprimé répond 404 plutôt que
+    de pointer vers une fiche fantôme ou, pire, vers un objet recréé plus tard
+    avec le même identifiant.
+    """
+
+    KIND_TRANSPORT = 'transport'
+    KIND_SHOW = 'show'
+    KIND_TECHNICIAN = 'technician'
+    KIND_DAY = 'day'
+    KIND_CHOICES = [
+        (KIND_TRANSPORT, 'Fiche de transport'),
+        (KIND_SHOW, 'Fiche spectacle'),
+        (KIND_TECHNICIAN, 'Parcours technicien'),
+        (KIND_DAY, 'Horaire de la journée'),
+    ]
+
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name='report_shares',
+        help_text=(
+            "Production à laquelle ce partage appartient. Redondant avec le "
+            "projet de la cible pour les trois types qui en ont une, mais "
+            "indispensable pour `day` (qui n'a pas de FK) et pour lister les "
+            "partages d'un projet sans quatre jointures."
+        ),
+    )
+    kind = models.CharField(
+        max_length=12,
+        choices=KIND_CHOICES,
+        help_text="Type de sortie — détermine laquelle des cibles ci-dessous est renseignée.",
+    )
+    token = models.CharField(
+        max_length=64,
+        unique=True,
+        db_index=True,
+        default=generate_share_token,
+        editable=False,
+        help_text="Secret d'URL — voir generate_share_token(). Jamais réémis pour une même cible.",
+    )
+
+    # --- Cibles (exactement une renseignée, selon `kind` — voir CheckConstraint) ---
+    transport = models.ForeignKey(
+        'Transport', on_delete=models.CASCADE, null=True, blank=True,
+        related_name='report_shares',
+        help_text="Tournée partagée (kind='transport').",
+    )
+    show = models.ForeignKey(
+        'Show', on_delete=models.CASCADE, null=True, blank=True,
+        related_name='report_shares',
+        help_text="Spectacle partagé (kind='show').",
+    )
+    technician = models.ForeignKey(
+        'Technician', on_delete=models.CASCADE, null=True, blank=True,
+        related_name='report_shares',
+        help_text="Technicien dont le parcours est partagé (kind='technician').",
+    )
+    day = models.DateField(
+        null=True, blank=True,
+        help_text="Journée partagée (kind='day') — l'horaire de tout le projet ce jour-là.",
+    )
+
+    # --- Cycle de vie ---
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='created_report_shares',
+        help_text="Compte qui a émis le lien. SET_NULL : retirer une personne du projet ne doit pas casser les feuilles déjà imprimées.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text=(
+            "Expiration optionnelle. Laissé vide par défaut : une feuille de "
+            "tournée doit rester lisible pendant toute la production, et une "
+            "date d'expiration mal choisie transforme un QR en cul-de-sac au "
+            "pire moment (sur le quai, sans réseau pour appeler Samuel)."
+        ),
+    )
+    revoked_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Révocation manuelle — coupe l'accès immédiatement, y compris pour les copies papier déjà distribuées.",
+    )
+
+    # --- Traces d'accès (diagnostic, pas analytique) ---
+    last_accessed_at = models.DateTimeField(null=True, blank=True)
+    access_count = models.PositiveIntegerField(
+        default=0,
+        help_text=(
+            "Nombre de consultations. Sert à répondre à « est-ce que le monde "
+            "scanne vraiment le code ? » et à repérer un lien anormalement "
+            "sollicité. Incrémenté en base via F() — voir public_views.py."
+        ),
+    )
+
+    class Meta:
+        db_table = 'report_shares'
+        ordering = ['-created_at']
+        constraints = [
+            # Exactement une cible renseignée, cohérente avec `kind`.
+            models.CheckConstraint(
+                name='report_share_cible_coherente',
+                condition=(
+                    models.Q(kind='transport', transport__isnull=False, show__isnull=True,
+                             technician__isnull=True, day__isnull=True)
+                    | models.Q(kind='show', show__isnull=False, transport__isnull=True,
+                               technician__isnull=True, day__isnull=True)
+                    | models.Q(kind='technician', technician__isnull=False, transport__isnull=True,
+                               show__isnull=True, day__isnull=True)
+                    | models.Q(kind='day', day__isnull=False, transport__isnull=True,
+                               show__isnull=True, technician__isnull=True)
+                ),
+            ),
+            # Un seul partage ACTIF par cible — voir le docstring de classe.
+            models.UniqueConstraint(
+                fields=['transport'], condition=models.Q(revoked_at__isnull=True),
+                name='report_share_unique_actif_transport',
+            ),
+            models.UniqueConstraint(
+                fields=['show'], condition=models.Q(revoked_at__isnull=True),
+                name='report_share_unique_actif_show',
+            ),
+            models.UniqueConstraint(
+                fields=['technician'], condition=models.Q(revoked_at__isnull=True),
+                name='report_share_unique_actif_technician',
+            ),
+            models.UniqueConstraint(
+                fields=['project', 'day'], condition=models.Q(revoked_at__isnull=True),
+                name='report_share_unique_actif_day',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.get_kind_display()} — {self.token[:6]}…"
+
+    @property
+    def is_active(self):
+        """True si le lien répond encore : ni révoqué, ni expiré."""
+        if self.revoked_at is not None:
+            return False
+        if self.expires_at is not None and self.expires_at <= timezone.now():
+            return False
+        return True
+
+    @property
+    def path(self):
+        """Chemin public de la page à jour — c'est CE chemin qu'encode le QR.
+
+        `/p/<token>` et non `/api/...` : le QR est scanné par un humain avec
+        un téléphone, il doit tomber sur une page lisible, pas sur du JSON.
+        Le catch-all SPA de `config/urls.py` sert le build Vue sur ce chemin
+        (voir `frontend_views.spa_index`), et la route `/p/:token` du routeur
+        Vue est exemptée de la garde d'authentification.
+        """
+        return f'/p/{self.token}'

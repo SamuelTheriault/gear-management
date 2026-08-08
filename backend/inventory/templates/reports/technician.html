@@ -1,0 +1,53 @@
+{% extends "reports/base.html" %}{% load reports_extras %}
+{# Parcours technicien — port de « Parcours technicien.dc.html ». La feuille de
+   route d'une personne sur toute la production. Les montages/démontages
+   hérités y figurent (marqués comme tels) : sans eux, le parcours montre un
+   trou là où la personne est en réalité sur le plateau. #}
+
+{% block styles %}
+.engagement { display:grid; grid-template-columns:22mm 5mm 1fr; column-gap:3mm; align-items:stretch; }
+.quand { text-align:right; padding-top:2mm; }
+.quand b { font-family:'JetBrains Mono', monospace; font-size:11pt; display:block; }
+.quand span { font-family:'JetBrains Mono', monospace; font-size:7pt; color:rgba(15,18,22,0.64); }
+.fil { display:flex; flex-direction:column; align-items:center; }
+.pastille { width:3.4mm; height:3.4mm; margin-top:3mm; flex:0 0 auto;
+            border-radius:0 1.2mm 0 1.2mm; background:oklch(0.55 0.21 340); }
+.pastille.herite { background:oklch(0.55 0.21 340 / 0.4); }
+.trait-vertical { flex:1; width:0.6mm; background:rgba(15,18,22,0.14); }
+.corps { padding:1.5mm 0 3.5mm; min-width:0; }
+.corps h2 { font-size:10.5pt; font-weight:600; }
+.corps .meta { font-size:8pt; color:rgba(15,18,22,0.7); margin-top:0.5mm; }
+{% endblock %}
+
+{% block contenu %}
+<div class="resume">
+  {% if r.specialty %}<span>{{ r.specialty }}</span>{% endif %}
+  <span class="discret">{{ r.engagements|length }} engagements</span>
+  {% if r.first_start %}<span class="discret">du {{ r.first_start|jour_court }} au {{ r.last_end|jour_court }}</span>{% endif %}
+  {% if r.contact_info %}<span class="discret">{{ r.contact_info }}</span>{% endif %}
+</div>
+
+{% for e in r.engagements %}
+<div class="engagement keep">
+  <div class="quand">
+    <b>{{ e.start|heure }}</b>
+    <span>{{ e.start|jour_court }}</span>
+  </div>
+  <div class="fil">
+    <span class="pastille{% if e.inherited %} herite{% endif %}"></span>
+    {% if not forloop.last %}<span class="trait-vertical"></span>{% endif %}
+  </div>
+  <div class="corps">
+    <h2>{{ e.title }}</h2>
+    <div class="meta">
+      {% if e.type == 'transport' %}Tournée{% if e.truck %} · {{ e.truck }}{% endif %} · {{ e.stop_count }} arrêts{% else %}{{ e.event_type_display }}{% endif %}
+      {% if e.venue %} · {{ e.venue.name }}{% endif %}
+      · jusqu'à {{ e.end|heure }}
+      {% if e.inherited %} · <span class="discret">rattaché au spectacle</span>{% endif %}
+    </div>
+  </div>
+</div>
+{% empty %}
+<p class="discret">Aucun engagement planifié.</p>
+{% endfor %}
+{% endblock %}

@@ -25,6 +25,7 @@ from django.conf import settings as django_settings
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import transaction
 from django.http import HttpResponse
+from django.utils import timezone
 from django.utils.text import slugify
 from rest_framework import generics, status, viewsets
 from rest_framework.decorators import action
@@ -93,6 +94,7 @@ from .models import (
     MaterialCategory,
     Project,
     ProjectMembership,
+    ReportShare,
     Settings,
     Show,
     ShowMaterial,
@@ -104,11 +106,13 @@ from .models import (
     User,
     Venue,
 )
+from .report_shares import get_or_create_share
 from .serializers import (
     MaterialCategorySerializer,
     MaterialSerializer,
     ProjectMembershipSerializer,
     ProjectSerializer,
+    ReportShareSerializer,
     SettingsSerializer,
     ShowMaterialSerializer,
     ShowSerializer,
@@ -1726,3 +1730,62 @@ class SettingsView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         return Settings.load()
+
+
+class ReportShareViewSet(ProjectMembershipQuerysetMixin, ProjectFilteredMixin,
+                         viewsets.ModelViewSet):
+    """Gestion des liens publics de rapport (chantier 2026-08-08).
+
+    Côté interne : émettre un lien, lister ceux d'un projet, les révoquer.
+    Le contenu servi AU BOUT du lien est ailleurs, dans `public_views.py` —
+    seule partie de l'API accessible sans session.
+
+    **`create` est idempotent** : poster deux fois la même cible renvoie le
+    même partage (et donc le même jeton), avec un 200 plutôt qu'un 201.
+    C'est la contrepartie directe de la décision « un partage par cible »
+    (voir `ReportShare`) : réimprimer une feuille ne doit pas périmer les
+    copies déjà distribuées. L'écran d'impression peut donc appeler cet
+    endpoint sans se demander si le lien existe déjà.
+
+    **`destroy` révoque au lieu de supprimer.** Effacer la ligne perdrait
+    `access_count`/`last_accessed_at` — précisément ce qu'on veut consulter
+    après coup si un lien a fuité — et libérerait la contrainte d'unicité,
+    donc permettrait de réémettre un jeton pour la même cible en croyant
+    l'avoir coupée. La révocation, elle, est définitive et traçable.
+    """
+
+    queryset = ReportShare.objects.select_related(
+        'project', 'transport', 'show', 'technician', 'created_by',
+    ).all()
+    serializer_class = ReportShareSerializer
+    permission_classes = [HasProjectAccess]
+
+    def create(self, request, *args, **kwargs):
+        """Émet — ou retrouve — le lien public d'une cible."""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        donnees = serializer.validated_data
+
+        kind = donnees['kind']
+        champ = ReportShareSerializer._CIBLES[kind]
+        profile = resolve_inventory_user(request)
+
+        share, cree = get_or_create_share(
+            project=donnees['project'],
+            kind=kind,
+            target=donnees[champ],
+            created_by=profile,
+            expires_at=donnees.get('expires_at'),
+        )
+        return Response(
+            self.get_serializer(share).data,
+            status=status.HTTP_201_CREATED if cree else status.HTTP_200_OK,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        """Révoque le lien — voir le docstring de classe."""
+        share = self.get_object()
+        if share.revoked_at is None:
+            share.revoked_at = timezone.now()
+            share.save(update_fields=['revoked_at'])
+        return Response(self.get_serializer(share).data, status=status.HTTP_200_OK)
